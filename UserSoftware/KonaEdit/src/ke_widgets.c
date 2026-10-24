@@ -16,19 +16,6 @@ static uint8_t draw_text(uint8_t x, uint8_t y, const char *text,
 	return drawn;
 }
 
-int ke_statusbar(const char *text)
-{
-	struct tui_size size;
-	struct tui_rect row;
-
-	if (tui_get_size(&size) < 0) return -KOS_EINVAL;
-	row.x = 0u; row.y = (uint8_t)(size.rows - 1u);
-	row.w = size.cols; row.h = 1u;
-	(void)tui_fill(&row, ' ', TUI_STYLE_STATUS);
-	(void)draw_text(0u, row.y, text, size.cols, TUI_STYLE_STATUS);
-	return 0;
-}
-
 int ke_menubar(const struct tui_menu_item *items, uint8_t count,
 	       tui_id_t selected)
 {

@@ -116,68 +116,73 @@ class CommanderTuiSmoke(unittest.TestCase):
         command_start = len(z.vdp.commands)
         vram_write_start = len(z.vdp.vram_writes)
         cycle_start = z.cycles
-        left_getkey = False
         z.hid.hid_queue.extend(key)
-        for _step in range(8_000_000):
+        # Back in the input wait: after a step, PC is tui_getkey again
+        # having left it (see KonaEdit's harness for the count).
+        hits = {"n": 0}
+
+        def hook(step):
             length = self.write_length(z, dispatch)
             if length is not None:
                 writes.append(length)
             length = self.render_length(z, dispatch)
             if length is not None:
                 renders.append(length)
-            replay.skip_delay(z)
-            replay.feed(z)
-            z.step()
-            if z.pc != getkey:
-                left_getkey = True
-            elif left_getkey:
-                commands = z.vdp.commands[command_start:]
-                glyphs = sum(
+            if z.pc == getkey and step >= 1:
+                if step - 1 > hits["n"]:
+                    return True
+                hits["n"] += 1
+            return None
+
+        if replay.drive(z, 8_000_000, {dispatch, getkey}, hook) \
+                is not None:
+            commands = z.vdp.commands[command_start:]
+            glyphs = sum(
+                1 for command in commands
+                if command.get("code") == 0xD0 and command.get("block")
+                and (command["block"][8] |
+                     (command["block"][9] << 8)) == 6
+                and (command["block"][10] |
+                     (command["block"][11] << 8)) == 8)
+            cells = sum(
+                (command["block"][8] |
+                 (command["block"][9] << 8)) // 6
+                for command in commands
+                if command.get("code") in (0xC0, 0xD0)
+                and command.get("block")
+                and (command["block"][8] |
+                     (command["block"][9] << 8)) in (6, 12)
+                and (command["block"][10] |
+                     (command["block"][11] << 8)) == 8)
+            return {
+                "writes": writes,
+                "renders": renders,
+                "inversions": sum(
                     1 for command in commands
-                    if command.get("code") == 0xD0 and command.get("block")
-                    and (command["block"][8] |
-                         (command["block"][9] << 8)) == 6
-                    and (command["block"][10] |
-                         (command["block"][11] << 8)) == 8)
-                cells = sum(
-                    (command["block"][8] |
-                     (command["block"][9] << 8)) // 6
-                    for command in commands
-                    if command.get("code") in (0xC0, 0xD0)
-                    and command.get("block")
-                    and (command["block"][8] |
-                         (command["block"][9] << 8)) in (6, 12)
-                    and (command["block"][10] |
-                         (command["block"][11] << 8)) == 8)
-                return {
-                    "writes": writes,
-                    "renders": renders,
-                    "inversions": sum(
-                        1 for command in commands
-                        if command.get("code") == 0x83),
-                    "glyphs": glyphs,
-                    "cells": cells,
-                    "sat_writes": sum(
-                        1 for address, _value
-                        in z.vdp.vram_writes[vram_write_start:]
-                        if 0xF200 <= address < 0xF208),
-                    "cycles": z.cycles - cycle_start,
-                }
+                    if command.get("code") == 0x83),
+                "glyphs": glyphs,
+                "cells": cells,
+                "sat_writes": sum(
+                    1 for address, _value
+                    in z.vdp.vram_writes[vram_write_start:]
+                    if 0xF200 <= address < 0xF208),
+                "cycles": z.cycles - cycle_start,
+            }
         self.fail("Commander did not return to its input loop")
 
     def wait_for_input_loop(self, replay, z):
         symbols = read_symbols(str(PROGRAM_MAP))
         getkey = symbols["_tui_getkey"]
         ui_run = symbols["_kc_ui_run"]
-        entered = False
-        for _step in range(8_000_000):
+        entered = {"yes": False}
+
+        def hook(_step):
             if z.pc == ui_run:
-                entered = True
-            if entered and z.pc == getkey:
-                return
-            replay.skip_delay(z)
-            replay.feed(z)
-            z.step()
+                entered["yes"] = True
+            return (entered["yes"] and z.pc == getkey) or None
+
+        if replay.drive(z, 8_000_000, {ui_run, getkey}, hook) is not None:
+            return
         self.fail("Commander did not enter its input loop")
 
     def test_menu_focus_tab_and_quit_return_to_the_shell(self):

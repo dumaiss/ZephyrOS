@@ -30,7 +30,8 @@ if os.path.join(ROOT, "tools") not in sys.path:
 import fontpack  # noqa: E402
 import romfspack  # noqa: E402
 from z80sim import (Ctc, Ctc0Injector, IocCommandPeer, V9958Peer,  # noqa: E402
-                    Z80, read_symbols, skip_serial_connect_delay)
+                    SERIAL_CONNECT_DELAY_LATCH, StopSet, Z80, read_symbols,
+                    skip_serial_connect_delay)
 
 RET = 0x1234
 STACK = 0xFFFE          # the common boot stack
@@ -180,6 +181,68 @@ class Replay:
         Ctc().attach(z)
         return z
 
+    def drive(self, z, limit, watch=None, hook=None, every=0x1FFF,
+              tick=None, delay=True):
+        """The replay loop, run by the core in chunks.  The same as
+
+            for step in range(limit):
+                if watch and z.pc in watch:
+                    result = hook(step)   # True: return step; an
+                                          # iterable: the new watch
+                self.skip_delay(z)        # when `delay`
+                self.feed(z)
+                z.step()
+                if tick and step % every == 0 and tick(step):
+                    return step
+            return None
+
+        `hook` and `tick` see exactly the states that loop shows them.
+        An input driver needs every step, so with one attached the plain
+        loop runs."""
+        if self.input_driver is not None:
+            for step in range(limit):
+                if watch and z.pc in watch:
+                    result = hook(step)
+                    if result is True:
+                        return step
+                    if result is not None:
+                        watch = set(result)
+                if delay:
+                    self.skip_delay(z)
+                self.feed(z)
+                z.step()
+                if tick is not None and step % every == 0 and tick(step):
+                    return step
+            return None
+        skip = ((self.syms["_kernel_serial_connect_delay"],
+                 SERIAL_CONNECT_DELAY_LATCH) if delay else None)
+        stops = StopSet(watch) if watch else None
+        step = 0
+        check_first = True
+        while step < limit:
+            if tick is None:
+                target = limit - 1
+            elif step % every == 0:
+                target = step
+            else:
+                target = min((step // every + 1) * every, limit - 1)
+            reason, done = z.run(target - step + 1, stops, skip,
+                                 check_first)
+            step += done
+            if reason == "stop":
+                result = hook(step)
+                if result is True:
+                    return step
+                if result is not None:
+                    stops = StopSet(result) if result else None
+                check_first = False
+                continue
+            check_first = True
+            last = step - 1
+            if tick is not None and last % every == 0 and tick(last):
+                return last
+        return None
+
     def skip_delay(self, z):
         """Skip the production serial-connect spin through its exported
         entry (the guard checks the latch, so a stale address cannot
@@ -191,10 +254,9 @@ class Replay:
         """Call `__kos_crt0_init` and run until it returns."""
         z.push16(RET)
         z.pc = self.syms["__kos_crt0_init"]
-        for _ in range(limit):
-            z.step()
-            if z.pc == RET:
-                return
+        z.run(limit, StopSet((RET,)), None, check_first=False)
+        if z.pc == RET:
+            return
         raise AssertionError("C runtime init did not return")
 
     def start_kernel(self, z, host_sync=b"", ctc0=False):
@@ -238,6 +300,9 @@ class Replay:
         tx_len = len(z.sio_tx)
         matched = False
         quiet = 0
+        if on_step is None and self.input_driver is None:
+            return self._run_until_chunked(z, stops, needles, limit, since,
+                                           halt_ok, panic)
         for step in range(limit):
             self.skip_delay(z)
             self.feed(z)
@@ -269,6 +334,64 @@ class Replay:
             % ([s.decode("ascii", "replace") if isinstance(s, bytes)
                 else s for s in stops], z.pc, bytes(z.sio_tx)[-200:]))
 
+    def _run_until_chunked(self, z, stops, needles, limit, since, halt_ok,
+                           panic):
+        """`run_until` without a per-step callback, by the core: the
+        transcript changes only on a step that writes the SIO data port,
+        so the run stops after such a step (and on a halt when
+        `halt_ok`), and the quiet count after a match advances by whole
+        chunks.  The same returns as the per-step loop."""
+        skip = (self.syms["_kernel_serial_connect_delay"],
+                SERIAL_CONNECT_DELAY_LATCH)
+        tx_len = len(z.sio_tx)
+        matched = False
+        quiet = 0
+        step = 0
+        while step < limit:
+            if matched:
+                if bytes(z.sio_tx).endswith(b"\n"):
+                    # The per-step loop returns after the next step.
+                    z.run(1, None, skip)
+                    return step
+                chunk = min(limit - step, MARKER_SETTLE_STEPS - quiet)
+                reason, done = z.run(chunk, None, skip, out_port=0x22)
+            else:
+                reason, done = z.run(limit - step, None, skip,
+                                     out_port=0x22, halt=halt_ok)
+            last = step + done - 1
+            step += done
+            tx = bytes(z.sio_tx)
+            grew = len(tx) != tx_len
+            if matched:
+                if reason == "out" and grew:
+                    tx_len = len(tx)
+                    if panic is not None and panic in tx[-96:]:
+                        raise AssertionError("panic during boot: %r"
+                                             % tx[-300:])
+                    quiet = 0
+                    if tx.endswith(b"\n"):
+                        return last
+                    continue
+                quiet += done
+                if quiet >= MARKER_SETTLE_STEPS:
+                    return last
+                continue
+            if grew:
+                tx_len = len(tx)
+                if panic is not None and panic in tx[-96:]:
+                    raise AssertionError("panic during boot: %r"
+                                         % tx[-300:])
+                if any(needle in tx[since:] for needle in needles):
+                    matched = True
+                    quiet = 0
+                    continue
+            if halt_ok and z.halted:
+                return last
+        raise AssertionError(
+            "did not reach %r (PC=%04X, tail=%r)"
+            % ([s.decode("ascii", "replace") if isinstance(s, bytes)
+                else s for s in stops], z.pc, bytes(z.sio_tx)[-200:]))
+
     def boot(self, z, stops=(), **kwargs):
         """`start_kernel` then `run_until`."""
         self.start_kernel(z)
@@ -278,12 +401,16 @@ class Replay:
         """Call the function at `address` and run until it returns."""
         z.push16(RET)
         z.pc = address
-        for _ in range(limit):
-            if on_step is not None:
-                on_step(z)
-            z.step()
+        if on_step is None:
+            z.run(limit, StopSet((RET,)), None, check_first=False)
             if z.pc == RET:
                 return
+        else:
+            for _ in range(limit):
+                on_step(z)
+                z.step()
+                if z.pc == RET:
+                    return
         raise AssertionError("function at %04X did not return (PC=%04X)"
                              % (address, z.pc))
 
@@ -419,14 +546,12 @@ class ConsoleReplay(Replay):
 
     def run_to(self, z, expect, limit=STEP_LIMIT, since=0):
         """Step until `expect` appears in the visible trace."""
-        for i in range(limit):
-            self.skip_delay(z)
-            self.feed(z)
-            z.step()
-            if i % 0x1FFF == 0:
-                self.pump(z)
-                if expect in "".join(z.glyphs[since:]):
-                    return
+        def tick(_step):
+            self.pump(z)
+            return bool(expect in "".join(z.glyphs[since:]))
+
+        if self.drive(z, limit, tick=tick) is not None:
+            return
         self.pump(z)
         raise AssertionError(
             "did not reach %r (PC=%04X, tail=%r)"
@@ -435,14 +560,12 @@ class ConsoleReplay(Replay):
     def run_until_count(self, z, marker, count, limit=STEP_LIMIT):
         """Step until `marker` occurs at least `count` times in the
         whole trace (used for relaunch detection)."""
-        for i in range(limit):
-            self.skip_delay(z)
-            self.feed(z)
-            z.step()
-            if i % 0x1FFF == 0:
-                self.pump(z)
-                if "".join(z.glyphs).count(marker) >= count:
-                    return
+        def tick(_step):
+            self.pump(z)
+            return bool("".join(z.glyphs).count(marker) >= count)
+
+        if self.drive(z, limit, tick=tick) is not None:
+            return
         self.pump(z)
         raise AssertionError(
             "%r occurred %d times, wanted %d (PC=%04X)"
@@ -451,14 +574,12 @@ class ConsoleReplay(Replay):
     def run_to_pattern(self, z, pattern, limit=STEP_LIMIT, since=0):
         """Step until `pattern` matches the fresh trace (for output whose
         end is not a fixed marker, e.g. a rendered hex value)."""
-        for i in range(limit):
-            self.skip_delay(z)
-            self.feed(z)
-            z.step()
-            if i % 0x1FFF == 0:
-                self.pump(z)
-                if re.search(pattern, "".join(z.glyphs[since:])):
-                    return
+        def tick(_step):
+            self.pump(z)
+            return bool(re.search(pattern, "".join(z.glyphs[since:])))
+
+        if self.drive(z, limit, tick=tick) is not None:
+            return
         self.pump(z)
         raise AssertionError(
             "did not match %r (PC=%04X, tail=%r)"

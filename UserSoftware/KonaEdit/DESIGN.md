@@ -11,9 +11,20 @@ split full pages and propagate their suffix into the next logical page;
 deletions remove empty pages and keep the order table compact.  No line index
 or line buffer imposes a line-length limit.
 
-The renderer reads only the visible logical lines and computes TAB columns in
-a streaming pass.  TAB advances to the next multiple of eight.  Viewport
-origin and caret position remain 32-bit even though the physical screen
+Text walks read the store a page span at a time (`ke_store_span`: one page
+lookup, then a byte loop inside the cached page), never byte by byte.
+
+## View
+
+The view (`ke_view.c`) is the visible document lines in RAM: each body row's
+line start (a position past the end marks a blank row), the line after the
+bottom row, and the top row's line number.  The cursor's line is the top line
+plus its row, so nothing counts lines except a rebuild after a jump or an
+action; Page Up/Down move the view by exactly the lines moved.  A row is built
+from page spans with byte-sized columns (a horizontal scroll first walks to
+the left column) and written with one `tui_put_text` per attribute run; a
+selection, being contiguous, puts at most one selected span on a row.  TAB
+advances to the next multiple of eight.  Positions stay 32-bit; screen
 coordinates are bytes.
 
 ## Clipboard and history
@@ -71,20 +82,22 @@ The XMEM payload budget is 64 KiB document + 32 KiB clipboard + 64 KiB history.
 
 ## TUI update policy and exposed gaps
 
-Caret-only motion changes cursor/status state. Same-line edits repaint the
-changed suffix of one document row plus the status/caret. Newline insertion
-or removal repaints only the affected logical-line tail through EOF plus one
-clearing row, or through the viewport edge for longer documents. Multi-line
-selection edits repaint the viewport. Popup selection rewrites the
-same glyphs with changed semantic styles so the TUI emits INVERT records, not
-TEXT glyphs. File-list selection similarly repaints two rows, filename entry
-repaints only its input field, and container suffixes use positioned output.
-Overlay close uses `tui_restore` for its rectangle. A single-line vertical
-viewport transition uses `tui_scroll_rows`: the V9958 advances or reverses its
-circular display origin, keeps the menu/status rows fixed, and KonaEdit paints
-only the newly exposed document row plus status/caret changes. Page jumps,
-horizontal scrolling, selection changes and unsupported consoles retain the
-full-viewport redraw fallback. KonaEdit also has to provide popup-menu policy,
+Caret-only motion changes the status row (only when its line, column or flags
+change) and the cursor.  An edit inside a line shifts the row starts below it
+and redraws that row; only changed cells reach the console.  A newline or a
+join moves the rows on one side of the cursor by `tui_scroll_rows` and draws
+the two rows involved: the console restores every row outside the moved
+region with a VDP copy, so the side that leaves fewer rows outside is moved
+(near the bottom the rows above move and the top line steps by one).  A
+cursor one line past either edge scrolls the whole body region and draws the
+exposed row; anything further rebuilds the view.  A moving selection redraws
+the rows between the cursor's old and new rows; clearing one redraws all rows.
+Popup selection rewrites the same glyphs with changed semantic styles so the
+TUI emits INVERT records, not TEXT glyphs. File-list selection similarly
+repaints two rows, filename entry repaints only its input field, and container
+suffixes use positioned output.  Overlay close uses `tui_restore` for its
+rectangle.  A console without semantic scroll gets the affected rows redrawn.
+KonaEdit also has to provide popup-menu policy,
 compound dialogs and a paged directory view itself because the widget layer
 has no popup/form runner or virtual list provider.  Those are SDK findings,
 not private-API workarounds.

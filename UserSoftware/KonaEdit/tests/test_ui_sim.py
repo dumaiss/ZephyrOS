@@ -118,19 +118,19 @@ class KonaEditTuiSmoke(unittest.TestCase):
         executable = PROGRAM.read_bytes()
         offset = 36 + main - 0x0100
         signature = executable[offset:offset + 24]
-        app_bank = None
-        for _step in range(10_000_000):
+        found = {"bank": None}
+
+        def hook(_step):
             if (z.pc == main and z.bank_of(z.pc) not in (0, 6, 7) and
                     z.bank_of(z.pc) != shell_bank and
                     bytes(z.rd(main + i) for i in range(len(signature))) ==
                     signature):
-                app_bank = z.bank_of(z.pc)
-            if app_bank is not None and z.pc == getkey and \
-                    z.bank_of(z.pc) == app_bank:
-                return app_bank
-            replay.skip_delay(z)
-            replay.feed(z)
-            z.step()
+                found["bank"] = z.bank_of(z.pc)
+            return (found["bank"] is not None and z.pc == getkey and
+                    z.bank_of(z.pc) == found["bank"]) or None
+
+        if replay.drive(z, 10_000_000, {main, getkey}, hook) is not None:
+            return found["bank"]
         self.fail("KonaEdit did not enter its input loop")
 
     def press_and_measure(self, replay, z, app_bank, key):
@@ -139,50 +139,60 @@ class KonaEditTuiSmoke(unittest.TestCase):
         renders = []
         command_start = len(z.vdp.commands)
         cycle_start = z.cycles
+        tstate_start = z.tstates
         origin_start = z.vdp.regs[23]
-        left_getkey = False
         z.hid.hid_queue.extend(key)
-        for _step in range(10_000_000):
+        # The program is back in its input wait when, after a step, PC is
+        # tui_getkey in the program's bank again having left it: a stop
+        # at getkey at iteration n follows n - 1 earlier post-step
+        # states, each one a departure unless it was itself such a stop.
+        hits = {"n": 0}
+
+        def hook(step):
             length = self.render_length(z, dispatch)
             if length is not None:
                 renders.append(length)
-            replay.skip_delay(z)
-            replay.feed(z)
-            z.step()
-            if z.pc != getkey or z.bank_of(z.pc) != app_bank:
-                left_getkey = True
-            elif left_getkey and z.bank_of(z.pc) == app_bank:
-                commands = z.vdp.commands[command_start:]
-                cells = sum(
-                    (command["block"][8] |
-                     (command["block"][9] << 8)) // 6
+            if z.pc == getkey and step >= 1 and \
+                    z.bank_of(z.pc) == app_bank:
+                if step - 1 > hits["n"]:
+                    return True
+                hits["n"] += 1
+            return None
+
+        if replay.drive(z, 10_000_000, {dispatch, getkey}, hook) \
+                is not None:
+            commands = z.vdp.commands[command_start:]
+            cells = sum(
+                (command["block"][8] |
+                 (command["block"][9] << 8)) // 6
+                for command in commands
+                if command.get("code") in (0xC0, 0xD0)
+                and command.get("block")
+                and (command["block"][8] |
+                     (command["block"][9] << 8)) in (6, 12)
+                and (command["block"][10] |
+                     (command["block"][11] << 8)) == 8)
+            return {
+                "renders": renders,
+                "inversions": sum(
+                    command.get("code") == 0x83 for command in commands
+                ),
+                "invert_blocks": [
+                    command.get("block") for command in commands
+                    if command.get("code") == 0x83
+                ],
+                "cells": cells,
+                "cycles": z.cycles - cycle_start,
+                "tstates": z.tstates - tstate_start,
+                "origin_start": origin_start,
+                "origin_end": z.vdp.regs[23],
+                "origin_delta": ((z.vdp.regs[23] - origin_start) &
+                                 0xFF),
+                "commands": [
+                    (command.get("code"), command.get("block"))
                     for command in commands
-                    if command.get("code") in (0xC0, 0xD0)
-                    and command.get("block")
-                    and (command["block"][8] |
-                         (command["block"][9] << 8)) in (6, 12)
-                    and (command["block"][10] |
-                         (command["block"][11] << 8)) == 8)
-                return {
-                    "renders": renders,
-                    "inversions": sum(
-                        command.get("code") == 0x83 for command in commands
-                    ),
-                    "invert_blocks": [
-                        command.get("block") for command in commands
-                        if command.get("code") == 0x83
-                    ],
-                    "cells": cells,
-                    "cycles": z.cycles - cycle_start,
-                    "origin_start": origin_start,
-                    "origin_end": z.vdp.regs[23],
-                    "origin_delta": ((z.vdp.regs[23] - origin_start) &
-                                     0xFF),
-                    "commands": [
-                        (command.get("code"), command.get("block"))
-                        for command in commands
-                    ],
-                }
+                ],
+            }
         self.fail("KonaEdit did not return to an input wait")
 
     @staticmethod
@@ -209,11 +219,16 @@ class KonaEditTuiSmoke(unittest.TestCase):
         newline_screen = self.screen_text(z)
         self.assertEqual(newline_screen[1].rstrip(), "X")
         self.assertEqual(newline_screen[2].rstrip(), "alpha")
-        self.assertEqual(len(newline["renders"]), 1, newline)
+        # The rows below move by one hardware SCROLL record (ten
+        # bytes); one render then draws the two changed rows and the
+        # status.
+        self.assertEqual(len(newline["renders"]), 2, newline)
+        self.assertEqual(newline["renders"][0], 10, newline)
         self.assertLessEqual(newline["cycles"], 150_000, newline)
         unnewline = self.press_and_measure(replay, z, app_bank, b"\x08")
         self.assertIn("Xalpha", "\n".join(self.screen_text(z)))
-        self.assertEqual(len(unnewline["renders"]), 1, unnewline)
+        self.assertEqual(len(unnewline["renders"]), 2, unnewline)
+        self.assertEqual(unnewline["renders"][0], 10, unnewline)
         self.assertLessEqual(unnewline["cycles"], 150_000, unnewline)
 
         self.press_and_measure(replay, z, app_bank, b"\x1bOP")  # F1
@@ -309,6 +324,204 @@ class KonaEditTuiSmoke(unittest.TestCase):
         z.hid.hid_queue.extend(b"\x1b[21~")               # F10
         start = len(z.glyphs)
         replay.run_to_pattern(z, r"/\n?> ", since=start)
+
+
+SOURCE_LINES = [
+    "\tPROCEDURE Item%03d(VAR x: INTEGER); (* comment *)" % index
+    for index in range(110)]
+# A 3 KiB source: the lines above cut at 3,072 bytes (the last line
+# partial, without a newline).
+SOURCE = ("".join(line + "\n" for line in SOURCE_LINES)).encode()[:3072]
+LINES = SOURCE.decode().split("\n")
+BODY = 24
+
+UP, DOWN, LEFT, RIGHT = b"\x1b[A", b"\x1b[B", b"\x1b[D", b"\x1b[C"
+PGUP, PGDN, DELETE = b"\x1b[5~", b"\x1b[6~", b"\x1b[3~"
+F1, F7 = b"\x1bOP", b"\x1b[18~"
+
+
+def shown(line):
+    """A line as the editor draws it: TAB to the next multiple of 8."""
+    out = ""
+    for ch in line:
+        out += " " * (8 - len(out) % 8) if ch == "\t" else ch
+    return out
+
+
+class KonaEditViewBudgets(KonaEditTuiSmoke):
+    """A 3 KiB source with the cursor near line 60: each key's whole-
+    system T-states, and the screen after it."""
+
+    def body(self, z):
+        return [row.rstrip() for row in self.screen_text(z)[1:1 + BODY]]
+
+    def expect_window(self, z, lines, top, where):
+        want = [shown(line).rstrip() for line in lines[top:top + BODY]]
+        want += [""] * (BODY - len(want))
+        self.assertEqual(self.body(z), want, where)
+
+    def expect_some_window(self, z, lines, where):
+        """After a newline or a join the view keeps either the rows above
+        or the rows below the cursor: the screen is some window of the
+        lines, and the cursor's line (the status Ln) is in it."""
+        body = self.body(z)
+        line = int(self.status(z).split("Ln ")[1].split()[0]) - 1
+        for top in range(max(0, line - BODY + 1), line + 1):
+            want = [shown(text).rstrip() for text in lines[top:top + BODY]]
+            want += [""] * (BODY - len(want))
+            if body == want:
+                return top
+        self.fail("no window of the lines around line %d: %r (%r)"
+                  % (line + 1, body, where))
+
+    def status(self, z):
+        return self.screen_text(z)[25]
+
+    def test_keys_meet_their_budgets_anywhere_in_the_file(self):
+        replay, z = self.make_replay()
+        z.hid.fs2_add("SRC.MOD", SOURCE)
+        shell_bank = z.bank_of(0x0100)
+        z.hid.hid_queue.extend(b"/system/konaedit.exe /fs/SRC.MOD\r")
+        app = self.wait_for_input_loop(replay, z, shell_bank)
+        lines = list(LINES)
+
+        def press(key):
+            return self.press_and_measure(replay, z, app, key)
+
+        self.expect_window(z, lines, 0, "opened")
+        for _index in range(BODY - 1):
+            press(DOWN)
+        scroll = press(DOWN)
+        self.expect_window(z, lines, 1, scroll)
+        self.assertLessEqual(scroll["tstates"], 1_200_000, scroll)
+        for _index in range(BODY - 1):
+            press(UP)
+        back = press(UP)
+        self.expect_window(z, lines, 0, back)
+        self.assertLessEqual(back["tstates"], 1_200_000, back)
+
+        # Line 60 (index 59), the cursor eight bytes in.
+        for _index in range(59):
+            press(DOWN)
+        self.assertIn("Ln 60 ", self.status(z))
+        top = 59 - (BODY - 1)
+        self.expect_window(z, lines, top, "line 60")
+        press(UP)
+        down = press(DOWN)
+        self.assertLessEqual(down["tstates"], 500_000, down)
+        for _index in range(7):
+            press(RIGHT)
+        right = press(RIGHT)
+        self.assertLessEqual(right["tstates"], 500_000, right)
+
+        typed = press(b"X")
+        lines[59] = lines[59][:8] + "X" + lines[59][8:]
+        self.expect_window(z, lines, top, typed)
+        self.assertLessEqual(typed["tstates"], 800_000, typed)
+        erased = press(b"\x08")
+        lines[59] = lines[59][:8] + lines[59][9:]
+        self.expect_window(z, lines, top, erased)
+        self.assertLessEqual(erased["tstates"], 800_000, erased)
+        deleted = press(DELETE)
+        lines[59] = lines[59][:8] + lines[59][9:]
+        self.expect_window(z, lines, top, deleted)
+        self.assertLessEqual(deleted["tstates"], 800_000, deleted)
+
+        # Enter in mid-line, then the join that undoes it.
+        split = press(b"\r")
+        lines[59:60] = [lines[59][:8], lines[59][8:]]
+        self.expect_some_window(z, lines, split)
+        self.assertIn("Ln 61 Col 1 ", self.status(z))
+        self.assertLessEqual(split["tstates"], 1_500_000, split)
+        joined = press(b"\x08")
+        lines[59:61] = [lines[59] + lines[60]]
+        self.expect_some_window(z, lines, joined)
+        self.assertIn("Ln 60 Col 16 ", self.status(z))
+        self.assertLessEqual(joined["tstates"], 1_500_000, joined)
+        # The same in the middle of the screen.
+        for _index in range(BODY // 2):
+            press(UP)
+        status = self.status(z)
+        split = press(b"\r")
+        row = int(status.split("Ln ")[1].split()[0]) - 1
+        lines[row:row + 1] = [lines[row][:8], lines[row][8:]]
+        self.expect_some_window(z, lines, split)
+        self.assertLessEqual(split["tstates"], 1_500_000, split)
+        joined = press(b"\x08")
+        lines[row:row + 2] = [lines[row] + lines[row + 1]]
+        self.expect_some_window(z, lines, joined)
+        self.assertEqual(self.status(z), status)
+        self.assertLessEqual(joined["tstates"], 1_500_000, joined)
+        middle = self.body(z)
+
+        # Page Down then Page Up: the same screen and line.
+        press(PGUP)
+        press(PGDN)
+        self.assertEqual(self.body(z), middle)
+        self.assertEqual(self.status(z), status)
+
+        # A selection over three rows, then Esc clears it.
+        press(F7)
+        for _index in range(3):
+            press(DOWN)
+        screen = v9958_screen(z.vdp.vram, z.vdp.regs[23])
+        marked = [row for row in range(1, 1 + BODY)
+                  if any(attr for _ch, attr in screen[row])]
+        self.assertEqual(len(marked), 4, marked)
+        self.assertEqual(marked, list(range(marked[0], marked[0] + 4)))
+        press(b"\x1b")
+        screen = v9958_screen(z.vdp.vram, z.vdp.regs[23])
+        self.assertFalse([row for row in range(1, 1 + BODY)
+                          if any(attr for _ch, attr in screen[row])])
+
+        # Undo after typing (Edit > Undo).
+        before = self.body(z)
+        press(b"Q")
+        self.assertNotEqual(self.body(z), before)
+        for key in (F1, RIGHT, DOWN, b"\r"):
+            press(key)
+        self.assertEqual(self.body(z), before)
+
+        # Go To Line 40 (Search > Go To Line).
+        for key in (F1, RIGHT, RIGHT, DOWN, DOWN, b"\r", b"\x08",
+                    b"4", b"0", b"\r"):
+            press(key)
+        self.assertIn("Ln 40 ", self.status(z))
+        self.assertIn(shown(lines[39]).rstrip(), self.body(z))
+        print("KonaEdit view: scroll %d/%d down %d right %d type %d "
+              "backspace %d delete %d enter %d join %d T-states" % (
+                  scroll["tstates"], back["tstates"], down["tstates"],
+                  right["tstates"], typed["tstates"], erased["tstates"],
+                  deleted["tstates"], split["tstates"],
+                  joined["tstates"]))
+        z.hid.hid_queue.extend(b"\x1b[21~")               # F10
+        for key in (RIGHT, b"\r"):                       # discard
+            z.hid.hid_queue.extend(key)
+
+    def test_a_long_line_scrolls_horizontally(self):
+        """End on a line wider than the screen moves the left column so
+        the cursor's column is the last one shown; Home moves it back."""
+        long_line = "\tx" + "".join(chr(97 + i % 26) for i in range(130))
+        replay, z = self.make_replay()
+        z.hid.fs2_add("LONG.TXT", (long_line + "\nshort\n").encode())
+        shell_bank = z.bank_of(0x0100)
+        z.hid.hid_queue.extend(b"/system/konaedit.exe /fs/LONG.TXT\r")
+        app = self.wait_for_input_loop(replay, z, shell_bank)
+        text = shown(long_line)
+        self.assertEqual(self.body(z)[0], text[:85].rstrip())
+        self.press_and_measure(replay, z, app, b"\x1b[F")      # End
+        left = len(text) - 85 + 1
+        self.assertEqual(self.body(z)[0], text[left:left + 85].rstrip())
+        self.assertIn("Col %d " % (len(text) + 1), self.status(z))
+        self.press_and_measure(replay, z, app, b"\x1b[H")      # Home
+        self.assertEqual(self.body(z)[0], text[:85].rstrip())
+        # Position k (k >= 1) is visual column 8 + k - 1; at column 85
+        # the left column becomes 1, inside the leading TAB, whose rest
+        # shows as blanks.
+        for _index in range(78):
+            self.press_and_measure(replay, z, app, RIGHT)
+        self.assertIn("Col 86 ", self.status(z))
+        self.assertEqual(self.body(z)[0], text[1:86].rstrip())
 
 
 if __name__ == "__main__":

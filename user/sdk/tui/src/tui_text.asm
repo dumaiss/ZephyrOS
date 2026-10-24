@@ -11,17 +11,20 @@
 ; model_only and pending-row bookkeeping; cells past the window's right
 ; edge are clipped.
 ;
-; One loop serves every case.  The cell index, nibble parity, bit mask and
-; bitmap byte index are computed once, then each step advances by one cell
-; with no multiply or call: BC walks the text, DE the attribute bytes
-; (every second cell), and the character, bitmap and flag pointers live in
-; the small scratch block.  IX and IY stay untouched (the ABI preserves
-; them for the C caller's frame).
+; The walk keeps its state in registers.  Main set: B the cells left, C
+; the attribute in both nibbles, DE the text, HL the character cell, IX
+; the attribute byte.  A cell's nibble is compared and merged with
+; ((byte ^ C) & mask) ^ C.  Alternate set: B' the cell's dirty/invert bit
+; (zero under model_only, which turns every bitmap update into a no-op
+; and leaves the pending flag clear), HL' its dirty byte (a full 16-bit
+; pointer: the bitmaps exceed 256 bytes), DE' the distance from the dirty
+; map to the invert map, C' nonzero once a cell changed outside
+; model_only.  The two nibble parities are two loop bodies.  IX is saved;
+; the interrupt entry saves the alternate set.
 ; -----------------------------------------------------------------------------
 
 	.module tui_text
 	.globl _tui_put_text
-	.globl __mulint
 	.globl _tui_state
 	.globl _tui_chars
 	.globl _tui_attrs
@@ -43,18 +46,8 @@ TUI_STRIDE            = 38
 tui_text_x:      .ds 1 ; window-relative x
 tui_text_y:      .ds 1 ; window-relative y
 tui_text_row:    .ds 1 ; the absolute row (window_y + y)
-tui_text_attr:   .ds 1 ; the cell attribute
-tui_text_parity: .ds 1 ; 0 = low nibble cell, 1 = high nibble cell
-tui_text_mask:   .ds 1 ; the dirty/invert bit of the current cell
-tui_text_remain: .ds 1 ; remaining in-window cells
-tui_text_dopend: .ds 1 ; 1 = a change also sets the row's pending flag
-tui_text_pdone:  .ds 1 ; 1 = the row's pending flag is already set
-tui_text_didx:   .ds 1 ; the dirty/invert byte of the current cell
-tui_text_byte:   .ds 1 ; the current text byte (BC is scratch in changes)
-tui_text_nib:    .ds 1 ; the merged attribute nibble
-tui_text_text:   .ds 2 ; the text pointer
-tui_text_chars:  .ds 2 ; the current cell's character pointer
-tui_text_pend:   .ds 2 ; &tui_row_pending[row]
+tui_text_remain: .ds 1 ; in-window cells
+tui_text_attr:   .ds 1 ; the attribute in both nibbles
 
 	.area _CODE
 
@@ -75,67 +68,66 @@ _tui_put_text::
 	ld	a,e
 	or	d
 	jp	z,tui_text_einval
-	ld	(tui_text_text),de
 
 	; length = (SP+4), attr = (SP+5).
-	ld	hl,#4
-	add	hl,sp
-	ld	e,(hl)
 	inc	hl
 	ld	a,(hl)
-	ld	(tui_text_attr),a
-	ld	a,e
+	inc	hl
+	ld	b,(hl)
 	or	a
 	jp	z,tui_text_return_ok
+	ld	c,a			; C = length
+	ld	a,b
+	and	#0x0f
+	ld	b,a
+	rlca
+	rlca
+	rlca
+	rlca
+	or	b
+	ld	(tui_text_attr),a
 
-	; Fully clipped rows draw nothing.
+	; Clip: y inside the window, then length to window width - x.
 	ld	a,(tui_text_y)
-	ld	e,a
+	ld	b,a
 	ld	a,(_tui_state+TUI_WINDOW_H)
-	cp	e
+	cp	b
 	jp	c,tui_text_return_ok
 	jp	z,tui_text_return_ok
-	; The in-window cells: min(length, window width - x).  Cells at and
-	; past the right edge are clipped, so the loop never sees them.
 	ld	a,(tui_text_x)
-	ld	e,a
+	ld	b,a
 	ld	a,(_tui_state+TUI_WINDOW_W)
-	sub	e
+	sub	b
 	jp	c,tui_text_return_ok
-	ld	e,a			; E = window width - x
-	ld	hl,#4
-	add	hl,sp
-	ld	a,(hl)			; length again
-	cp	e
+	jp	z,tui_text_return_ok
+	cp	c
 	jr	c,tui_text_len_ok
-	ld	a,e
+	ld	a,c
 tui_text_len_ok:
 	ld	(tui_text_remain),a
-	or	a
-	jp	z,tui_text_return_ok
+	push	de			; the text pointer
 
-	; The absolute row and its pending-flag byte.  The pending flag is
-	; per-call state, so it starts clear for every row.
+	; DE = the first cell's index: (window_y + y) x stride + window_x + x.
 	ld	a,(tui_text_y)
-	ld	e,a
+	ld	b,a
 	ld	a,(_tui_state+TUI_WINDOW_Y)
-	add	a,e
+	add	a,b
 	ld	(tui_text_row),a
-	ld	l,a
-	ld	h,#0
-	ld	de,#_tui_row_pending
-	add	hl,de
-	ld	(tui_text_pend),hl
-	ld	a,#0
-	ld	(tui_text_pdone),a
-	; DE = row x stride, then + window x + x: the first cell's index.
-	ld	a,(tui_text_row)
-	ld	l,a
-	ld	h,#0
+	ld	b,a			; B = row (shift-and-add multiply)
 	ld	a,(_tui_state+TUI_STRIDE)
 	ld	e,a
 	ld	d,#0
-	call	__mulint		; DE = row x stride
+	ld	hl,#0
+	ld	a,b
+	ld	b,#8
+tui_text_mul:
+	add	hl,hl
+	rlca
+	jr	nc,tui_text_mul_next
+	add	hl,de
+tui_text_mul_next:
+	djnz	tui_text_mul
+	ex	de,hl			; DE = row x stride
 	ld	a,(_tui_state+TUI_WINDOW_X)
 	ld	b,a
 	ld	a,(tui_text_x)
@@ -144,17 +136,28 @@ tui_text_len_ok:
 	ld	e,a
 	ld	a,d
 	adc	a,#0
-	ld	d,a			; DE = base index
+	ld	d,a			; DE = index
 
-	; The character pointer, nibble parity, bit mask and bitmap byte.
-	; With the even stride the index parity is the absolute column
-	; parity: the first cell's nibble position depends on x only.
-	ld	hl,#_tui_chars
-	add	hl,de
-	ld	(tui_text_chars),hl
-	ld	a,e
-	and	#0x01
-	ld	(tui_text_parity),a
+	push	ix
+	push	de			; the index
+
+	; Alternate set: B' = 1 << (index & 7), HL' = &dirty[index >> 3],
+	; DE' = invert - dirty, C' = 0.
+	ld	h,d
+	ld	l,e
+	srl	h
+	rr	l
+	srl	h
+	rr	l
+	srl	h
+	rr	l
+	ld	bc,#_tui_dirty
+	add	hl,bc
+	push	hl			; &dirty[index >> 3]
+	ld	hl,#_tui_invert
+	or	a
+	sbc	hl,bc
+	push	hl			; invert - dirty
 	ld	a,e
 	and	#0x07
 	ld	b,a
@@ -164,200 +167,264 @@ tui_text_mask_loop:
 	add	a,a
 	djnz	tui_text_mask_loop
 tui_text_mask_done:
-	ld	(tui_text_mask),a
-	ld	h,d
-	ld	l,e
-	srl	h
-	rr	l
-	srl	h
-	rr	l
-	srl	h
-	rr l
-	ld	a,l
-	ld	(tui_text_didx),a
-	; DE = the first cell's attribute byte pointer.
-	ld	h,d
-	ld	l,e
-	srl	h
-	rr	l
-	ld	de,#_tui_attrs
-	add	hl,de
-	ex	de,hl
-	ld	bc,(tui_text_text)	; BC = text
-
-	; One in-window cell per iteration.
-tui_text_cell:
-	ld	hl,(tui_text_chars)
-	ld	a,(bc)
-	cp	(hl)
-	jp	nz,tui_text_modified
-	; Compare the cell's attribute nibble.
-	ld	a,(tui_text_parity)
-	or	a
-	ld	a,(de)
-	jr	nz,tui_text_cmp_hi
-	and	#0x0f
-	jr	tui_text_cmp_go
-tui_text_cmp_hi:
-	rrca
-	rrca
-	rrca
-	rrca
-	and	#0x0f
-tui_text_cmp_go:
-	ld	(tui_text_nib),a
-	ld	hl,#tui_text_nib
-	ld	a,(tui_text_attr)
-	cp	(hl)
-	jp	z,tui_text_step
-
-	; A changed cell.  Mirror tui_priv_set_cell: store under model_only
-	; without bitmap or flag work; otherwise flag the row and record the
-	; change as the C reference does.
-tui_text_modified:
-	ld	a,(bc)
-	ld	(tui_text_byte),a	; BC is scratch from here on
-	ld	a,#0
-	ld	(tui_text_dopend),a
+	ld	b,a
 	ld	a,(_tui_state+TUI_MODEL_ONLY)
 	or	a
-	jr	nz,tui_text_store
-	ld	a,#1
-	ld	(tui_text_dopend),a
-	; Already dirty: store only.
-	ld	a,(tui_text_didx)
-	ld	c,a
-	ld	b,#0
-	ld	hl,#_tui_dirty
-	add	hl,bc
-	ld	a,(tui_text_mask)
+	ld	a,b
+	jr	z,tui_text_mask_live
+	xor	a			; model_only: no bitmap or pending update
+tui_text_mask_live:
+	exx
 	ld	b,a
-	ld	a,(hl)
-	and	b
-	jr	nz,tui_text_store
-	; Character change: set dirty, clear invert.
-	ld	a,(tui_text_byte)
-	push	hl
-	ld	hl,(tui_text_chars)
-	cp	(hl)
+	pop	de
 	pop	hl
-	jr	z,tui_text_invert
-	ld	a,(hl)
-	or	b
-	ld	(hl),a
-	ld	a,(tui_text_didx)
-	ld	c,a
-	ld	b,#0
-	ld	hl,#_tui_invert
-	add	hl,bc
-	ld	a,(tui_text_mask)
-	cpl
-	ld	b,a
-	ld	a,(hl)
-	and	b
-	ld	(hl),a
-	jr	tui_text_store
+	ld	c,#0
+	exx
+	pop	de			; DE = the index
 
-	; Attribute-only change: the two-valued model flips the invert bit.
-tui_text_invert:
-	ld	a,(tui_text_didx)
-	ld	c,a
-	ld	b,#0
-	ld	hl,#_tui_invert
+	; Main set: IX = &attrs[index >> 1], HL = &chars[index], B = cells,
+	; C = the attribute in both nibbles.
+	ld	h,d
+	ld	l,e
+	srl	h
+	rr	l
+	ld	bc,#_tui_attrs
 	add	hl,bc
-	ld	a,(tui_text_mask)
+	push	hl
+	pop	ix
+	ld	hl,#_tui_chars
+	add	hl,de
+	ld	a,(tui_text_remain)
 	ld	b,a
+	ld	a,(tui_text_attr)
+	ld	c,a
+	ld	a,e			; the first cell's parity
+	; The stack holds ix, then the text pointer: DE = text.
+	push	hl
+	ld	hl,#4
+	add	hl,sp
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	pop	hl
+	rrca
+	jp	c,tui_text_odd
+
+; --- even cell: the attribute's low nibble ---------------------------------
+; The whole attribute byte is tested first: when it already holds the
+; attribute in both nibbles (unchanged text), the pair's odd cell needs
+; only its character compared.
+tui_text_even:
+	ld	a,0(ix)
+	cp	c
+	jr	nz,tui_text_even_nib
+	ld	a,(de)
+	cp	(hl)
+	jp	nz,tui_text_evq_mod
+tui_text_evq_next:
+	inc	de
+	inc	hl
+	exx
+	rlc	b
+	jr	nc,tui_text_evq_bit
+	inc	hl
+tui_text_evq_bit:
+	exx
+	dec	b
+	jp	z,tui_text_done
+	ld	a,(de)			; the odd cell: its nibble is equal
+	cp	(hl)
+	jp	nz,tui_text_odd_mod
+	jp	tui_text_odd_next
+
+tui_text_even_nib:
+	ld	a,(de)
+	cp	(hl)
+	jp	nz,tui_text_even_mod
+	ld	a,0(ix)
+	xor	c
+	and	#0x0f
+	jp	nz,tui_text_even_mod
+tui_text_even_next:
+	inc	de
+	inc	hl
+	exx
+	rlc	b
+	jr	nc,tui_text_even_bit
+	inc	hl
+tui_text_even_bit:
+	exx
+	dec	b
+	jp	z,tui_text_done
+
+; --- odd cell: the attribute's high nibble ---------------------------------
+tui_text_odd:
+	ld	a,(de)
+	cp	(hl)
+	jp	nz,tui_text_odd_mod
+	ld	a,0(ix)
+	xor	c
+	and	#0xf0
+	jp	nz,tui_text_odd_mod
+tui_text_odd_next:
+	inc	de
+	inc	hl
+	inc	ix
+	exx
+	rlc	b
+	jr	nc,tui_text_odd_bit
+	inc	hl
+tui_text_odd_bit:
+	exx
+	djnz	tui_text_even
+	jp	tui_text_done
+
+; A changed cell: tui_priv_set_cell's dirty/invert rules, then the store.
+; Z on entry to the bookkeeping: the character is unchanged (an
+; attribute-only change toggles invert); otherwise a clean cell gets its
+; dirty bit and loses its invert bit.  A dirty cell only stores.
+tui_text_even_mod:
+	ld	a,(de)
+	cp	(hl)
+	exx
+	ld	c,b			; changed (zero under model_only)
 	ld	a,(hl)
+	jr	z,tui_text_even_attr
 	and	b
-	jr	nz,tui_text_inv_clr
+	jr	nz,tui_text_even_flagged
 	ld	a,(hl)
 	or	b
 	ld	(hl),a
-	jr	tui_text_store
-tui_text_inv_clr:
+	push	hl
+	add	hl,de
 	ld	a,b
 	cpl
-	ld	b,a
-	ld	a,(hl)
+	and	(hl)
+	ld	(hl),a
+	pop	hl
+	jr	tui_text_even_flagged
+tui_text_even_attr:
 	and	b
+	jr	nz,tui_text_even_flagged
+	push	hl
+	add	hl,de
+	ld	a,(hl)
+	xor	b
 	ld	(hl),a
-
-tui_text_store:
-	ld	bc,(tui_text_text)
-	ld	a,(tui_text_byte)
-	ld	hl,(tui_text_chars)
-	ld	(hl),a
-	ld	a,(tui_text_parity)
-	or	a
-	jr	nz,tui_text_st_hi
-	ld	a,(tui_text_attr)
-	and	#0x0f
-	ld	(tui_text_nib),a
-	ld	hl,#tui_text_nib
+	pop	hl
+tui_text_even_flagged:
+	exx
 	ld	a,(de)
-	and	#0xf0
-	or	(hl)
-	ld	(de),a
-	jr	tui_text_st_pend
-tui_text_st_hi:
-	ld	a,(tui_text_attr)
-	rlca
-	rlca
-	rlca
-	rlca
-	and	#0xf0
-	ld	(tui_text_nib),a
-	ld	hl,#tui_text_nib
-	ld	a,(de)
-	and	#0x0f
-	or	(hl)
-	ld	(de),a
-tui_text_st_pend:
-	ld	a,(tui_text_dopend)
-	or	a
-	jr	z,tui_text_step
-	ld	a,(tui_text_pdone)
-	or	a
-	jr	nz,tui_text_step
-	ld	a,#1
-	ld	(tui_text_pdone),a
-	ld	hl,(tui_text_pend)
 	ld	(hl),a
+	ld	a,0(ix)
+	xor	c
+	and	#0xf0
+	xor	c
+	ld	0(ix),a
+	jp	tui_text_even_next
 
-	; One cell right: the pointers step, the mask and parity roll.
-tui_text_step:
-	ld	hl,(tui_text_chars)
-	inc	hl
-	ld	(tui_text_chars),hl
-	inc	bc
-	ld	(tui_text_text),bc
-	ld	a,(tui_text_parity)
-	xor	#0x01
-	ld	(tui_text_parity),a
-	jr	nz,tui_text_step_mask
-	inc	de
-tui_text_step_mask:
-	ld	a,(tui_text_mask)
-	add	a,a
-	ld	(tui_text_mask),a
-	jr	nz,tui_text_step_cnt
-	ld	a,#0x01
-	ld	(tui_text_mask),a
-	ld	a,(tui_text_didx)
-	inc	a
-	ld	(tui_text_didx),a
-tui_text_step_cnt:
-	ld	a,(tui_text_remain)
-	dec	a
-	ld	(tui_text_remain),a
-	jp	nz,tui_text_cell
-	jp	tui_text_return_ok
+tui_text_evq_mod:
+	ld	a,(de)
+	cp	(hl)
+	exx
+	ld	c,b			; changed (zero under model_only)
+	ld	a,(hl)
+	jr	z,tui_text_evq_attr
+	and	b
+	jr	nz,tui_text_evq_flagged
+	ld	a,(hl)
+	or	b
+	ld	(hl),a
+	push	hl
+	add	hl,de
+	ld	a,b
+	cpl
+	and	(hl)
+	ld	(hl),a
+	pop	hl
+	jr	tui_text_evq_flagged
+tui_text_evq_attr:
+	and	b
+	jr	nz,tui_text_evq_flagged
+	push	hl
+	add	hl,de
+	ld	a,(hl)
+	xor	b
+	ld	(hl),a
+	pop	hl
+tui_text_evq_flagged:
+	exx
+	ld	a,(de)
+	ld	(hl),a
+	ld	a,0(ix)
+	xor	c
+	and	#0xf0
+	xor	c
+	ld	0(ix),a
+	jp	tui_text_evq_next
 
-tui_text_einval:
-	ld	de,#0xfffe
-	jr	tui_text_return
+tui_text_odd_mod:
+	ld	a,(de)
+	cp	(hl)
+	exx
+	ld	c,b			; changed (zero under model_only)
+	ld	a,(hl)
+	jr	z,tui_text_odd_attr
+	and	b
+	jr	nz,tui_text_odd_flagged
+	ld	a,(hl)
+	or	b
+	ld	(hl),a
+	push	hl
+	add	hl,de
+	ld	a,b
+	cpl
+	and	(hl)
+	ld	(hl),a
+	pop	hl
+	jr	tui_text_odd_flagged
+tui_text_odd_attr:
+	and	b
+	jr	nz,tui_text_odd_flagged
+	push	hl
+	add	hl,de
+	ld	a,(hl)
+	xor	b
+	ld	(hl),a
+	pop	hl
+tui_text_odd_flagged:
+	exx
+	ld	a,(de)
+	ld	(hl),a
+	ld	a,0(ix)
+	xor	c
+	and	#0x0f
+	xor	c
+	ld	0(ix),a
+	jp	tui_text_odd_next
+
+tui_text_done:
+	; The row's pending flag, once, when a cell changed outside
+	; model_only.
+	exx
+	ld	a,c
+	exx
+	or	a
+	jr	z,tui_text_restore
+	ld	a,(tui_text_row)
+	ld	l,a
+	ld	h,#0
+	ld	de,#_tui_row_pending
+	add	hl,de
+	ld	(hl),#1
+tui_text_restore:
+	pop	ix
+	pop	de			; the text pointer
 tui_text_return_ok:
 	ld	de,#0
+	jr	tui_text_return
+tui_text_einval:
+	ld	de,#0xfffe
 tui_text_return:
 	pop	hl
 	pop	af

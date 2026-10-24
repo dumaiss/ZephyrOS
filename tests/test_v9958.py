@@ -502,8 +502,10 @@ class TestDriverSourceDiscipline(unittest.TestCase):
         for needle in ("KCONSOLE_SCROLL_UP", "v9958_copy_rows",
                        "v9958_fill_cells", "KOS_V9958_REG_R23"):
             self.assertIn(needle, scroll)
+        # The fixed rows are restored before the R#23 margin clear (the
+        # HMMV whose DY is origin - V9958_DISPLAY_OFFSET).
         self.assertLess(scroll.index("v9958_copy_rows"),
-                        scroll.index("R#23 exposes four scanlines"))
+                        scroll.index("V9958_DISPLAY_OFFSET"))
         # The circular-Y split and the final synchronization are pinned by
         # replays, not by source words: the boundary split is
         # tests/test_tui_sim.py (invertwrap), the one SAT write and one

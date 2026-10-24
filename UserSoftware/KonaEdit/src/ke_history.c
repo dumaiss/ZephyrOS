@@ -7,23 +7,27 @@
 
 #define KE_HISTORY_OBJECT_SIZE   32768u
 #define KE_CLIPBOARD_OBJECT_SIZE 16384u
+/* The object sizes as shifts: an arena offset splits by shift and mask. */
+#define KE_HISTORY_OBJECT_SHIFT   15u
+#define KE_CLIPBOARD_OBJECT_SHIFT 14u
 #define KE_TRANSFER_SIZE         256u
 
 static uint8_t transfer[KE_TRANSFER_SIZE];
 
-static int area_read(const uint16_t *handles, ke_pos_t object_size,
+static int area_read(const uint16_t *handles, uint8_t shift,
 		     ke_pos_t at, uint8_t *buffer, uint16_t length)
 {
 	uint16_t done = 0u;
 
 	while (done < length) {
 		ke_pos_t absolute = at + done;
-		uint8_t object = (uint8_t)(absolute / object_size);
-		uint16_t offset = (uint16_t)(absolute % object_size);
+		uint16_t object_size = (uint16_t)(1u << shift);
+		uint8_t object = (uint8_t)(absolute >> shift);
+		uint16_t offset = (uint16_t)absolute & (uint16_t)(object_size - 1u);
 		uint16_t chunk = (uint16_t)(length - done);
 		int result;
 
-		if ((ke_pos_t)chunk > object_size - offset)
+		if (chunk > (uint16_t)(object_size - offset))
 			chunk = (uint16_t)(object_size - offset);
 		result = ke_xmem_read(handles[object], offset, buffer + done, chunk);
 		if (result != (int)chunk) return KE_HISTORY_ERROR;
@@ -32,19 +36,20 @@ static int area_read(const uint16_t *handles, ke_pos_t object_size,
 	return KE_HISTORY_OK;
 }
 
-static int area_write(const uint16_t *handles, ke_pos_t object_size,
+static int area_write(const uint16_t *handles, uint8_t shift,
 		      ke_pos_t at, const uint8_t *buffer, uint16_t length)
 {
 	uint16_t done = 0u;
 
 	while (done < length) {
 		ke_pos_t absolute = at + done;
-		uint8_t object = (uint8_t)(absolute / object_size);
-		uint16_t offset = (uint16_t)(absolute % object_size);
+		uint16_t object_size = (uint16_t)(1u << shift);
+		uint8_t object = (uint8_t)(absolute >> shift);
+		uint16_t offset = (uint16_t)absolute & (uint16_t)(object_size - 1u);
 		uint16_t chunk = (uint16_t)(length - done);
 		int result;
 
-		if ((ke_pos_t)chunk > object_size - offset)
+		if (chunk > (uint16_t)(object_size - offset))
 			chunk = (uint16_t)(object_size - offset);
 		result = ke_xmem_write(handles[object], offset, buffer + done, chunk);
 		if (result != (int)chunk) return KE_HISTORY_ERROR;
@@ -133,9 +138,9 @@ static int history_copy(struct ke_history *history, ke_pos_t destination,
 	while (length != 0ul) {
 		uint16_t chunk = length > KE_TRANSFER_SIZE ? KE_TRANSFER_SIZE :
 				 (uint16_t)length;
-		if (area_read(history->history_handle, KE_HISTORY_OBJECT_SIZE,
+		if (area_read(history->history_handle, KE_HISTORY_OBJECT_SHIFT,
 			      source, transfer, chunk) != KE_HISTORY_OK ||
-		    area_write(history->history_handle, KE_HISTORY_OBJECT_SIZE,
+		    area_write(history->history_handle, KE_HISTORY_OBJECT_SHIFT,
 			       destination, transfer, chunk) != KE_HISTORY_OK)
 			return KE_HISTORY_ERROR;
 		source += chunk;
@@ -192,7 +197,7 @@ static int store_to_history(struct ke_history *history, struct ke_store *store,
 		uint16_t chunk = length > KE_TRANSFER_SIZE ? KE_TRANSFER_SIZE :
 				 (uint16_t)length;
 		if (ke_store_read(store, source, transfer, chunk) != KE_STORE_OK ||
-		    area_write(history->history_handle, KE_HISTORY_OBJECT_SIZE,
+		    area_write(history->history_handle, KE_HISTORY_OBJECT_SHIFT,
 			       destination, transfer, chunk) != KE_HISTORY_OK)
 			return KE_HISTORY_ERROR;
 		source += chunk;
@@ -209,7 +214,7 @@ static int history_to_store(struct ke_history *history, struct ke_store *store,
 	while (length != 0ul) {
 		uint16_t chunk = length > KE_TRANSFER_SIZE ? KE_TRANSFER_SIZE :
 				 (uint16_t)length;
-		if (area_read(history->history_handle, KE_HISTORY_OBJECT_SIZE,
+		if (area_read(history->history_handle, KE_HISTORY_OBJECT_SHIFT,
 			      source, transfer, chunk) != KE_HISTORY_OK ||
 		    ke_store_insert(store, destination, transfer, chunk) != KE_STORE_OK)
 			return KE_HISTORY_ERROR;
@@ -223,7 +228,7 @@ static int history_to_store(struct ke_history *history, struct ke_store *store,
 static int flush_typing(struct ke_history *history)
 {
 	if (history->typing_length == 0u) return KE_HISTORY_OK;
-	if (area_write(history->history_handle, KE_HISTORY_OBJECT_SIZE,
+	if (area_write(history->history_handle, KE_HISTORY_OBJECT_SHIFT,
 		       history->used - history->typing_length,
 		       history->typing_stage, history->typing_length) != KE_HISTORY_OK)
 		return KE_HISTORY_ERROR;
@@ -254,7 +259,7 @@ int ke_history_edit(struct ke_history *history, struct ke_store *store,
 	if (store_to_history(history, store, position, change->payload,
 			     remove_length) != KE_HISTORY_OK) return KE_HISTORY_ERROR;
 	if (insert_length != 0u &&
-	    area_write(history->history_handle, KE_HISTORY_OBJECT_SIZE,
+	    area_write(history->history_handle, KE_HISTORY_OBJECT_SHIFT,
 		       change->payload + remove_length, insert, insert_length) !=
 		KE_HISTORY_OK) return KE_HISTORY_ERROR;
 	if (remove_length != 0ul &&
@@ -279,9 +284,9 @@ static int shift_right(struct ke_history *history, ke_pos_t at,
 				 (uint16_t)length;
 		ke_pos_t source = at + length - chunk;
 
-		if (area_read(history->history_handle, KE_HISTORY_OBJECT_SIZE,
+		if (area_read(history->history_handle, KE_HISTORY_OBJECT_SHIFT,
 			      source, transfer, chunk) != KE_HISTORY_OK ||
-		    area_write(history->history_handle, KE_HISTORY_OBJECT_SIZE,
+		    area_write(history->history_handle, KE_HISTORY_OBJECT_SHIFT,
 			       source + amount, transfer, chunk) != KE_HISTORY_OK)
 			return KE_HISTORY_ERROR;
 		length -= chunk;
@@ -378,7 +383,7 @@ int ke_history_copy(struct ke_history *history, struct ke_store *store,
 				 (uint16_t)(length - done);
 		if (ke_store_read(store, position + done, transfer, chunk) !=
 			KE_STORE_OK ||
-		    area_write(history->clipboard_handle, KE_CLIPBOARD_OBJECT_SIZE,
+		    area_write(history->clipboard_handle, KE_CLIPBOARD_OBJECT_SHIFT,
 			       done, transfer, chunk) != KE_HISTORY_OK)
 			return KE_HISTORY_ERROR;
 		done += chunk;
@@ -418,9 +423,9 @@ int ke_history_paste(struct ke_history *history, struct ke_store *store,
 		uint16_t chunk = history->clipboard_length - done > KE_TRANSFER_SIZE ?
 				 KE_TRANSFER_SIZE :
 				 (uint16_t)(history->clipboard_length - done);
-		if (area_read(history->clipboard_handle, KE_CLIPBOARD_OBJECT_SIZE,
+		if (area_read(history->clipboard_handle, KE_CLIPBOARD_OBJECT_SHIFT,
 			      done, transfer, chunk) != KE_HISTORY_OK ||
-		    area_write(history->history_handle, KE_HISTORY_OBJECT_SIZE,
+		    area_write(history->history_handle, KE_HISTORY_OBJECT_SHIFT,
 			       change->payload + done, transfer, chunk) != KE_HISTORY_OK ||
 		    ke_store_insert(store, position + done, transfer, chunk) !=
 			KE_STORE_OK) return KE_HISTORY_ERROR;

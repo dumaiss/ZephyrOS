@@ -6,61 +6,96 @@ uint32_t ke_visual_advance(uint32_t column, uint8_t byte)
 	return column + 1ul;
 }
 
+/* The text walks below read the store a page span at a time: one locate
+ * per page, a byte loop inside it. */
+
 ke_pos_t ke_line_start(struct ke_store *store, ke_pos_t position)
 {
-	uint8_t byte;
-
 	if (position > ke_store_length(store)) position = ke_store_length(store);
 	while (position != 0ul) {
-		if (ke_store_byte(store, position - 1ul, &byte) != KE_STORE_OK ||
-		    byte == 10u) break;
-		--position;
+		const uint8_t *page;
+		uint16_t offset;
+		uint16_t length;
+		uint16_t i;
+
+		if (ke_store_span(store, position - 1ul, &page, &offset,
+				  &length) != KE_STORE_OK) break;
+		/* page[offset] is the byte before `position`. */
+		i = (uint16_t)(offset + 1u);
+		do {
+			--i;
+			if (page[i] == 10u)
+				return position - (ke_pos_t)(offset - i);
+		} while (i != 0u);
+		position -= (ke_pos_t)offset + 1ul;
 	}
 	return position;
 }
 
 ke_pos_t ke_line_end(struct ke_store *store, ke_pos_t position)
 {
-	uint8_t byte;
-	ke_pos_t length = ke_store_length(store);
+	ke_pos_t end = ke_store_length(store);
 
-	while (position < length) {
-		if (ke_store_byte(store, position, &byte) != KE_STORE_OK || byte == 10u)
-			break;
-		++position;
+	while (position < end) {
+		const uint8_t *page;
+		uint16_t offset;
+		uint16_t length;
+		uint16_t i;
+
+		if (ke_store_span(store, position, &page, &offset, &length) !=
+		    KE_STORE_OK) break;
+		for (i = offset; i < length; ++i)
+			if (page[i] == 10u)
+				return position + (ke_pos_t)(i - offset);
+		position += (ke_pos_t)(length - offset);
 	}
 	return position;
 }
 
+ke_pos_t ke_walk_line(struct ke_store *store, ke_pos_t at, ke_pos_t stop,
+		      uint32_t limit, uint32_t *column)
+{
+	ke_pos_t end = ke_store_length(store);
+	uint32_t visual = 0ul;
+
+	if (stop > end) stop = end;
+	while (at < stop) {
+		const uint8_t *page;
+		uint16_t offset;
+		uint16_t length;
+
+		if (ke_store_span(store, at, &page, &offset, &length) !=
+		    KE_STORE_OK) break;
+		for (; offset < length && at < stop; ++offset, ++at) {
+			uint8_t byte = page[offset];
+			uint32_t next;
+
+			if (byte == 10u) goto done;
+			next = ke_visual_advance(visual, byte);
+			if (next > limit) goto done;
+			visual = next;
+		}
+	}
+done:
+	*column = visual;
+	return at;
+}
+
 uint32_t ke_visual_column(struct ke_store *store, ke_pos_t position)
 {
-	ke_pos_t at = ke_line_start(store, position);
-	uint32_t column = 0ul;
-	uint8_t byte;
+	uint32_t column;
 
-	while (at < position && ke_store_byte(store, at, &byte) == KE_STORE_OK) {
-		column = ke_visual_advance(column, byte);
-		++at;
-	}
+	(void)ke_walk_line(store, ke_line_start(store, position), position,
+			0xFFFFFFFFul, &column);
 	return column;
 }
 
 ke_pos_t ke_position_for_column(struct ke_store *store, ke_pos_t line,
 				uint32_t column)
 {
-	ke_pos_t at = line;
-	ke_pos_t end = ke_line_end(store, line);
-	uint32_t visual = 0ul;
-	uint8_t byte;
+	uint32_t reached;
 
-	while (at < end && ke_store_byte(store, at, &byte) == KE_STORE_OK) {
-		uint32_t next = ke_visual_advance(visual, byte);
-
-		if (next > column) break;
-		visual = next;
-		++at;
-	}
-	return at;
+	return ke_walk_line(store, line, ke_store_length(store), column, &reached);
 }
 
 static uint8_t fold_ascii(uint8_t byte)

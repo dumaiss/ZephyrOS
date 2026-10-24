@@ -18,7 +18,6 @@ struct tui_menu_item {
 	tui_id_t id;
 };
 
-int ke_statusbar(const char *text);
 int ke_menubar(const struct tui_menu_item *items, uint8_t count,
 	       tui_id_t selected);
 int ke_button(uint8_t x, uint8_t y, const char *label, uint8_t focused);

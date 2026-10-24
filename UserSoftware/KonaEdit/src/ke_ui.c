@@ -7,6 +7,7 @@
 #include "ke_store.h"
 #include "ke_text.h"
 #include "ke_ui.h"
+#include "ke_view.h"
 #include "ke_widgets.h"
 
 #define KE_MIN_COLS 60u
@@ -39,6 +40,15 @@ enum ke_action {
 	ACT_ABOUT,
 	ACT_MENU_LEFT = 250,
 	ACT_MENU_RIGHT
+};
+
+/* What a key did to the document lines on screen. */
+enum ke_view_edit {
+	VIEW_NONE,
+	VIEW_INLINE,   /* one byte added, removed or replaced in a line */
+	VIEW_NEWLINE,  /* a newline inserted on the cursor's row */
+	VIEW_JOIN,     /* the newline ending a row's line removed */
+	VIEW_REBUILD   /* anything else */
 };
 
 struct ke_action_item {
@@ -88,14 +98,17 @@ static char dialog_name[KE_PATH_MAX];
 static char recovery_path[KE_PATH_MAX];
 static char find_text[96];
 static char replace_text[96];
-static char status_text[88];
+static char status_text[129];
+/* What the status row shows: rebuilt only when one of these changes. */
+static uint32_t status_line;
+static uint32_t status_column;
+static uint8_t status_flags;
+static uint8_t status_valid;
+static uint8_t attr_status;
 static ke_pos_t cursor_position;
-static ke_pos_t viewport_top;
 static ke_pos_t mark_anchor;
 static ke_pos_t match_position;
 static uint16_t match_length;
-static uint32_t viewport_line;
-static uint32_t left_column;
 static uint8_t modified;
 static uint8_t insert_mode;
 static uint8_t mark_active;
@@ -105,24 +118,6 @@ static uint8_t match_case;
 static void set_text(char *target, const char *source, uint16_t capacity)
 {
 	(void)strlcpy(target, source, capacity);
-}
-
-/* The line of `position`, counted from the viewport's first line, whose
- * number viewport_line keeps: the cursor is always near it, so a count
- * never walks the document from its start.  An edit below viewport_top
- * (document.low_edit) moves the lines before it: the viewport is snapped
- * to the start of its line and its number counted again once. */
-static uint32_t line_number(ke_pos_t position)
-{
-	if (document.low_edit < viewport_top) {
-		viewport_top = ke_line_start(&document, viewport_top);
-		viewport_line = ke_store_count(&document, 0ul, viewport_top, 10u);
-	}
-	document.low_edit = KE_POS_NONE;
-	if (position >= viewport_top)
-		return viewport_line +
-			ke_store_count(&document, viewport_top, position, 10u);
-	return viewport_line - ke_store_count(&document, position, viewport_top, 10u);
 }
 
 static ke_pos_t next_line(ke_pos_t position)
@@ -154,101 +149,69 @@ static void selection(ke_pos_t *first, ke_pos_t *last)
 	}
 }
 
-static uint8_t selected(ke_pos_t position)
+/* The line number of `position`'s line, counted from the start: only a
+ * jump without a known line needs it. */
+static uint32_t count_line(ke_pos_t position)
 {
-	ke_pos_t first;
-	ke_pos_t last;
-
-	selection(&first, &last);
-	return (uint8_t)(position >= first && position < last);
+	return ke_store_count(&document, 0ul,
+			      ke_line_start(&document, position), 10u);
 }
 
-static uint32_t ensure_cursor_visible(uint32_t *cursor_column)
+/* The view with its top kept (snapped, its number counted again), as an
+ * action that may have changed anything leaves it. */
+static void rebuild_view(void)
 {
-	uint32_t cursor_line = line_number(cursor_position);
-	uint32_t column = ke_visual_column(&document, cursor_position);
-	uint8_t body_rows = (uint8_t)(screen.rows - 2u);
+	ke_pos_t top = ke_view.row_start[0];
 
-	if (cursor_line < viewport_line) {
-		viewport_top = ke_line_start(&document, cursor_position);
-		viewport_line = cursor_line;
-	} else {
-		while (cursor_line >= viewport_line + body_rows) {
-			ke_pos_t next = next_line(viewport_top);
+	if (top == KE_POS_NONE || top > ke_store_length(&document))
+		top = ke_store_length(&document);
+	top = ke_line_start(&document, top);
+	ke_view_rebuild(top, count_line(top));
+}
 
-			if (next == viewport_top) break;
-			viewport_top = next;
-			++viewport_line;
-		}
+/* Bring the cursor's line into the view: one line past either edge
+ * scrolls, anything further rebuilds the view with that line on top.
+ * Returns the cursor's row. */
+static uint8_t follow_cursor(void)
+{
+	uint8_t row = ke_view_row_of(cursor_position);
+	ke_pos_t below = ke_view.row_start[ke_view.rows];
+	ke_pos_t top = ke_view.row_start[0];
+
+	if (row != KE_VIEW_NONE) return row;
+	if (below != KE_POS_NONE && cursor_position >= below) {
+		ke_pos_t after = ke_view_next_start(below);
+
+		if ((after == KE_POS_NONE || cursor_position < after) &&
+		    ke_view_scroll(1)) return (uint8_t)(ke_view.rows - 1u);
+	} else if (top != KE_POS_NONE && top != 0ul && cursor_position < top &&
+		   cursor_position >= ke_line_start(&document, top - 1ul) &&
+		   ke_view_scroll(-1)) {
+		return 0u;
 	}
-	if (column < left_column) left_column = column;
-	if (column >= left_column + screen.cols)
-		left_column = column - screen.cols + 1ul;
-	*cursor_column = column;
-	return cursor_line;
+	ke_view_rebuild(cursor_position, count_line(cursor_position));
+	row = ke_view_row_of(cursor_position);
+	return row == KE_VIEW_NONE ? 0u : row;
 }
 
-static void render_document_from(uint8_t row, ke_pos_t at, uint32_t visual)
+/* Keep the cursor's column inside the window; a horizontal move redraws
+ * every row. */
+static void follow_column(uint32_t column)
 {
-	struct tui_rect area;
-	ke_pos_t end = ke_line_end(&document, at);
+	uint32_t left = ke_view.left_column;
 
-	if (visual <= left_column) area.x = 0u;
-	else if (visual - left_column >= screen.cols) return;
-	else area.x = (uint8_t)(visual - left_column);
-	area.y = row;
-	area.w = (uint8_t)(screen.cols - area.x);
-	area.h = 1u;
-	(void)tui_fill(&area, ' ', TUI_STYLE_NORMAL);
-	while (at < end) {
-		uint8_t byte;
-		uint32_t next;
-		uint32_t draw;
-		tui_style_t style;
-
-		if (ke_store_byte(&document, at, &byte) != KE_STORE_OK) break;
-		next = ke_visual_advance(visual, byte);
-		style = selected(at) ? TUI_STYLE_SELECTED : TUI_STYLE_NORMAL;
-		for (draw = visual; draw < next; ++draw) {
-			if (draw >= left_column &&
-			    draw < left_column + screen.cols) {
-				area.x = (uint8_t)(draw - left_column);
-				area.w = 1u;
-				(void)tui_fill(&area,
-					(byte == 9u || draw != visual) ? ' ' : byte,
-					style);
-			}
-		}
-		if (visual >= left_column + screen.cols) break;
-		visual = next;
-		++at;
+	if (column < left) left = column;
+	if (column >= left + screen.cols) left = column - screen.cols + 1ul;
+	if (left != ke_view.left_column) {
+		ke_view.left_column = left;
+		ke_view_draw_rows(0u, (uint8_t)(ke_view.rows - 1u));
 	}
 }
 
-static void render_document_row(uint8_t row, ke_pos_t line)
-{
-	render_document_from(row, line, 0ul);
-}
-
-static void render_document_suffix(uint8_t row, ke_pos_t at)
-{
-	render_document_from(row, at, ke_visual_column(&document, at));
-}
-
-static void render_document_tail(uint8_t row, ke_pos_t line)
-{
-	ke_pos_t length = ke_store_length(&document);
-
-	while (row + 1u < screen.rows) {
-		render_document_row(row, line);
-		if (line >= length) break;
-		line = next_line(line);
-		++row;
-	}
-}
-
-/* The status tail is at most 42 bytes: the name keeps the rest. */
-#define STATUS_NAME_MAX (sizeof(status_text) - 43u)
+static const uint32_t decimal_places[] = {
+	1000000000ul, 100000000ul, 10000000ul, 1000000ul, 100000ul,
+	10000ul, 1000ul, 100ul, 10ul
+};
 
 static char *put_text(char *at, const char *text)
 {
@@ -256,23 +219,47 @@ static char *put_text(char *at, const char *text)
 	return at;
 }
 
+/* Decimal digits without division: subtract each power of ten. */
 static char *put_number(char *at, uint32_t value)
 {
-	char digits[10];
-	uint8_t count = 0u;
+	uint8_t place;
+	uint8_t started = 0u;
 
-	do {
-		digits[count++] = (char)('0' + (uint8_t)(value % 10ul));
-		value /= 10ul;
-	} while (value != 0ul);
-	while (count != 0u) *at++ = digits[--count];
+	for (place = 0u; place < sizeof(decimal_places) /
+				 sizeof(decimal_places[0]); ++place) {
+		char digit = '0';
+
+		while (value >= decimal_places[place]) {
+			value -= decimal_places[place];
+			++digit;
+		}
+		if (digit != '0' || started) {
+			*at++ = digit;
+			started = 1u;
+		}
+	}
+	*at++ = (char)('0' + (uint8_t)value);
 	return at;
 }
 
+/* The status tail is at most 42 bytes: the name keeps the rest. */
+#define STATUS_NAME_MAX 46u
+
+/* The status row, written only when what it shows changed (an action
+ * that renames the document redraws everything: render_all). */
 static void render_status(uint32_t cursor_line, uint32_t column)
 {
 	char *at = status_text;
+	uint8_t cols = ke_view.cols;
+	uint8_t flags = (uint8_t)(modified | (insert_mode << 1) |
+				  (mark_active << 2));
 
+	if (status_valid && cursor_line == status_line &&
+	    column == status_column && flags == status_flags) return;
+	status_line = cursor_line;
+	status_column = column;
+	status_flags = flags;
+	status_valid = 1u;
 	at += strlcpy(status_text, current_path[0] != '\0' ?
 		      (const char *)current_path : "Untitled", STATUS_NAME_MAX);
 	if (at > status_text + STATUS_NAME_MAX - 1u)
@@ -282,103 +269,52 @@ static void render_status(uint32_t cursor_line, uint32_t column)
 	at = put_number(put_text(at, " Col "), column + 1ul);
 	at = put_text(at, insert_mode != 0u ? "  INS" : "  OVR");
 	if (mark_active != 0u) at = put_text(at, " MARK");
-	*at = '\0';
-	(void)ke_statusbar(status_text);
+	while (at < status_text + cols) *at++ = ' ';
+	(void)tui_put_text(0u, (uint8_t)(screen.rows - 1u), status_text, cols,
+			   attr_status);
 }
 
-static void place_cursor(uint32_t cursor_line, uint32_t column)
+static void place_cursor(uint8_t row, uint32_t column)
 {
-	uint32_t row = cursor_line - viewport_line;
+	uint32_t x = column < ke_view.left_column ? 0ul :
+		     column - ke_view.left_column;
 
-	if (column < left_column) column = left_column;
-	column -= left_column;
-	if (column >= screen.cols) column = screen.cols - 1u;
-	if (row >= (uint32_t)(screen.rows - 2u)) row = screen.rows - 3u;
-	(void)tui_gotoxy((uint8_t)column, (uint8_t)(row + 1u));
+	if (x >= screen.cols) x = screen.cols - 1u;
+	(void)tui_gotoxy((uint8_t)x, (uint8_t)(ke_view.first_row + row));
 	(void)tui_cursor_show();
 }
 
-static void render_viewport(void)
+/* The status row and the cursor for the cursor's current place. */
+static void show_cursor(uint8_t row)
 {
-	ke_pos_t line = viewport_top;
-	uint32_t column;
-	uint32_t cursor_line;
-	uint8_t row;
+	uint32_t column = ke_visual_column(&document, cursor_position);
 
-	cursor_line = ensure_cursor_visible(&column);
-	for (row = 1u; row + 1u < screen.rows; ++row) {
-		render_document_row(row, line);
-		if (line < ke_store_length(&document)) line = next_line(line);
-	}
-	render_status(cursor_line, column);
-	place_cursor(cursor_line, column);
+	follow_column(column);
+	render_status(ke_view.top_line + row, column);
+	place_cursor(row, column);
 }
 
+static void set_view_selection(void)
+{
+	selection(&ke_view.select_first, &ke_view.select_last);
+}
+
+/* The whole screen: the menu bar, every row, the status row.  Used at
+ * start and after actions; modal surfaces restore what they covered, so
+ * only changed cells reach the console.  KonaEdit never narrows the
+ * window, so the window is always the whole screen. */
 static void render_all(void)
 {
 	tui_id_t none = TUI_ID_NONE;
 
 	tui_begin();
-	(void)tui_reset_window();
 	(void)tui_set_style(TUI_STYLE_NORMAL);
-	(void)tui_clear();
 	(void)ke_menubar(menu_bar, 4u, none);
-	render_viewport();
+	set_view_selection();
+	rebuild_view();
+	status_valid = 0u;
+	show_cursor(follow_cursor());
 	(void)tui_end();
-}
-
-static void render_after_motion(uint32_t old_left, uint32_t old_view_line,
-				uint8_t edit_kind, ke_pos_t changed)
-{
-	uint32_t column;
-	uint32_t cursor_line = ensure_cursor_visible(&column);
-
-	if (old_left == left_column && mark_active == 0u && edit_kind == 0u &&
-	    (old_view_line + 1ul == viewport_line ||
-	     viewport_line + 1ul == old_view_line)) {
-		uint8_t direction = old_view_line < viewport_line ?
-			TUI_SCROLL_UP : TUI_SCROLL_DOWN;
-
-		if (tui_scroll_rows(1u, (uint8_t)(screen.rows - 2u),
-				    direction) == 0) {
-			tui_begin();
-			if (direction == TUI_SCROLL_UP)
-				render_document_row(
-					(uint8_t)(screen.rows - 2u),
-					ke_line_start(&document,
-						      cursor_position));
-			else
-				render_document_row(1u, viewport_top);
-			render_status(cursor_line, column);
-			place_cursor(cursor_line, column);
-			(void)tui_end();
-		} else {
-			tui_begin();
-			render_viewport();
-			(void)tui_end();
-		}
-	} else if (old_left != left_column || old_view_line != viewport_line ||
-	    mark_active != 0u) {
-		tui_begin();
-		render_viewport();
-		(void)tui_end();
-	} else {
-		tui_begin();
-		if (edit_kind == 1u)
-			render_document_suffix(
-				(uint8_t)(cursor_line - viewport_line + 1ul), changed);
-		else if (edit_kind == 2u)
-			render_document_tail(
-				(uint8_t)(cursor_line - viewport_line),
-				ke_line_start(&document, changed));
-		else if (edit_kind == 3u)
-			render_document_tail(
-				(uint8_t)(cursor_line - viewport_line + 1ul),
-				ke_line_start(&document, changed));
-		render_status(cursor_line, column);
-		place_cursor(cursor_line, column);
-		(void)tui_end();
-	}
 }
 
 static tui_id_t message_box(const char *title, const char *message,
@@ -849,11 +785,10 @@ static uint8_t run_menu(void)
 	}
 	{
 		tui_id_t none = TUI_ID_NONE;
-		uint32_t column;
-		uint32_t cursor_line = ensure_cursor_visible(&column);
+
 		tui_begin();
 		(void)ke_menubar(menu_bar, 4u, none);
-		place_cursor(cursor_line, column);
+		show_cursor(follow_cursor());
 		(void)tui_end();
 	}
 	return ACT_NONE;
@@ -896,7 +831,7 @@ static int confirm_discard(void)
 
 	if (modified == 0u) return 1;
 	answer = message_box("Modified document",
-		"YES saves, NO discards, CANCEL returns to the editor.",
+		"YES saves, NO discards, \nCANCEL returns to the editor.",
 		TUI_BUTTON(TUI_ID_YES) | TUI_BUTTON(TUI_ID_NO) |
 		TUI_BUTTON(TUI_ID_CANCEL));
 	if (answer == TUI_ID_YES) return save_current(0u);
@@ -906,9 +841,9 @@ static int confirm_discard(void)
 static void reset_position(void)
 {
 	cursor_position = 0ul;
-	viewport_top = 0ul;
-	viewport_line = 0ul;
-	left_column = 0ul;
+	ke_view.row_start[0] = 0ul;
+	ke_view.top_line = 0ul;
+	ke_view.left_column = 0ul;
 	mark_active = 0u;
 	have_match = 0u;
 }
@@ -1109,6 +1044,41 @@ static void move_vertical(int direction)
 	cursor_position = ke_position_for_column(&document, target, column);
 }
 
+/* Page Up/Down: the cursor and the view move by the same number of lines,
+ * so the view's line count stays exact without a recount. */
+static void move_page(int direction)
+{
+	uint8_t moved = 0u;
+	uint32_t column = ke_visual_column(&document, cursor_position);
+	ke_pos_t line = ke_line_start(&document, cursor_position);
+	ke_pos_t top = ke_view.row_start[0];
+
+	while (moved < ke_view.rows) {
+		ke_pos_t target;
+
+		if (direction > 0) target = ke_view_next_start(line);
+		else target = line == 0ul ? KE_POS_NONE : previous_line(line);
+		if (target == KE_POS_NONE) break;
+		line = target;
+		++moved;
+		/* The top follows while it can. */
+		if (direction > 0) {
+			if (ke_view.row_start[1] == KE_POS_NONE) continue;
+			top = ke_view.row_start[1];
+			ke_view.row_start[1] = ke_view_next_start(top);
+			++ke_view.top_line;
+		} else if (top != 0ul) {
+			top = ke_line_start(&document, top - 1ul);
+			--ke_view.top_line;
+		}
+		ke_view.row_start[0] = top;
+	}
+	cursor_position = ke_position_for_column(&document, line, column);
+	if (moved == 0u) return;
+	set_view_selection();
+	ke_view_rebuild(top, ke_view.top_line);
+}
+
 int ke_ui_run(const char *initial_path)
 {
 	int result;
@@ -1135,8 +1105,8 @@ int ke_ui_run(const char *initial_path)
 		return 1;
 	}
 	if (screen.cols < KE_MIN_COLS || screen.rows < KE_MIN_ROWS) {
+		/* tui_init cleared the screen. */
 		tui_begin();
-		(void)tui_clear();
 		(void)ke_label(0u, 0u, "KonaEdit: console grid is too small.");
 		(void)tui_end();
 		tui_shutdown();
@@ -1144,6 +1114,10 @@ int ke_ui_run(const char *initial_path)
 		ke_store_dispose(&document);
 		return 1;
 	}
+	ke_view_setup(&document, 1u, (uint8_t)(screen.rows - 2u), screen.cols);
+	(void)tui_set_style(TUI_STYLE_STATUS);
+	attr_status = tui_get_attr();
+	(void)tui_set_style(TUI_STYLE_NORMAL);
 	reset_position();
 	if (initial_path != (const char *)0 && initial_path[0] != '\0') {
 		if (ke_file_load(&document, initial_path) == KE_FILE_OK)
@@ -1156,63 +1130,88 @@ int ke_ui_run(const char *initial_path)
 				TUI_BUTTON(TUI_ID_OK));
 		}
 	}
+	/* tui_init cleared the screen; render_all writes every cell. */
 	render_all();
 	for (;;) {
 		tui_key_t key = tui_getkey();
-		uint32_t old_left = left_column;
-		uint32_t old_view_line = viewport_line;
-		ke_pos_t changed = cursor_position;
+		uint8_t row = ke_view_row_of(cursor_position);
+		ke_pos_t old_cursor = cursor_position;
+		ke_pos_t old_first;
+		ke_pos_t old_last;
 		uint8_t action = ACT_NONE;
-		uint8_t redraw = 0u;
+		uint8_t view_edit = VIEW_NONE;
+		int8_t delta = 0;
+		ke_pos_t at = cursor_position;
 
+		selection(&old_first, &old_last);
 		if (!((key >= 32u && key <= 255u) || key == 8u || key == 127u ||
 		      key == TUI_KEY_DELETE || key == 9u || key == 10u ||
 		      key == 13u))
 			ke_history_break_group(&history);
 
-		if (key == TUI_KEY_F1) action = run_menu();
-		else if (key == TUI_KEY_F2) action = ACT_SAVE;
-		else if (key == TUI_KEY_F3) action = ACT_OPEN;
-		else if (key == TUI_KEY_F4) action = ACT_FIND;
-		else if (key == TUI_KEY_F5) action = ACT_FIND_NEXT;
-		else if (key == TUI_KEY_F7) {
-			if (mark_active != 0u) mark_active = 0u;
-			else { mark_active = 1u; mark_anchor = cursor_position; }
-			redraw = 1u;
-		} else if (key == TUI_KEY_F8) action = ACT_COPY;
-		else if (key == TUI_KEY_F9) action = ACT_PASTE;
-		else if (key == TUI_KEY_F10) action = ACT_EXIT;
-		else if (key == TUI_KEY_LEFT && cursor_position != 0ul) --cursor_position;
-		else if (key == TUI_KEY_RIGHT &&
-			 cursor_position < ke_store_length(&document)) ++cursor_position;
-		else if (key == TUI_KEY_UP) move_vertical(-1);
-		else if (key == TUI_KEY_DOWN) move_vertical(1);
-		else if (key == TUI_KEY_HOME)
-			cursor_position = ke_line_start(&document, cursor_position);
-		else if (key == TUI_KEY_END)
-			cursor_position = ke_line_end(&document, cursor_position);
-		else if (key == TUI_KEY_PGUP || key == TUI_KEY_PGDN) {
-			uint8_t rows = (uint8_t)(screen.rows - 3u);
-			while (rows-- != 0u)
-				move_vertical(key == TUI_KEY_PGUP ? -1 : 1);
-		} else if (key == TUI_KEY_INSERT) insert_mode = (uint8_t)!insert_mode;
-		else if (key == TUI_KEY_ESC && mark_active != 0u) {
-			mark_active = 0u; redraw = 1u;
-		} else if (key == TUI_KEY_DELETE) {
-			ke_pos_t first; ke_pos_t last; selection(&first, &last);
-			if (first != last) { erase_selection(0u); redraw = 1u; }
-			else if (cursor_position < ke_store_length(&document)) {
-				uint8_t removed = 0u;
-				(void)ke_store_byte(&document, cursor_position, &removed);
-				if (ke_history_edit_grouped(&history, &document,
-					cursor_position, 1ul, (const uint8_t *)0, 0u,
-					KE_GROUP_DELETE) == 0) {
-					modified = 1u;
-					redraw = removed == 10u ? 4u : 2u;
+		if (key >= 0x100u) {
+			/* The named keys share the high byte: one switch on
+			 * the low one. */
+			switch ((uint8_t)key) {
+			case (uint8_t)TUI_KEY_F1: action = run_menu(); break;
+			case (uint8_t)TUI_KEY_F2: action = ACT_SAVE; break;
+			case (uint8_t)TUI_KEY_F3: action = ACT_OPEN; break;
+			case (uint8_t)TUI_KEY_F4: action = ACT_FIND; break;
+			case (uint8_t)TUI_KEY_F5: action = ACT_FIND_NEXT; break;
+			case (uint8_t)TUI_KEY_F7:
+				if (mark_active != 0u) mark_active = 0u;
+				else { mark_active = 1u; mark_anchor = cursor_position; }
+				break;
+			case (uint8_t)TUI_KEY_F8: action = ACT_COPY; break;
+			case (uint8_t)TUI_KEY_F9: action = ACT_PASTE; break;
+			case (uint8_t)TUI_KEY_F10: action = ACT_EXIT; break;
+			case (uint8_t)TUI_KEY_LEFT:
+				if (cursor_position != 0ul) --cursor_position;
+				break;
+			case (uint8_t)TUI_KEY_RIGHT:
+				if (cursor_position < ke_store_length(&document))
+					++cursor_position;
+				break;
+			case (uint8_t)TUI_KEY_UP: move_vertical(-1); break;
+			case (uint8_t)TUI_KEY_DOWN: move_vertical(1); break;
+			case (uint8_t)TUI_KEY_HOME:
+				cursor_position = ke_line_start(&document,
+								cursor_position);
+				break;
+			case (uint8_t)TUI_KEY_END:
+				cursor_position = ke_line_end(&document,
+							      cursor_position);
+				break;
+			case (uint8_t)TUI_KEY_PGUP: move_page(-1); break;
+			case (uint8_t)TUI_KEY_PGDN: move_page(1); break;
+			case (uint8_t)TUI_KEY_INSERT:
+				insert_mode = (uint8_t)!insert_mode;
+				break;
+			case (uint8_t)TUI_KEY_DELETE:
+				if (old_first != old_last) {
+					erase_selection(0u);
+					view_edit = VIEW_REBUILD;
+				} else if (cursor_position < ke_store_length(&document)) {
+					uint8_t removed = 0u;
+					(void)ke_store_byte(&document, cursor_position,
+							    &removed);
+					if (ke_history_edit_grouped(&history, &document,
+						cursor_position, 1ul, (const uint8_t *)0,
+						0u, KE_GROUP_DELETE) == 0) {
+						modified = 1u;
+						view_edit = removed == 10u ? VIEW_JOIN :
+							    VIEW_INLINE;
+						delta = -1;
+					}
 				}
+				break;
+			default:
+				break;
 			}
+		} else if (key == TUI_KEY_ESC) {
+			mark_active = 0u;
 		} else if ((key == 8u || key == 127u) && cursor_position != 0ul) {
-			changed = cursor_position - 1ul;
+			ke_pos_t changed = cursor_position - 1ul;
 			uint8_t removed = 0u;
 			(void)ke_store_byte(&document, changed, &removed);
 			if (ke_history_edit_grouped(&history, &document, changed, 1ul,
@@ -1220,25 +1219,63 @@ int ke_ui_run(const char *initial_path)
 				    KE_GROUP_BACKSPACE) == 0) {
 				cursor_position = changed;
 				modified = 1u;
-				redraw = removed == 10u ? 4u : 2u;
+				if (removed != 10u) {
+					view_edit = VIEW_INLINE;
+					delta = -1;
+				} else if (row != 0u && row != KE_VIEW_NONE) {
+					view_edit = VIEW_JOIN;
+					--row;
+				} else {
+					view_edit = VIEW_REBUILD;
+				}
 			}
-		} else if (key == 13u || key == 10u) {
-			if (insert_byte(10u)) redraw = 3u;
-		} else if (key == 9u) {
-			ke_pos_t first; ke_pos_t last; selection(&first, &last);
-			if (insert_byte(9u)) redraw = first == last ? 2u : 1u;
-		} else if (key >= 32u && key <= 255u) {
-			ke_pos_t first; ke_pos_t last; selection(&first, &last);
-			if (insert_byte((uint8_t)key)) redraw = first == last ? 2u : 1u;
+		} else if (key == 13u || key == 10u || key == 9u || key >= 32u) {
+			uint8_t byte = key == 13u ? 10u : (uint8_t)key;
+			ke_pos_t length = ke_store_length(&document);
+
+			if (insert_byte(byte)) {
+				if (old_first != old_last) view_edit = VIEW_REBUILD;
+				else if (byte == 10u) {
+					view_edit = VIEW_NEWLINE;
+					if (ke_store_length(&document) == length)
+						view_edit = VIEW_REBUILD;
+				} else {
+					view_edit = VIEW_INLINE;
+					delta = (int8_t)(ke_store_length(&document) -
+							 length);
+				}
+			}
 		}
 		if (action != ACT_NONE) {
 			if (perform_action(action) != 0u) break;
-			redraw = 1u;
+			render_all();
+			continue;
 		}
-		if (redraw == 1u) render_all();
-		else render_after_motion(old_left, old_view_line,
-					 redraw == 0u ? 0u : (uint8_t)(redraw - 1u),
-					 changed);
+		tui_begin();
+		set_view_selection();
+		if (row == KE_VIEW_NONE && view_edit != VIEW_NONE)
+			view_edit = VIEW_REBUILD;
+		if (view_edit == VIEW_INLINE) ke_view_edit_inline(row, delta);
+		else if (view_edit == VIEW_NEWLINE) ke_view_newline(row, at);
+		else if (view_edit == VIEW_JOIN) ke_view_join(row);
+		else if (view_edit == VIEW_REBUILD) rebuild_view();
+		row = follow_cursor();
+		if (old_first != old_last && mark_active == 0u) {
+			/* The selection is gone: every row may have shown it. */
+			ke_view_draw_rows(0u, (uint8_t)(ke_view.rows - 1u));
+		} else if (mark_active != 0u) {
+			/* The anchor stays: only the rows the cursor crossed,
+			 * found again in the view as it is now. */
+			uint8_t old_row = ke_view_row_of(old_cursor);
+
+			if (old_row == KE_VIEW_NONE)
+				old_row = old_cursor < ke_view.row_start[0] ? 0u :
+					  (uint8_t)(ke_view.rows - 1u);
+			ke_view_draw_rows(old_row < row ? old_row : row,
+					  old_row < row ? row : old_row);
+		}
+		show_cursor(row);
+		(void)tui_end();
 	}
 	ke_history_dispose(&history);
 	ke_store_dispose(&document);

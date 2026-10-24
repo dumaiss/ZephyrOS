@@ -40,6 +40,7 @@ TUI_DEMO_EXE = os.path.join(ROOT, "build", "user", "tui_demo.exe")
 TUI_KEYS_EXE = os.path.join(ROOT, "build", "user", "tui_keys.exe")
 TUI_DIALOG_EXE = os.path.join(ROOT, "build", "user", "tui_dialog.exe")
 TUI_WIDE_EXE = os.path.join(ROOT, "build", "user", "tui_wide.exe")
+TUI_PUTWIDE_EXE = os.path.join(ROOT, "build", "user", "tui_putwide.exe")
 PRODUCTION = ("build", "konaos.bin")
 SERIAL = ("build-console-serial-selftest",
           "konaos-console-serial-selftest.bin")
@@ -465,7 +466,8 @@ class TuiSimBase(unittest.TestCase):
                   ("tui_demo.exe", TUI_DEMO_EXE),
                   ("tui_keys.exe", TUI_KEYS_EXE),
                   ("tui_dialog.exe", TUI_DIALOG_EXE),
-                  ("tui_wide.exe", TUI_WIDE_EXE))
+                  ("tui_wide.exe", TUI_WIDE_EXE),
+                  ("tui_putwide.exe", TUI_PUTWIDE_EXE))
         for name, path in extras:
             manifest["files"] = [entry for entry in manifest["files"]
                                  if entry["name"].lower() != name.lower()]
@@ -586,13 +588,13 @@ class TuiSimBase(unittest.TestCase):
         if self.SERIAL:
             z.hid = z.ioc_peer = IocCommandPeer()
             replay.start_kernel(z, host_sync=b"\xaa\x55")
-            for step in range(STEP_LIMIT):
-                replay.skip_delay(z)
-                z.step()
-                if step % 0x1FFF == 0:
-                    replay.pump(z)
-                    if SHELL_PROMPT.encode("ascii") in bytes(z.sio_tx):
-                        return replay, z
+
+            def tick(_step):
+                replay.pump(z)
+                return SHELL_PROMPT.encode("ascii") in bytes(z.sio_tx)
+
+            if replay.drive(z, STEP_LIMIT, tick=tick) is not None:
+                return replay, z
             raise AssertionError("the serial shell prompt did not appear")
         replay.boot_to_shell(z)
         return replay, z
@@ -618,10 +620,27 @@ class TuiSimBase(unittest.TestCase):
             z.wr((pending[0] + 7) & 0xFFFF, grid[1])
             self._grid_pending = None
 
+    @staticmethod
+    def _stream_entry(program):
+        """The program's `console_render` entry and the code bytes there
+        (an address alone could be another bank's code)."""
+        name = os.path.join(ROOT, "build", "user", program)
+        entry = read_symbols(os.path.join(name, program + ".map"))[
+            "_console_render"]
+        image = Path(name + ".exe").read_bytes()
+        offset = 36 + entry - 0x0100
+        return entry, image[offset:offset + 16]
+
     def _run(self, mode, keys=b"", late_keys=b"", late_marker=None,
              program="tui_test", expected=None, snapshot_codes=(),
-             grid=None, args=""):
+             grid=None, args="", streams=False):
+        """`streams`: also collect each RENDER stream the program submits,
+        as bytes, read at its `console_render` entry."""
         replay, z = self._boot()
+        stream_at = signature = None
+        collected = []
+        if streams:
+            stream_at, signature = self._stream_entry(program)
         self._grid_pending = None
         if not self.SERIAL:
             z.vdp.snapshot_codes = snapshot_codes
@@ -650,59 +669,80 @@ class TuiSimBase(unittest.TestCase):
                 expected = b"tui: PASS"
             else:
                 expected = ("tui: %s pass" % mode).encode("ascii")
-        for step in range(STEP_LIMIT):
+        state = {"armed": False, "init_command_start": command_start,
+                 "init_write_start": init_write_start, "late_sent": False}
+
+        def watch():
+            pcs = {self.dispatch}
+            if stream_at is not None:
+                pcs.add(stream_at)
+            if grid is not None and self._grid_pending is not None:
+                pcs.add(self._grid_pending[1])
+            return pcs
+
+        def hook(_step):
+            # The per-step checks, at the addresses they act on.
             length = self._write_length(z)
             if length is not None:
-                if armed:
+                if state["armed"]:
                     writes.append(length)
                 elif length == TUI_INIT_LENGTH:
-                    armed = True
-                    init_command_start = len(z.vdp.commands)
+                    state["armed"] = True
+                    state["init_command_start"] = len(z.vdp.commands)
                     if not self.SERIAL:
-                        init_write_start = len(z.vdp.vram_writes)
+                        state["init_write_start"] = len(z.vdp.vram_writes)
             render_length = self._render_length(z)
-            if render_length is not None and armed:
+            if render_length is not None and state["armed"]:
                 renders.append(render_length)
             if grid is not None:
                 self._grid_hook(z, grid)
-            replay.skip_delay(z)
-            z.step()
-            if step % 0x1FFF == 0:
-                replay.pump(z)
-                if self.SERIAL:
-                    lane = bytes(z.sio_tx[serial_start:])
-                    if (late_keys and not late_sent and
-                            late_marker is not None and
-                            late_marker.encode("ascii") in lane):
-                        z.sio_rx.extend(late_keys)
-                        late_sent = True
-                    if expected in lane:
-                        after = lane[lane.index(expected) + len(expected):]
-                        if mode != "batch" or TUI_SHUTDOWN in after:
-                            break
-                    if b"FAIL" in lane:
-                        raise AssertionError(
-                            "tui_test %s reported FAIL: %r"
-                            % (mode, lane[-200:]))
-                else:
-                    text = "".join(z.glyphs[glyph_start:])
-                    if (late_keys and not late_sent and
-                            late_marker is not None and
-                            late_marker in text):
-                        z.hid.hid_queue.extend(late_keys)
-                        late_sent = True
-                    if expected.decode("ascii") in text:
-                        if mode != "batch" or len(TUI_SHUTDOWN) in writes:
-                            break
-                    if "FAIL" in text:
-                        raise AssertionError(
-                            "tui_test %s reported FAIL: %r"
-                            % (mode, text[-200:]))
-        else:
+            if z.pc == stream_at and state["armed"] and bytes(
+                    z.rd((stream_at + i) & 0xFFFF)
+                    for i in range(len(signature))) == signature:
+                collected.append(bytes(z.rd((z.hl + i) & 0xFFFF)
+                                       for i in range(z.de)))
+            return watch()
+
+        def tick(_step):
+            replay.pump(z)
+            if self.SERIAL:
+                lane = bytes(z.sio_tx[serial_start:])
+                if (late_keys and not state["late_sent"] and
+                        late_marker is not None and
+                        late_marker.encode("ascii") in lane):
+                    z.sio_rx.extend(late_keys)
+                    state["late_sent"] = True
+                if expected in lane:
+                    after = lane[lane.index(expected) + len(expected):]
+                    if mode != "batch" or TUI_SHUTDOWN in after:
+                        return True
+                if b"FAIL" in lane:
+                    raise AssertionError(
+                        "tui_test %s reported FAIL: %r"
+                        % (mode, lane[-200:]))
+            else:
+                text = "".join(z.glyphs[glyph_start:])
+                if (late_keys and not state["late_sent"] and
+                        late_marker is not None and
+                        late_marker in text):
+                    z.hid.hid_queue.extend(late_keys)
+                    state["late_sent"] = True
+                if expected.decode("ascii") in text:
+                    if mode != "batch" or len(TUI_SHUTDOWN) in writes:
+                        return True
+                if "FAIL" in text:
+                    raise AssertionError(
+                        "tui_test %s reported FAIL: %r"
+                        % (mode, text[-200:]))
+            return False
+
+        if replay.drive(z, STEP_LIMIT, watch(), hook, tick=tick) is None:
             tail = (bytes(z.sio_tx[serial_start:]) if self.SERIAL
                     else "".join(z.glyphs[glyph_start:]))
             raise AssertionError("tui_test %s did not finish: %r"
                                  % (mode, tail[-200:]))
+        init_command_start = state["init_command_start"]
+        init_write_start = state["init_write_start"]
         replay.pump(z)
         return {
             "replay": replay,
@@ -714,6 +754,7 @@ class TuiSimBase(unittest.TestCase):
             "init_command_start": init_command_start,
             "init_write_start": init_write_start,
             "glyphs": "".join(z.glyphs[glyph_start:]),
+            "streams": collected,
         }
 
 
@@ -756,16 +797,27 @@ class TuiModeChecks:
         run = self._run("shift")
         self.assertIn("tui: shift pass", self._text(run))
 
-    def test_put_text_matches_putc_xy_records(self):
-        """The same screen drawn with tui_put_text and with tui_puts_xy
-        flushes the same render records."""
-        run = self._run("puttext")
+    def _assert_puttext_streams(self, run):
         self.assertIn("tui: puttext pass", self._text(run))
         if not self.SERIAL:
-            half = len(run["renders"]) // 2
-            self.assertTrue(half > 0, run["renders"])
-            self.assertEqual(run["renders"][:half],
-                             run["renders"][half:], run["renders"])
+            streams = run["streams"]
+            half = len(streams) // 2
+            self.assertTrue(half > 0 and len(streams) == 2 * half,
+                            [len(item) for item in streams])
+            self.assertEqual(streams[:half], streams[half:])
+
+    def test_put_text_matches_putc_xy_records(self):
+        """The same screen drawn with tui_put_text and with tui_puts_xy
+        flushes the same render streams, byte for byte, down to the grid's
+        last row."""
+        self._assert_puttext_streams(self._run("puttext", streams=True))
+
+    def test_put_text_matches_on_the_wide_capacity(self):
+        """The same equivalence on the 128-column cell map, drawn on the
+        console's own 85 x 26 grid: rows 24 and 25 at stride 128 sit at
+        dirty-map bytes 384 and 400, past any one-byte index."""
+        self._assert_puttext_streams(self._run(
+            "puttext", program="tui_putwide", streams=True))
 
     def test_pending_rows_skip_clean_flushes(self):
         """No-change flushes emit no span, and after one cell on row 20
@@ -1241,10 +1293,88 @@ class TestTuiV9958Screen(TuiModeChecks, TuiSimBase):
         run = self._run("foundation")
         self.assertIn("tui: PASS", run["glyphs"])
 
-    def test_timing_mode_runs(self):
-        """The scripted put_text/flush/scroll sequence completes."""
-        run = self._run("timing")
-        self.assertIn("tui: timing pass", self._text(run))
+    TIMED = ("_tui_put_text", "_tui_flush", "_tui_scroll_rows")
+
+    def _timed_calls(self, mode):
+        """Run tui_test `mode` and time every top-level call of TIMED:
+        T-states from the entry to the return, counted only while the PC
+        is in the program's bank (the console IPC and the driver are
+        excluded).  Returns [(name, tstates)] in call order."""
+        replay, z = self._boot()
+        name = os.path.join(ROOT, "build", "user", "tui_test")
+        symbols = read_symbols(os.path.join(name, "tui_test.map"))
+        image = Path(name + ".exe").read_bytes()
+        entries = {}
+        for symbol in self.TIMED:
+            address = symbols[symbol]
+            offset = 36 + address - 0x0100
+            entries[address] = (symbol, image[offset:offset + 8])
+        z.hid.hid_queue.extend(
+            ("/system/tui_test.exe %s\r" % mode).encode("ascii"))
+        expected = "tui: %s pass" % mode
+        glyph_start = len(z.glyphs)
+        calls = []
+        active = None
+        app_bank = None
+        for step in range(STEP_LIMIT):
+            pc = z.pc
+            if active is None and pc in entries:
+                symbol, signature = entries[pc]
+                if bytes(z.rd((pc + i) & 0xFFFF)
+                         for i in range(len(signature))) == signature:
+                    app_bank = z.bank_of(pc)
+                    active = [symbol, z.rd16(z.sp), z.sp, 0]
+            elif (active is not None and pc == active[1] and
+                  z.sp > active[2]):
+                calls.append((active[0], active[3]))
+                active = None
+            before = z.tstates
+            replay.skip_delay(z)
+            z.step()
+            if active is not None:
+                try:
+                    if z.bank_of(pc) == app_bank:
+                        active[3] += z.tstates - before
+                except SystemExit:
+                    pass
+            if step % 0x1FFF == 0:
+                replay.pump(z)
+                text = "".join(z.glyphs[glyph_start:])
+                if expected in text:
+                    return calls
+                if "FAIL" in text:
+                    self.fail("tui_test %s: %r" % (mode, text[-200:]))
+        self.fail("tui_test %s did not finish" % mode)
+
+    def test_timing_mode_meets_the_budgets(self):
+        """The fast-path budgets, in program-bank T-states: put_text over
+        85 equal and 85 new cells, a flush with two rows, with nothing
+        and with one cell pending, the 24-row scroll's model work and a
+        one-row scroll's."""
+        calls = self._timed_calls("timing")
+        puts = [t for name, t in calls if name == "_tui_put_text"]
+        scroll = [index for index, (name, _t) in enumerate(calls)
+                  if name == "_tui_scroll_rows"]
+        self.assertEqual(len(puts), 2, calls)
+        self.assertEqual(len(scroll), 2, calls)
+        last_put = max(index for index, (name, _t) in enumerate(calls)
+                       if name == "_tui_put_text")
+        flushes = [t for name, t in calls[last_put + 1:scroll[0]]
+                   if name == "_tui_flush"]
+        self.assertEqual(len(flushes), 3, calls)
+        print("tui timing: put equal %d new %d, flush rows %d none %d "
+              "one %d, scroll %d" % (puts[0], puts[1], flushes[0],
+                                     flushes[1], flushes[2],
+                                     calls[scroll[0]][1]))
+        self.assertLessEqual(puts[0], 12000, calls)
+        self.assertLessEqual(puts[1], 30000, calls)
+        self.assertLessEqual(flushes[1], 8000, calls)
+        self.assertLessEqual(flushes[2], 60000, calls)
+        self.assertLessEqual(calls[scroll[0]][1], 150000, calls)
+        # A one-row region moves no block: an LDIR/LDDR with BC = 0
+        # would copy 64 KiB on the board (the simulator charges its
+        # cost without the copy, so the cost is what shows it).
+        self.assertLessEqual(calls[scroll[1]][1], 40000, calls)
 
     def test_screen_matches_the_logical_model(self):
         run = self._run("screen")

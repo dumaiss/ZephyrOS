@@ -16,6 +16,7 @@
 #include "tui_internal.h"
 #include "kos/console.h"
 #include "kos/console_render.h"
+#include "klibc/string.h"
 
 #define TUI_SGR_NORMAL "\033[0m"
 #define TUI_SGR_REVERSE "\033[7m"
@@ -346,6 +347,20 @@ static int tui_render_send(uint8_t at)
 	return 0;
 }
 
+/* The first row at or after `row` with its pending flag set, or the
+ * screen's row count when none is. */
+static uint8_t tui_next_pending(uint8_t row)
+{
+	const uint8_t *flag = &tui_row_pending[row];
+	uint8_t rows = tui_state.screen.rows;
+
+	while (row < rows && *flag == 0u) {
+		++row;
+		++flag;
+	}
+	return row;
+}
+
 static int tui_flush_render(void)
 {
 	uint8_t at = tui_render_start();
@@ -366,17 +381,19 @@ static int tui_flush_render(void)
 	 * whole clean byte skips eight cells at once. */
 	for (kind = KCONSOLE_RENDER_TEXT;
 	     kind <= KCONSOLE_RENDER_INVERT; ++kind) {
-		for (row = 0u; row < tui_state.screen.rows; ++row) {
-			uint8_t *map = kind == KCONSOLE_RENDER_TEXT ?
-					tui_dirty : tui_invert;
-			uint16_t index = TUI_CELL_INDEX(0u, row);
-			uint8_t bits = map[(uint16_t)(index >> 3)];
-			uint8_t mask = (uint8_t)(1u <<
-						 (uint8_t)(index & 7u));
+		uint8_t *map = kind == KCONSOLE_RENDER_TEXT ?
+				tui_dirty : tui_invert;
+		/* Clean rows are skipped by a pointer scan; only a pending
+		 * row computes its first cell index. */
+		for (row = tui_next_pending(0u); row < tui_state.screen.rows;
+		     row = tui_next_pending((uint8_t)(row + 1u))) {
+			uint16_t index;
+			uint8_t bits;
+			uint8_t mask;
 
-			if (tui_row_pending[row] == 0u) {
-				continue;
-			}
+			index = TUI_CELL_INDEX(0u, row);
+			bits = map[(uint16_t)(index >> 3)];
+			mask = (uint8_t)(1u << (uint8_t)(index & 7u));
 			col = 0u;
 			while (col < tui_state.screen.cols) {
 				uint8_t start;
@@ -387,7 +404,7 @@ static int tui_flush_render(void)
 					/* Eight clean cells: the next
 					 * byte is eight cells on. */
 					col = (uint8_t)(col + 8u);
-					index = TUI_CELL_INDEX(col, row);
+					index = (uint16_t)(index + 8u);
 					bits = map[(uint16_t)(index >> 3)];
 					continue;
 				}
@@ -447,9 +464,7 @@ static int tui_flush_render(void)
 	/* Every walked row is now committed.  Clear its pending flag so the
 	 * next flush skips it; rows at or past the screen edge keep their
 	 * flags because their bits stay set. */
-	for (row = 0u; row < tui_state.screen.rows; ++row) {
-		tui_row_pending[row] = 0u;
-	}
+	memset(tui_row_pending, 0, tui_state.screen.rows);
 	return 0;
 }
 

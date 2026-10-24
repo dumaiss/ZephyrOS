@@ -387,7 +387,7 @@ $(BUILD)/konaos.probe.ihx $(BUILD)/konaos.probe.map: \
 		$(BUILD)/konaos.probe.lk
 	$(SDLDZ80) -f $(BUILD)/konaos.probe.lk
 
-.PHONY: all test check check-fast clean mod-test romfs-test exe-test \
+.PHONY: all test check check-fast clean sim-core mod-test romfs-test exe-test \
 	monitor-test ioc-test hid-test v9958-test sdk \
 	subsystem-selftest nucleus-selftest \
 	console-serial-selftest \
@@ -1109,11 +1109,15 @@ all: $(EXE_USER_ROOT)/sound.exe
 # links a stub instead, so its larger cell map stays inside the outcome
 # program's data window.
 $(eval $(call exe_program,tui_test,tests/tui,\
-	tui_test.c tui_modes.c,STACK=256,LIBS=tui_widgets:tui))
+	tui_test.c tui_modes.c tui_puttext.c,STACK=256,LIBS=tui_widgets:tui))
 # The same outcome program built for the wide capacity (TUI_GRID=128x35):
 # its `gridsize` and `shift` modes prove the archive the option selects.
 $(eval $(call exe_program,tui_wide,tests/tui,\
 	tui_test.c tui_modes_stub.c,STACK=256,LIBS=tui_widgets:tui,TUI_GRID=128x35))
+# The puttext equivalence mode on the wide capacity: its own program,
+# since tui_wide has no room left for it.
+$(eval $(call exe_program,tui_putwide,tests/tui,\
+	tui_putwide.c tui_puttext.c,STACK=256,LIBS=tui,TUI_GRID=128x35))
 
 $(eval $(call exe_program,tui_core_probe,tests/tui,\
 	tui_core_probe.c,STACK=256,LIBS=tui))
@@ -1122,7 +1126,8 @@ $(eval $(call exe_program,tui_widget_probe,tests/tui,\
 	tui_widget_probe.c,STACK=256,LIBS=tui_widgets:tui))
 
 all: $(EXE_USER_ROOT)/tui_test.exe $(EXE_USER_ROOT)/tui_core_probe.exe \
-	$(EXE_USER_ROOT)/tui_widget_probe.exe $(EXE_USER_ROOT)/tui_wide.exe
+	$(EXE_USER_ROOT)/tui_widget_probe.exe $(EXE_USER_ROOT)/tui_wide.exe \
+	$(EXE_USER_ROOT)/tui_putwide.exe
 
 # Standalone SDK TUI examples, built in-tree for the simulator acceptance
 # only.  They are not added to any store.
@@ -1477,9 +1482,28 @@ $(IMAGE): $(BUILD)/konaos.ihx $(BUILD)/konaos.map \
 $(MAME_IMAGE): $(IMAGE)
 	cp $< $@
 
+# --- simulator core ----------------------------------------------------------
+# The simulator's Z80 core in C (tests/simcore), the default the replays
+# run on; tests/z80sim.py loads it.  SIM_CORE selects the core for the
+# test targets: c, or python (the reference the C core is proven
+# against, tests/test_sim_core.py): `make check SIM_CORE=python`.  `all`
+# builds the library, so the application suites find it after `make`.
+
+SIM_CORE ?= $(or $(KOS_SIM_CORE),c)
+export KOS_SIM_CORE := $(SIM_CORE)
+SIM_CORE_LIB := build/sim/libz80core.so
+
+all: $(SIM_CORE_LIB)
+
+sim-core: $(SIM_CORE_LIB)
+
+$(SIM_CORE_LIB): tests/simcore/z80core.c tests/simcore/z80core.h
+	@mkdir -p $(dir $@)
+	cc -O2 -Wall -Wextra -shared -fPIC -o $@ tests/simcore/z80core.c
+
 # --- test --------------------------------------------------------------------
 
-test: all
+test: all $(SIM_CORE_LIB)
 	$(PYTHON) -m unittest discover -s tests -v
 	sha256sum $(IMAGE) $(MAME_IMAGE)
 	cmp $(IMAGE) $(MAME_IMAGE)
@@ -1526,7 +1550,7 @@ subsystem-selftest:
 # standard check always builds them.  Neither is part of a production
 # image: the demo lives in user/helloworld/ and exetest is an acceptance
 # program.
-check-fast: $(EXE_USER_ROOT)/hello.exe $(MODULES)/exetest.exe
+check-fast: $(EXE_USER_ROOT)/hello.exe $(MODULES)/exetest.exe $(SIM_CORE_LIB)
 	$(PYTHON) -m unittest discover -s tests -v
 	$(PYTHON) tools/mapcheck.py $(MAPCHECK_FLAGS) $(RESIDENCY_FLAGS) \
 		$(BUILD)/konaos.map \

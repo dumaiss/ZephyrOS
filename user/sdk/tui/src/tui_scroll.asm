@@ -143,6 +143,12 @@ _tui_scroll_rows::
 	call	__mulint		; DE = (height - 1) x stride
 	ld	(tui_scroll_n),de
 
+	; A one-row region moves nothing: LDIR/LDDR with BC = 0 would copy
+	; 64 KiB.
+	ld	a,d
+	or	e
+	jp	z,tui_scroll_attrs_done
+
 	; The character block: one LDIR for up, one LDDR for down.
 	ld	bc,(tui_scroll_n)
 	ld	hl,(tui_scroll_top)

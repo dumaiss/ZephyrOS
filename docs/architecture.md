@@ -1322,7 +1322,11 @@ packer. `make SYSTEM=<name>` builds an image; the named targets
   with the ledgers.
 - `make check` rebuilds from clean, proves the rebuild reproduces the same
   image, and runs the host tests and the production replay.
-- The simulator (`tests/z80sim.py`) replays images on the host. Physical
+- The simulator (`tests/z80sim.py`) replays images on the host. Its Z80
+  runs on a C core (`tests/simcore`, built by `make`); the Python core in
+  `tests/z80sim.py` is the reference the C core is checked against
+  instruction for instruction (`tests/test_sim_core.py`), selected with
+  `SIM_CORE=python` (`KOS_SIM_CORE` for a direct test run). Physical
   hardware stays authoritative for banking, the aperture, interrupt
   acknowledgement and timing, serial and IOC behaviour; `tools/serial_smoke.py`
   captures and checks a board's serial output.

@@ -15,6 +15,7 @@ are supplied separately (rom_pages) when a replay exercises ROMFS boot.
 Usage: sim.py <selftest-image> [start-pc] [trace]
 """
 
+import os
 import sys
 import collections
 
@@ -2558,6 +2559,9 @@ class Z80:
         self.vdp_peer = None
         # Optional sound-card peer on E0h-E4h; it records every write.
         self.sound_peer = None
+        # run(): the port whose write ends a run after its step.
+        self._stop_out_port = None
+        self._out_hit = False
 
     def accept_interrupt(self, vector):
         """Accept one maskable IM2 interrupt and fetch its linked target."""
@@ -2611,6 +2615,8 @@ class Z80:
         """Write one I/O port (the single port model for OUT forms)."""
         port &= 0xFF
         value &= 0xFF
+        if port == self._stop_out_port:
+            self._out_hit = True
         if port == 0x00:
             self.latch = value
         elif self.vdp_peer is not None and 0xA0 <= port <= 0xA4:
@@ -3064,6 +3070,35 @@ class Z80:
         # is blocked, and only then does the delay expire.
         if self.ei_delay and op != 0xFB:
             self.ei_delay -= 1
+
+    def run(self, limit, stops=None, delay=None, check_first=True,
+            out_port=None, halt=False):
+        """Up to `limit` iterations of: a stop check (PC in the StopSet
+        `stops`; not on the first iteration unless `check_first`), the
+        serial-connect skip (`delay` = (address, latch), as
+        `skip_serial_connect_delay`), then one `step()`.  After the step
+        the run also ends when it wrote `out_port`, or when `halt` is
+        set and the CPU is halted.  Returns (reason, iterations done):
+        "limit", "stop" (before that iteration), "out" or "halt" (after
+        it).  The C core runs the same loop natively."""
+        self._stop_out_port = out_port
+        try:
+            for n in range(limit):
+                if (stops is not None and (n or check_first) and
+                        self.pc in stops):
+                    return "stop", n
+                if (delay is not None and self.latch == delay[1] and
+                        self.pc == delay[0]):
+                    self.pc = self.pop16()
+                self._out_hit = False
+                self.step()
+                if self._out_hit:
+                    return "out", n + 1
+                if halt and self.halted:
+                    return "halt", n + 1
+            return "limit", limit
+        finally:
+            self._stop_out_port = None
 
     def _add16(self, hl, rr):
         res = hl + rr
@@ -3620,6 +3655,24 @@ class Ctc0Injector:
 SERIAL_CONNECT_DELAY_LATCH = 0x18
 
 
+class StopSet:
+    """PC stops for `Z80.run`: the addresses, and their 65536-bit map
+    for the C core."""
+
+    def __init__(self, addresses):
+        self.addresses = frozenset(address & 0xFFFF for address in addresses)
+        bits = bytearray(8192)
+        for address in self.addresses:
+            bits[address >> 3] |= 1 << (address & 7)
+        self.bits = bytes(bits)
+
+    def __contains__(self, pc):
+        return pc in self.addresses
+
+    def __bool__(self):
+        return bool(self.addresses)
+
+
 def skip_serial_connect_delay(cpu, delay_address):
     """Skip the kernel's ~1 s serial connect spin; True when it fired.
 
@@ -3637,6 +3690,23 @@ def skip_serial_connect_delay(cpu, delay_address):
         cpu.pc = cpu.pop16()
         return True
     return False
+
+
+# The core selection: KOS_SIM_CORE=c (the default: the C core,
+# tests/simcore, built by `make` or `make sim-core`) or python (the
+# reference it is proven against).  `Z80` is the selected class;
+# `PythonZ80` is always the Python core.
+PythonZ80 = Z80
+SIM_CORE = os.environ.get("KOS_SIM_CORE", "c")
+if SIM_CORE == "c":
+    if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from simcore.core import make_core_class
+    Z80 = make_core_class(PythonZ80, Ctc,
+                          (ONE_BYTE_T, ED_T, DD_T, ED_BLOCK,
+                           INTERRUPT_TSTATES))
+elif SIM_CORE != "python":
+    raise RuntimeError("KOS_SIM_CORE=%s: expected python or c" % SIM_CORE)
 
 
 def read_symbols(map_path):

@@ -10,55 +10,13 @@
 #include "tui.h"
 #include "kos/console_render.h"
 
+int puttext_mode(void);
+
 static int fail(const char *where, int result)
 {
 	printf("tui: %s FAIL %d\r\n", where, result);
 	tui_shutdown();
 	return 1;
-}
-
-/* puttext: the same screen drawn once with tui_put_text and once with
- * tui_puts_xy, over mixed attributes, already-equal cells, an
- * attribute-only change and a row clipped by a window.  The replay
- * compares the two flushes' render records byte for byte. */
-static int puttext_mode(void)
-{
-	if (tui_init() < 0) {
-		printf("tui: puttext FAIL init\r\n");
-		return 1;
-	}
-	if (tui_window(2, 2, 30, 8) != 0) {
-		return fail("puttext window", 0);
-	}
-	if (tui_put_text(0, 0, "HELLO", 5, 0) != 0 ||
-	    tui_put_text(3, 1, "ROW-ONE", 7, 1) != 0 ||
-	    tui_put_text(25, 2, "CLIPPED-AWAY", 12, 0) != 0 ||
-	    tui_put_text(3, 1, "ROW-ONE", 7, 0) != 0 ||
-	    tui_put_text(0, 0, "HELLO", 5, 0) != 0) {
-		return fail("puttext draw a", 0);
-	}
-	if (tui_set_attr(1) != 0 || tui_flush() != 0) {
-		return fail("puttext flush a", 0);
-	}
-	printf("tui: puttext phase A\r\n");
-	tui_shutdown();
-	if (tui_init() < 0 || tui_window(2, 2, 30, 8) != 0) {
-		return fail("puttext restart", 0);
-	}
-	if (tui_set_attr(0) != 0 || tui_puts_xy(0, 0, "HELLO") != 5 ||
-	    tui_set_attr(1) != 0 || tui_puts_xy(3, 1, "ROW-ONE") != 7 ||
-	    tui_set_attr(0) != 0 || tui_puts_xy(25, 2, "CLIPPED-AWAY") != 12 ||
-	    tui_set_attr(0) != 0 || tui_puts_xy(3, 1, "ROW-ONE") != 7 ||
-	    tui_set_attr(0) != 0 || tui_puts_xy(0, 0, "HELLO") != 5) {
-		return fail("puttext draw b", 0);
-	}
-	if (tui_set_attr(1) != 0 || tui_flush() != 0) {
-		return fail("puttext flush b", 0);
-	}
-	printf("tui: puttext phase B\r\n");
-	tui_shutdown();
-	printf("tui: puttext pass\r\n");
-	return 0;
 }
 
 /* pending: a no-change flush emits no span, and after one putc_xy on
@@ -116,6 +74,10 @@ static int timing_mode(void)
 	}
 	if (tui_scroll_rows(0u, 24u, TUI_SCROLL_UP) != 0) {
 		return fail("timing scroll", 0);
+	}
+	/* A one-row region: its model moves no block. */
+	if (tui_scroll_rows(5u, 1u, TUI_SCROLL_UP) != 0) {
+		return fail("timing scroll one", 0);
 	}
 	printf("tui: timing pass\r\n");
 	tui_shutdown();

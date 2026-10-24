@@ -98,13 +98,6 @@ static int locate(struct ke_store *store, ke_pos_t at,
 	return KE_STORE_EINVAL;
 }
 
-/* A change at `at`: the lines below it are what the owner may still rely
- * on (low_edit). */
-static void note_change(struct ke_store *store, ke_pos_t at)
-{
-	if (at < store->low_edit) store->low_edit = at;
-}
-
 static uint8_t physical_in_use(const struct ke_store *store, uint8_t physical)
 {
 	uint8_t i;
@@ -252,7 +245,6 @@ int ke_store_init(struct ke_store *store)
 	if (store == (struct ke_store *)0) return KE_STORE_EINVAL;
 	memset(store, 0, sizeof(*store));
 	store->cache_page = KE_NO_PAGE;
-	store->low_edit = KE_POS_NONE;
 	for (i = 0u; i < KE_OBJECT_COUNT; ++i) {
 		handle = ke_xmem_alloc(KE_OBJECT_SIZE, 0u);
 		if (handle < 0) {
@@ -334,23 +326,44 @@ int ke_store_read(struct ke_store *store, ke_pos_t at, void *buffer,
 	return KE_STORE_OK;
 }
 
-/* The bytes equal to `value` in [from, to), read 32 at a time. */
+int ke_store_span(struct ke_store *store, ke_pos_t at, const uint8_t **page,
+		  uint16_t *offset, uint16_t *page_length)
+{
+	uint8_t index;
+	int result;
+
+	if (store == (struct ke_store *)0 || at >= store->length)
+		return KE_STORE_EINVAL;
+	result = locate(store, at, &index, offset);
+	if (result != KE_STORE_OK) return result;
+	result = load_page(store, index);
+	if (result != KE_STORE_OK) return result;
+	*page = store->cache;
+	*page_length = store->page_length[index];
+	return KE_STORE_OK;
+}
+
+/* The bytes equal to `value` in [from, to), a page span at a time. */
 uint32_t ke_store_count(struct ke_store *store, ke_pos_t from, ke_pos_t to,
 			uint8_t value)
 {
 	uint32_t count = 0ul;
-	uint8_t chunk[32];
 
 	while (from < to) {
-		uint8_t n = 32u;
-		const uint8_t *at = chunk;
+		const uint8_t *page;
+		uint16_t offset;
+		uint16_t length;
+		uint16_t n;
+		uint16_t i;
 
-		if (to - from < 32ul) n = (uint8_t)(to - from);
-		if (ke_store_read(store, from, chunk, n) != KE_STORE_OK) break;
+		if (ke_store_span(store, from, &page, &offset, &length) !=
+		    KE_STORE_OK) break;
+		n = (uint16_t)(length - offset);
+		if (to - from < (ke_pos_t)n) n = (uint16_t)(to - from);
+		page += offset;
+		for (i = 0u; i < n; ++i)
+			if (page[i] == value) ++count;
 		from += n;
-		do {
-			if (*at++ == value) ++count;
-		} while (--n != 0u);
 	}
 	return count;
 }
@@ -410,7 +423,6 @@ int ke_store_insert(struct ke_store *store, ke_pos_t at,
 		return KE_STORE_EINVAL;
 	if (store->length + (ke_pos_t)length > KE_DOCUMENT_CAPACITY)
 		return KE_STORE_ENOSPC;
-	if (length != 0u) note_change(store, at);
 	for (i = 0u; i < length; ++i) {
 		result = insert_byte(store, at + i, source[i]);
 		if (result != KE_STORE_OK) return result;
@@ -435,7 +447,6 @@ int ke_store_delete(struct ke_store *store, ke_pos_t at, ke_pos_t length)
 {
 	if (store == (struct ke_store *)0 || at > store->length ||
 	    length > store->length - at) return KE_STORE_EINVAL;
-	if (length != 0ul) note_change(store, at);
 	while (length != 0ul) {
 		uint8_t page;
 		uint16_t offset;
@@ -478,6 +489,5 @@ int ke_store_replace_byte(struct ke_store *store, ke_pos_t at, uint8_t value)
 	if (result != KE_STORE_OK) return result;
 	store->cache[offset] = value;
 	store->cache_dirty = 1u;
-	if (at < store->low_edit) store->low_edit = at;
 	return KE_STORE_OK;
 }

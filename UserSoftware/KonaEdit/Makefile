@@ -36,7 +36,7 @@ include $(KOS_SDK_ROOT)/mk/kos.mk
 
 EXE_CFLAGS += --opt-code-size --max-allocs-per-node 50000
 
-$(eval $(call exe_program,konaedit,src,main.c ke_store.c ke_platform.c ke_history.c ke_text.c ke_file.c ke_widgets.c ke_ui.c,STACK=1024,LIBS=tui))
+$(eval $(call exe_program,konaedit,src,main.c ke_store.c ke_platform.c ke_history.c ke_text.c ke_file.c ke_widgets.c ke_view.c ke_ui.c,STACK=1024,LIBS=tui))
 
 .PHONY: all clean test
 .DEFAULT_GOAL := all
