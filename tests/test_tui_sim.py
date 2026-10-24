@@ -749,6 +749,32 @@ class TuiModeChecks:
         self.assertIn("tui: keyreset primed", self._text(run))
         self.assertIn("tui: keyreset pass", self._text(run))
 
+    def test_scroll_rows_shift_the_logical_model(self):
+        """Every full-width region scroll permutes the saved cell map
+        exactly like the row permutation (skipped when the console has no
+        semantic scroll support)."""
+        run = self._run("shift")
+        self.assertIn("tui: shift pass", self._text(run))
+
+    def test_put_text_matches_putc_xy_records(self):
+        """The same screen drawn with tui_put_text and with tui_puts_xy
+        flushes the same render records."""
+        run = self._run("puttext")
+        self.assertIn("tui: puttext pass", self._text(run))
+        if not self.SERIAL:
+            half = len(run["renders"]) // 2
+            self.assertTrue(half > 0, run["renders"])
+            self.assertEqual(run["renders"][:half],
+                             run["renders"][half:], run["renders"])
+
+    def test_pending_rows_skip_clean_flushes(self):
+        """No-change flushes emit no span, and after one cell on row 20
+        only row 20's span goes out (plus the trailing STATE sync)."""
+        run = self._run("pending")
+        self.assertIn("tui: pending pass", self._text(run))
+        if not self.SERIAL:
+            self.assertEqual(run["renders"], [17])
+
     def _require_example(self, path):
         if not os.path.isfile(path):
             self.skipTest("%s has not been built" % path)
@@ -786,9 +812,18 @@ class TuiModeChecks:
         same = self._run("flushsame")
         row = self._run("flushrow")
         if self.SERIAL:
-            full = full["writes"][:-1]
-            same = same["writes"][:-1]
-            row = row["writes"][:-1]
+            def strip_tail(writes):
+                """Drop the trailing pass printf (20/21 bytes) and any
+                shutdown-reset write the faster flush lets the capture
+                see; the timing shifts with each build."""
+                writes = list(writes)
+                while writes and writes[-1] in (15, 20, 21):
+                    writes.pop()
+                return writes
+
+            full = strip_tail(full["writes"])
+            same = strip_tail(same["writes"])
+            row = strip_tail(row["writes"])
             self.assertEqual(full, [126, 7, 112, 27, 53, 96, 6])
             self.assertEqual(same, full)
             self.assertEqual(row, full + [17])
@@ -1205,6 +1240,11 @@ class TestTuiV9958Screen(TuiModeChecks, TuiSimBase):
     def test_foundation_still_passes(self):
         run = self._run("foundation")
         self.assertIn("tui: PASS", run["glyphs"])
+
+    def test_timing_mode_runs(self):
+        """The scripted put_text/flush/scroll sequence completes."""
+        run = self._run("timing")
+        self.assertIn("tui: timing pass", self._text(run))
 
     def test_screen_matches_the_logical_model(self):
         run = self._run("screen")

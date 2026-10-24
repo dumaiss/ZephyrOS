@@ -78,13 +78,18 @@ tui_puts("text");
 tui_write(buffer, length);
 tui_putc_xy(x, y, 'A');
 tui_puts_xy(x, y, "text");
+tui_put_text(x, y, glyphs, length, attr); /* literal row, one attribute */
 tui_printf("%u", value);       /* optional formatter member */
 tui_printf_xy(x, y, "%s", text);
 ```
 
 Ordinary text is clipped to the active window.  The `_xy` forms use a local
 drawing cursor and leave the logical cursor alone; the other forms advance
-the logical cursor.  Control bytes follow these rules:
+the logical cursor.  `tui_put_text()` stores `length` literal glyph bytes
+with one attribute, exactly like `length` calls to `tui_putc_xy()` with that
+attribute, but every byte is stored as itself: control bytes have no cursor
+effect, the cursor does not move, and cells past the window's right edge are
+clipped.  Control bytes follow these rules:
 
 | byte | effect |
 |---|---|

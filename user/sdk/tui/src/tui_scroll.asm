@@ -5,42 +5,51 @@
 ;   sdcccall(1): A = top, L = height, direction is one byte on the stack.
 ;
 ; This is an opt-in archive member.  It flushes pending cells, submits one
-; ten-byte SCROLL render transaction, then shifts the clean logical cell map.
-; The small persistent stream doubles as scratch after the transaction; libtui
-; is deliberately non-reentrant, like the rest of its static screen model.
+; ten-byte SCROLL render transaction, then shifts the clean logical cell map:
+; the characters move as one (height - 1) x stride block (LDIR, or LDDR for
+; down) and the 4-bit-per-cell attributes move as half that block (the even
+; stride keeps every row on an attribute-byte boundary).  The exposed row
+; holds spaces in the current attribute across the screen width; the dirty
+; and invert maps stay clear.  The small persistent stream doubles as
+; scratch after the transaction; libtui is deliberately non-reentrant, like
+; the rest of its static screen model.
 ; -----------------------------------------------------------------------------
 
 	.module tui_scroll
 	.globl _tui_scroll_rows
 	.globl _tui_flush
 	.globl _console_render
-	.globl _tui_insert_line
-	.globl _tui_delete_line
+	.globl __mulint
 	.globl _tui_state
+	.globl _tui_chars
+	.globl _tui_attrs
 
-; Stable private tui_state offsets.  model_only is last so existing offsets
+; Stable private tui_state offsets.  stride is last so existing offsets
 ; stay unchanged.
 TUI_INITIALIZED       = 0
 TUI_SCREEN_COLS       = 1
 TUI_SCREEN_ROWS       = 2
-TUI_WINDOW_X          = 3
-TUI_WINDOW_Y          = 4
-TUI_WINDOW_W          = 5
-TUI_WINDOW_H          = 6
-TUI_CURSOR_X          = 7
-TUI_CURSOR_Y          = 8
 TUI_ATTR              = 11
 TUI_RENDER_SUPPORT    = 36
-TUI_MODEL_ONLY        = 37
+TUI_STRIDE            = 38
 
 KCONSOLE_RENDER_VERSION     = 1
 KCONSOLE_RENDER_SCROLL      = 4
 KCONSOLE_RENDER_SCROLL_SIZE = 6
-TUI_SCROLL_DOWN              = 1
 
 	.area _DATA
 tui_scroll_stream:
 	.ds 10
+tui_scroll_top:
+	.ds 2   ; top x stride, the region's first cell
+tui_scroll_n:
+	.ds 2   ; (height - 1) x stride cells
+tui_scroll_parity:
+	.ds 1   ; the exposed row's cell nibble parity
+tui_scroll_count:
+	.ds 2   ; the exposed row's remaining cells
+tui_scroll_attr:
+	.ds 1   ; the exposed row's attribute
 
 	.area _CODE
 
@@ -75,7 +84,7 @@ _tui_scroll_rows::
 	cp	b
 	jp	c,tui_scroll_einval
 	ld	a,(tui_scroll_stream+8)
-	cp	#TUI_SCROLL_DOWN+1
+	cp	#2
 	jp	nc,tui_scroll_einval
 
 	call	_tui_flush
@@ -113,42 +122,190 @@ _tui_scroll_rows::
 	cp	#10
 	jp	nz,tui_scroll_eio
 
-	; Preserve the caller's window and logical cursor in bytes 0..5, install
-	; the absolute full-width scroll region, and reuse the established line
-	; operation under model_only.  The successful hardware transaction has
-	; already made the corresponding pixels visible, so no dirty cells are
-	; scheduled.
-	ld	hl,#_tui_state+TUI_WINDOW_X
-	ld	de,#tui_scroll_stream
-	ld	bc,#6
-	ldir
-	xor	a
-	ld	(_tui_state+TUI_WINDOW_X),a
+	; The hardware transaction has already made the pixels visible, so
+	; the clean model moves without scheduling any dirty cell.  Compute
+	; the region geometry once: stride, top x stride and the block size.
+	ld	a,(_tui_state+TUI_STRIDE)
+	ld	e,a
+	ld	d,#0
 	ld	a,(tui_scroll_stream+6)
-	ld	(_tui_state+TUI_WINDOW_Y),a
-	ld	a,(_tui_state+TUI_SCREEN_COLS)
-	ld	(_tui_state+TUI_WINDOW_W),a
+	ld	l,a
+	ld	h,#0
+	call	__mulint		; DE = top x stride
+	ld	(tui_scroll_top),de
 	ld	a,(tui_scroll_stream+7)
-	ld	(_tui_state+TUI_WINDOW_H),a
-	xor	a
-	ld	(_tui_state+TUI_CURSOR_X),a
-	ld	(_tui_state+TUI_CURSOR_Y),a
-	inc	a
-	ld	(_tui_state+TUI_MODEL_ONLY),a
+	dec	a
+	ld	l,a
+	ld	h,#0
+	ld	a,(_tui_state+TUI_STRIDE)
+	ld	e,a
+	ld	d,#0
+	call	__mulint		; DE = (height - 1) x stride
+	ld	(tui_scroll_n),de
+
+	; The character block: one LDIR for up, one LDDR for down.
+	ld	bc,(tui_scroll_n)
+	ld	hl,(tui_scroll_top)
+	ld	de,#_tui_chars
+	add	hl,de
 	ld	a,(tui_scroll_stream+8)
 	or	a
-	jr	nz,tui_scroll_model_down
-	call	_tui_delete_line
-	jr	tui_scroll_model_done
-tui_scroll_model_down:
-	call	_tui_insert_line
-tui_scroll_model_done:
-	xor	a
-	ld	(_tui_state+TUI_MODEL_ONLY),a
-	ld	hl,#tui_scroll_stream
-	ld	de,#_tui_state+TUI_WINDOW_X
-	ld	bc,#6
+	jr	nz,tui_scroll_chars_down
+	; Up: destination is the region's top row, source one stride below.
+	push	hl			; destination base
+	ld	a,(_tui_state+TUI_STRIDE)
+	add	a,l
+	ld	l,a
+	ld	a,h
+	adc	a,#0
+	ld	h,a			; HL = source base
+	pop	de			; DE = destination base
 	ldir
+	jr	tui_scroll_attrs
+
+tui_scroll_chars_down:
+	; Down: source is the region's top row, destination one stride below.
+	push	hl			; source base
+	add	hl,bc
+	dec	hl			; HL = source end
+	pop	de			; DE = source base
+	ld	a,(_tui_state+TUI_STRIDE)
+	add	a,e
+	ld	e,a
+	ld	a,d
+	adc	a,#0
+	ld	d,a			; DE = destination base
+	ex	de,hl			; DE = source end, HL = destination base
+	add	hl,bc
+	dec	hl			; HL = destination end
+	ex	de,hl			; DE = destination end, HL = source end
+	lddr
+
+tui_scroll_attrs:
+	; The stride is even, so every row starts on an attribute-byte
+	; boundary: the attributes move as one (height - 1) x stride / 2
+	; byte block, LDIR for up and LDDR for down.
+	ld	hl,(tui_scroll_n)
+	srl	h
+	rr	l
+	ld	b,h
+	ld	c,l			; BC = N / 2
+	ld	a,(tui_scroll_stream+8)
+	or	a
+	jr	nz,tui_scroll_attrs_down
+	ld	hl,(tui_scroll_top)
+	srl	h
+	rr	l			; HL = top x stride / 2
+	ld	de,#_tui_attrs
+	add	hl,de			; HL = destination byte
+	push	hl
+	ld	a,(_tui_state+TUI_STRIDE)
+	srl	a
+	add	a,l
+	ld	l,a
+	ld	a,h
+	adc	a,#0
+	ld	h,a			; HL = source byte
+	pop	de			; DE = destination byte
+	ldir
+	jr	tui_scroll_attrs_done
+
+tui_scroll_attrs_down:
+	ld	hl,(tui_scroll_top)
+	srl	h
+	rr	l			; HL = top x stride / 2
+	ld	de,#_tui_attrs
+	add	hl,de			; HL = source byte
+	push	hl
+	ld	a,(_tui_state+TUI_STRIDE)
+	srl	a
+	add	a,l
+	ld	l,a
+	ld	a,h
+	adc	a,#0
+	ld	h,a			; HL = destination byte
+	pop	de			; DE = source byte
+	ex	de,hl			; DE = destination, HL = source
+	add	hl,bc
+	dec	hl			; HL = source end
+	ex	de,hl			; DE = source end, HL = destination
+	add	hl,bc
+	dec	hl			; HL = destination end
+	ex	de,hl			; DE = destination end, HL = source end
+	lddr
+
+tui_scroll_attrs_done:
+	; Blank the exposed row: spaces in the current attribute across the
+	; screen width.  The row is top + height - 1 for up, top for down.
+	ld	a,(tui_scroll_stream+8)
+	or	a
+	jr	nz,tui_scroll_blank_down
+	ld	a,(tui_scroll_stream+6)
+	ld	b,a
+	ld	a,(tui_scroll_stream+7)
+	add	a,b
+	dec	a
+	jr	tui_scroll_blank
+tui_scroll_blank_down:
+	ld	a,(tui_scroll_stream+6)
+tui_scroll_blank:
+	ld	l,a
+	ld	h,#0
+	ld	a,(_tui_state+TUI_STRIDE)
+	ld	e,a
+	ld	d,#0
+	call	__mulint		; DE = row x stride
+	ld	a,e
+	and	#0x01
+	ld	(tui_scroll_parity),a
+	ld	hl,#_tui_chars
+	add	hl,de
+	ex	de,hl			; DE = characters, HL = row x stride
+	srl	h
+	rr	l
+	ld	bc,#_tui_attrs
+	add	hl,bc			; HL = attribute byte
+	ld	a,(_tui_state+TUI_SCREEN_COLS)
+	ld	(tui_scroll_count),a
+	ld	a,(_tui_state+TUI_ATTR)
+	ld	(tui_scroll_attr),a
+
+tui_scroll_blank_loop:
+	ld	a,#0x20
+	ld	(de),a
+	inc	de
+	ld	a,(tui_scroll_parity)
+	or	a
+	jr	nz,tui_scroll_blank_high
+	ld	a,(tui_scroll_attr)
+	and	#0x0f
+	ld	b,a
+	ld	a,(hl)
+	and	#0xf0
+	or	b
+	ld	(hl),a
+	jr	tui_scroll_blank_par
+tui_scroll_blank_high:
+	ld	a,(tui_scroll_attr)
+	rlca
+	rlca
+	rlca
+	rlca
+	and	#0xf0
+	ld	b,a
+	ld	a,(hl)
+	and	#0x0f
+	or	b
+	ld	(hl),a
+	inc	hl
+tui_scroll_blank_par:
+	ld	a,(tui_scroll_parity)
+	xor	#0x01
+	ld	(tui_scroll_parity),a
+	ld	a,(tui_scroll_count)
+	dec	a
+	ld	(tui_scroll_count),a
+	jr	nz,tui_scroll_blank_loop
 
 tui_scroll_ok:
 	ld	de,#0

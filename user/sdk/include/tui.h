@@ -88,6 +88,17 @@ int tui_putc_xy(uint8_t x, uint8_t y, char ch);
 int tui_puts_xy(uint8_t x, uint8_t y, const char *text);
 
 /*
+ * Write `length` literal glyph bytes at a window-relative position with
+ * one attribute.  Every byte is stored as itself: control bytes have no
+ * cursor effect, the cursor does not move, and cells past the window's
+ * right edge are clipped.  The effect is that of `length` calls to
+ * tui_putc_xy() with `tui_set_attr(attr)` in effect.  Returns 0, or
+ * -KOS_EINVAL before tui_init() or for a null `text`.
+ */
+int tui_put_text(uint8_t x, uint8_t y, const char *text, uint8_t length,
+		 uint8_t attr);
+
+/*
  * Optional convenience layer.
  * This may be compiled separately if formatted I/O size becomes undesirable.
  */

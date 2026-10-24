@@ -33,3 +33,4 @@ void tui_priv_store(uint16_t index, uint8_t ch, uint8_t attr)
 uint8_t tui_dirty[TUI_DIRTY_BYTES];
 uint8_t tui_invert[TUI_DIRTY_BYTES];
 uint8_t tui_run[TUI_RUN_MAX];
+uint8_t tui_row_pending[TUI_MAX_ROWS];

@@ -6,6 +6,14 @@
  *   foundation  lifecycle, geometry, error and transaction rules;
  *   batch       one full dirty row, an unchanged redraw and transparent
  *               cursor synchronization;
+ *   puttext     the same screen drawn with tui_put_text and with
+ *               tui_puts_xy: the replay compares the render records;
+ *   shift       distinct per-cell grids shifted by tui_scroll_rows,
+ *               verified with tui_save after every scroll;
+ *   pending     clean rows skipped: a no-change flush emits no span,
+ *               one putc_xy on row 20 emits only row 20's spans;
+ *   timing      scripted tui_put_text, tui_flush and tui_scroll_rows
+ *               calls timed by the replay against the budgets;
  *   invert      a normal/reverse-only text transition in both directions;
  *   invertspan  two separate attribute-only spans in one render request;
  *   renderboundary  a record header crossing the 64-byte staging chunk;
@@ -48,6 +56,48 @@ static char big_row[90];
 static uint8_t render_stream[KOS_IPC_DESC_MAX];
 static char render_row[86];
 
+/* The scroll-shift mode's one-row buffers and its expected row map: the
+ * source row each screen row carries, or SHIFT_BLANK with its attribute. */
+static struct tui_cell shift_saved[128];
+static int8_t shift_src[35];
+static uint8_t shift_battr[35];
+static uint8_t shift_cols;
+static uint8_t shift_rows_count;
+static uint8_t shift_rem;      /* running 0..93 glyph offset */
+static uint16_t shift_row_off[35]; /* src row's first-cell offset */
+#define SHIFT_BLANK (-1)
+
+/* 16-bit remainder by 94 without pulling in the signed division
+ * helpers: the shift grids must not drag extra arithmetic members into
+ * the budgeted test program. */
+static void shift_set_rem(uint16_t v)
+{
+	while (v >= 94u) {
+		v -= 94u;
+	}
+	shift_rem = (uint8_t)v;
+}
+
+/* Recompute each row's first-cell offset from the row permutation. */
+static void shift_rebase(void)
+{
+	int y;
+
+	for (y = 0; y < (int)shift_rows_count; ++y) {
+		if (shift_src[y] == SHIFT_BLANK) {
+			shift_row_off[y] = 0u;
+		} else {
+			uint16_t v = 0u;
+			uint8_t i;
+
+			for (i = 0u; i < (uint8_t)shift_src[y]; ++i) {
+				v += shift_cols;
+			}
+			shift_row_off[y] = v;
+		}
+	}
+}
+
 static int fail(const char *where, int result)
 {
 	printf("tui: %s FAIL %d\r\n", where, result);
@@ -66,6 +116,7 @@ static int foundation(void)
 	    tui_get_size(&size) != -KOS_EINVAL ||
 	    tui_flush() != -KOS_EINVAL ||
 	    tui_scroll_rows(0u, 1u, TUI_SCROLL_UP) != -KOS_EINVAL ||
+	    tui_put_text(0, 0, "x", 1, 0) != -KOS_EINVAL ||
 	    tui_key_pending() != -KOS_EINVAL ||
 	    tui_pollkey() != TUI_KEY_NONE ||
 	    tui_getkey() != TUI_KEY_NONE ||
@@ -105,6 +156,7 @@ static int foundation(void)
 	if (tui_puts((const char *)0) != -KOS_EINVAL ||
 	    tui_puts_xy(0, 0, (const char *)0) != -KOS_EINVAL ||
 	    tui_write((const char *)0, 1u) != -KOS_EINVAL ||
+	    tui_put_text(0, 0, (const char *)0, 1u, 0u) != -KOS_EINVAL ||
 	    tui_printf((const char *)0) != -KOS_EINVAL ||
 	    tui_printf_xy(0, 0, (const char *)0) != -KOS_EINVAL ||
 	    tui_write((const char *)0, 0u) != 0) {
@@ -1675,6 +1727,183 @@ static int widgets_mode(void)
 }
 
 
+/* shift: fill the screen with a distinct character and attribute per
+ * cell, then scroll several regions up and down; tui_save of the full
+ * screen must equal the row-permuted grid after every scroll. */
+static void shift_fill(void)
+{
+	int x;
+	int y;
+	uint16_t base = 0u;
+
+	for (y = 0; y < (int)shift_rows_count; ++y) {
+		shift_set_rem(base);
+		for (x = 0; x < (int)shift_cols; ++x) {
+			char ch = (char)(0x21 + shift_rem);
+
+			if (tui_set_attr((uint8_t)((x + y) & 1)) != 0 ||
+			    tui_putc_xy((uint8_t)x, (uint8_t)y, ch) != 1) {
+				fail("shift fill", 0);
+				return;
+			}
+			++shift_rem;
+			if (shift_rem == 94u) {
+				shift_rem = 0u;
+			}
+		}
+		base += shift_cols;
+	}
+	shift_rebase();
+}
+
+static void shift_apply(uint8_t top, uint8_t height, uint8_t direction,
+			uint8_t attr)
+{
+	int y;
+
+	if (direction == TUI_SCROLL_UP) {
+		for (y = top; (uint8_t)(y + 1) < (uint8_t)(top + height); ++y) {
+			shift_src[y] = shift_src[y + 1];
+			shift_battr[y] = shift_battr[y + 1];
+		}
+		shift_src[top + height - 1] = SHIFT_BLANK;
+		shift_battr[top + height - 1] = attr;
+	} else {
+		for (y = top + height - 1; y > top; --y) {
+			shift_src[y] = shift_src[y - 1];
+			shift_battr[y] = shift_battr[y - 1];
+		}
+		shift_src[top] = SHIFT_BLANK;
+		shift_battr[top] = attr;
+	}
+	shift_rebase();
+}
+
+static void shift_cell(uint8_t x, uint8_t y, uint8_t *ch, uint8_t *attr)
+{
+	if (shift_src[y] == SHIFT_BLANK) {
+		*ch = 0x20u;
+		*attr = shift_battr[y];
+	} else {
+		if (x == 0u) {
+			shift_set_rem(shift_row_off[y]);
+		}
+		*ch = (uint8_t)(0x21 + shift_rem);
+		++shift_rem;
+		if (shift_rem == 94u) {
+			shift_rem = 0u;
+		}
+		*attr = (uint8_t)((x + (uint8_t)shift_src[y]) & 1);
+	}
+}
+
+static int shift_verify(const char *where)
+{
+	struct tui_rect row;
+	uint16_t size;
+	int x;
+	int y;
+
+	for (y = 0; y < (int)shift_rows_count; ++y) {
+		uint8_t ch;
+		uint8_t attr;
+
+		row.x = 0u;
+		row.y = (uint8_t)y;
+		row.w = shift_cols;
+		row.h = 1u;
+		size = tui_saved_size(&row);
+		if (size != (uint16_t)((uint16_t)shift_cols * 2u)) {
+			return fail(where, (int)size);
+		}
+		if (tui_save(&row, shift_saved, size) != 0) {
+			return fail(where, 0);
+		}
+		for (x = 0; x < (int)shift_cols; ++x) {
+			shift_cell((uint8_t)x, (uint8_t)y, &ch, &attr);
+			if (shift_saved[x].ch != ch ||
+			    shift_saved[x].attr != attr) {
+				printf("tui: shift %s %d,%d got %02x/%u "
+				       "want %02x/%u\r\n", where, x, y,
+				       (unsigned int)shift_saved[x].ch,
+				       (unsigned int)shift_saved[x].attr,
+				       (unsigned int)ch,
+				       (unsigned int)attr);
+				tui_shutdown();
+				return 1;
+			}
+		}
+	}
+	return 0;
+}
+
+static int shift_mode(void)
+{
+	static const struct {
+		uint8_t top;
+		uint8_t height;
+		uint8_t direction;
+		uint8_t attr;
+	} scrolls[] = {
+		{ 1u, 24u, TUI_SCROLL_UP, 0u },
+		{ 3u, 5u, TUI_SCROLL_DOWN, 1u },
+		{ 10u, 1u, TUI_SCROLL_UP, 0u },
+		{ 0u, 26u, TUI_SCROLL_DOWN, 0u },
+		{ 0u, 26u, TUI_SCROLL_UP, 0u },
+		{ 1u, 24u, TUI_SCROLL_DOWN, 0u },
+		{ 2u, 2u, TUI_SCROLL_UP, 0u },
+		{ 2u, 2u, TUI_SCROLL_DOWN, 1u },
+		{ 3u, 3u, TUI_SCROLL_UP, 0u },
+		{ 2u, 3u, TUI_SCROLL_DOWN, 0u },
+		{ 0u, 3u, TUI_SCROLL_UP, 0u },
+		{ 1u, 3u, TUI_SCROLL_DOWN, 0u },
+		{ 10u, 1u, TUI_SCROLL_DOWN, 1u }
+	};
+	struct tui_size size;
+	unsigned int i;
+	int result;
+
+	result = tui_init();
+	if (result < 0) {
+		return fail("shift init", result);
+	}
+	result = tui_get_size(&size);
+	if (result != 0) {
+		return fail("shift size", result);
+	}
+	shift_cols = size.cols;
+	shift_rows_count = size.rows;
+	for (i = 0u; i < size.rows; ++i) {
+		shift_src[i] = (int8_t)i;
+		shift_battr[i] = 0u;
+	}
+	shift_fill();
+	for (i = 0u; i < sizeof(scrolls) / sizeof(scrolls[0]); ++i) {
+		if (tui_set_attr(scrolls[i].attr) != 0) {
+			return fail("shift attr", 0);
+		}
+		result = tui_scroll_rows(scrolls[i].top, scrolls[i].height,
+					 scrolls[i].direction);
+		if (result == -KOS_ENOTSUP) {
+			printf("tui: shift nosup\r\n");
+			tui_shutdown();
+			printf("tui: shift pass\r\n");
+			return 0;
+		}
+		if (result != 0) {
+			return fail("shift scroll", result);
+		}
+		shift_apply(scrolls[i].top, scrolls[i].height,
+			    scrolls[i].direction, scrolls[i].attr);
+		if (shift_verify("shift") != 0) {
+			return 1;
+		}
+	}
+	tui_shutdown();
+	printf("tui: shift pass\r\n");
+	return 0;
+}
+
 static int loneesc_mode(void)
 {
 	tui_key_t key;
@@ -1740,8 +1969,15 @@ static int keyreset_mode(void)
 	return 0;
 }
 
+int tui_modes(int argc, char **argv);
+
 int main(int argc, char **argv)
 {
+	int fast_result = tui_modes(argc, argv);
+
+	if (fast_result >= 0) {
+		return fast_result;
+	}
 	if (argc == 0 || (argc == 1 && strcmp(argv[0], "foundation") == 0)) {
 		return foundation();
 	}
@@ -1816,6 +2052,9 @@ int main(int argc, char **argv)
 	}
 	if (argc == 1 && strcmp(argv[0], "gridsize") == 0) {
 		return gridsize_mode();
+	}
+	if (argc == 1 && strcmp(argv[0], "shift") == 0) {
+		return shift_mode();
 	}
 	printf("tui: FAIL mode\r\n");
 	return 1;

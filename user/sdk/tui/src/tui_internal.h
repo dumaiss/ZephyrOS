@@ -21,7 +21,11 @@
 #endif
 #define TUI_MAX_COLS TUI_GRID_COLS
 #define TUI_MAX_ROWS TUI_GRID_ROWS
-#define TUI_CELL_COUNT ((uint16_t)TUI_MAX_COLS * TUI_MAX_ROWS)
+/* The cell map's row stride: the column capacity rounded up to an even
+ * number, so every row starts on an attribute-byte boundary. */
+#define TUI_STRIDE ((uint16_t)((TUI_MAX_COLS + 1u) & ~1u))
+_Static_assert((TUI_STRIDE & 1u) == 0u, "TUI_STRIDE must be even");
+#define TUI_CELL_COUNT ((uint16_t)TUI_STRIDE * TUI_MAX_ROWS)
 /* The attribute store: 4 bits per cell, two cells per byte. */
 #define TUI_ATTR_BYTES ((uint16_t)(TUI_CELL_COUNT + 1u) / 2u)
 #define TUI_DIRTY_BYTES ((uint16_t)(TUI_CELL_COUNT + 7u) / 8u)
@@ -60,6 +64,7 @@ struct tui_state {
 	uint8_t phys_cursor_visible;
 	uint8_t render_support; /* 0 unknown, 1 RENDER, 2 ANSI fallback */
 	uint8_t model_only;     /* update cells without scheduling output */
+	uint8_t stride;         /* the cell map's row stride (TUI_STRIDE) */
 };
 
 extern struct tui_state tui_state;
@@ -73,11 +78,16 @@ void tui_priv_store(uint16_t index, uint8_t ch, uint8_t attr);
 extern uint8_t tui_dirty[TUI_DIRTY_BYTES];
 extern uint8_t tui_invert[TUI_DIRTY_BYTES];
 extern uint8_t tui_run[TUI_RUN_MAX];
+/* One flag per capacity row: set whenever a cell of the row gains a
+ * dirty or invert bit, cleared with the maps, so a flush skips clean
+ * rows.  A set flag with no bits is harmless; a clear flag with bits
+ * set is a bug. */
+extern uint8_t tui_row_pending[TUI_MAX_ROWS];
 /* RENDER and ANSI fallback are mutually exclusive during a flush. */
 #define tui_render tui_run
 
 #define TUI_CELL_INDEX(x, y) \
-	((uint16_t)(((uint16_t)(y) * TUI_MAX_COLS) + (uint16_t)(x)))
+	((uint16_t)(((uint16_t)(y) * TUI_STRIDE) + (uint16_t)(x)))
 #define TUI_DIRTY_TEST(index) \
 	((tui_dirty[(uint16_t)(index) >> 3] & \
 	  (uint8_t)(1u << ((uint16_t)(index) & 7u))) != 0u)

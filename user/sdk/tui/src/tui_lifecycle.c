@@ -31,6 +31,9 @@ static void tui_reset_model(uint8_t cols, uint8_t rows)
 		tui_dirty[i] = 0u;
 		tui_invert[i] = 0u;
 	}
+	for (i = 0u; i < TUI_MAX_ROWS; ++i) {
+		tui_row_pending[i] = 0u;
+	}
 	tui_state.screen.cols = cols;
 	tui_state.screen.rows = rows;
 	tui_state.window.x = 0u;
@@ -51,6 +54,7 @@ static void tui_reset_model(uint8_t cols, uint8_t rows)
 	tui_state.phys_cursor_visible = 1u;
 	tui_state.render_support = 0u;
 	tui_state.model_only = 0u;
+	tui_state.stride = TUI_STRIDE;
 }
 
 int tui_init(void)

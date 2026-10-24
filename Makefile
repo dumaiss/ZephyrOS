@@ -1104,13 +1104,16 @@ all: $(EXE_USER_ROOT)/sound.exe
 # shell, in no store.  `LIBS=tui_widgets:tui` links the widget archive
 # before its core dependency and both after the program objects, before
 # libkos.  The core probe uses only `libtui`, so its map proves the key,
-# region and widget members stay out of a screen-only program.
+# region and widget members stay out of a screen-only program.  The
+# 85-column fast-path modes live in tui_modes.c; the wide-capacity build
+# links a stub instead, so its larger cell map stays inside the outcome
+# program's data window.
 $(eval $(call exe_program,tui_test,tests/tui,\
-	tui_test.c,STACK=256,LIBS=tui_widgets:tui))
+	tui_test.c tui_modes.c,STACK=256,LIBS=tui_widgets:tui))
 # The same outcome program built for the wide capacity (TUI_GRID=128x35):
-# its `gridsize` mode proves the archive the option selects.
+# its `gridsize` and `shift` modes prove the archive the option selects.
 $(eval $(call exe_program,tui_wide,tests/tui,\
-	tui_test.c,STACK=256,LIBS=tui_widgets:tui,TUI_GRID=128x35))
+	tui_test.c tui_modes_stub.c,STACK=256,LIBS=tui_widgets:tui,TUI_GRID=128x35))
 
 $(eval $(call exe_program,tui_core_probe,tests/tui,\
 	tui_core_probe.c,STACK=256,LIBS=tui))

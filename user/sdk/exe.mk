@@ -108,7 +108,7 @@ KOS_TUI_SRC     := $(KOS_SDK_ROOT)/tui/src
 KOS_TUI_PRIVATE := $(KOS_TUI_SRC)/tui_internal.h
 KOS_TUI_C_SRC   := tui_state.c tui_screen.c tui_lifecycle.c tui_flush.c \
 	tui_printf.c tui_window.c tui_style.c tui_key.c tui_region.c
-KOS_TUI_ASM_SRC := tui_scroll.asm
+KOS_TUI_ASM_SRC := tui_scroll.asm tui_text.asm
 EXE_TUI_OBJS    := $(addprefix $(EXE_SDK_BUILD)/tui/,\
 	$(patsubst %.c,%.rel,$(KOS_TUI_C_SRC)) \
 	$(patsubst %.asm,%.rel,$(KOS_TUI_ASM_SRC)))

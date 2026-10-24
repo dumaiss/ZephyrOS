@@ -53,6 +53,7 @@ TUI_FUNCTIONS = {
     "tui_gotoxy", "tui_wherex", "tui_wherey",
     "tui_cursor_show", "tui_cursor_hide",
     "tui_putc", "tui_puts", "tui_write", "tui_putc_xy", "tui_puts_xy",
+    "tui_put_text",
     "tui_printf", "tui_printf_xy",
     "tui_clear", "tui_clreol", "tui_clrline",
     "tui_insert_line", "tui_delete_line", "tui_scroll_rows",
@@ -114,7 +115,7 @@ TUI_KEYS = {
 TUI_MEMBERS = {"tui_state.rel", "tui_screen.rel", "tui_lifecycle.rel",
                "tui_flush.rel", "tui_printf.rel", "tui_window.rel",
                "tui_style.rel", "tui_key.rel", "tui_region.rel",
-               "tui_scroll.rel"}
+               "tui_scroll.rel", "tui_text.rel"}
 
 WIDGET_MEMBERS = {"widget_common.rel", "widget_render.rel",
                   "widget_menu.rel", "widget_input.rel",
@@ -454,10 +455,10 @@ class TestTuiLink(unittest.TestCase):
         dirty = self.symbols["_tui_dirty"][0]
         invert = self.symbols["_tui_invert"][0]
         run = self.symbols["_tui_run"][0]
-        self.assertEqual(attrs - chars, 85 * 26)
-        self.assertEqual(dirty - attrs, (85 * 26 + 1) // 2)
-        self.assertEqual(invert - dirty, (85 * 26 + 7) // 8)
-        self.assertEqual(run - invert, (85 * 26 + 7) // 8)
+        self.assertEqual(attrs - chars, 86 * 26)
+        self.assertEqual(dirty - attrs, (86 * 26 + 1) // 2)
+        self.assertEqual(invert - dirty, (86 * 26 + 7) // 8)
+        self.assertEqual(run - invert, (86 * 26 + 7) // 8)
         self.assertNotIn("_tui_render", self.symbols)
 
     def test_the_formatter_is_its_own_member(self):

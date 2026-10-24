@@ -120,6 +120,9 @@ static void tui_clear_dirty(void)
 		tui_dirty[i] = 0u;
 		tui_invert[i] = 0u;
 	}
+	for (i = 0u; i < TUI_MAX_ROWS; ++i) {
+		tui_row_pending[i] = 0u;
+	}
 }
 
 /* Mark every logical cell dirty (and none invert-only): the ANSI
@@ -132,6 +135,9 @@ static void tui_dirty_all(void)
 	for (i = 0u; i < TUI_DIRTY_BYTES; ++i) {
 		tui_dirty[i] = 0xFFu;
 		tui_invert[i] = 0u;
+	}
+	for (i = 0u; i < TUI_MAX_ROWS; ++i) {
+		tui_row_pending[i] = 1u;
 	}
 }
 
@@ -173,6 +179,9 @@ static int tui_flush_ansi(void)
 	phys_visible = tui_state.phys_cursor_visible;
 
 	for (row = 0u; row < tui_state.screen.rows; ++row) {
+		if (tui_row_pending[row] == 0u) {
+			continue;
+		}
 		col = 0u;
 		while (col < tui_state.screen.cols) {
 			index = TUI_CELL_INDEX(col, row);
@@ -365,6 +374,9 @@ static int tui_flush_render(void)
 			uint8_t mask = (uint8_t)(1u <<
 						 (uint8_t)(index & 7u));
 
+			if (tui_row_pending[row] == 0u) {
+				continue;
+			}
 			col = 0u;
 			while (col < tui_state.screen.cols) {
 				uint8_t start;
@@ -431,6 +443,12 @@ static int tui_flush_render(void)
 		if (result < 0) {
 			return result;
 		}
+	}
+	/* Every walked row is now committed.  Clear its pending flag so the
+	 * next flush skips it; rows at or past the screen edge keep their
+	 * flags because their bits stay set. */
+	for (row = 0u; row < tui_state.screen.rows; ++row) {
+		tui_row_pending[row] = 0u;
 	}
 	return 0;
 }
