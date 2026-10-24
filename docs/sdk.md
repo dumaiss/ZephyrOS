@@ -62,7 +62,8 @@ user/sdk/
   gfx/                    the graphics SDK: libgfx (gfx-sdk.md)
     src/gfx.c             gfx_open, gfx_close, gfx_get_info, the state
     src/gfx_mode.c        gfx_set_mode, gfx_display_enable
-    src/gfx_draw.c        gfx_clear
+    src/gfx_draw.c        gfx_clear, gfx_fill_rect, gfx_copy_rect
+    src/gfx_batch.c       gfx_begin/end/flush, the command queue
     src/gfx_upload.c      gfx_upload_begin/write/end (pixel streaming)
     src/gfx_palette.c     gfx_set_palette
     src/backends/v9958/   the V9958 backend: mode/command C and port I/O
@@ -147,7 +148,13 @@ program includes `kos/gfx.h` and calls `gfx_open` to take `/dev/video`
 exclusively.  The design is [gfx-sdk.md](gfx-sdk.md); a program that
 uses no graphics pays no gfx code or data cost.
 
-The image pieces hang off the same library.  `gfx_upload_begin`,
+The drawing pieces hang off the same library.  `gfx_clear`,
+`gfx_fill_rect` and `gfx_copy_rect` are the rectangle primitives
+(HMMV/HMMM; a copy chooses its direction from the rectangles'
+overlap, and source or destination may sit on the off-screen page);
+`gfx_begin`/`gfx_end`/`gfx_flush` batch them into a process-local
+queue of 32 records, flushed in order when full, and a call outside a
+batch executes at once.  `gfx_upload_begin`,
 `gfx_upload_write` and `gfx_upload_end` stream a rectangle's pixels
 straight to VRAM through the data port (any chunk length, one address
 per row, the exact byte count enforced), and `gfx_set_palette`
@@ -761,7 +768,9 @@ the gates the same way any client does:
 |---|---|
 | `gfx_open`, `gfx_close`, `gfx_get_info` | `gfx`, `ipc`, `kos_ipcgate`, `nsgate` |
 | `gfx_set_mode`, `gfx_display_enable` | `gfx_mode`, `v9958_gfx`, `gfx_v9958_io` |
-| `gfx_clear` | `gfx_draw`, `v9958_gfx`, `gfx_v9958_io` |
+| `gfx_set_mode`, `gfx_display_enable` | `gfx_mode`, `v9958_gfx`, `gfx_v9958_io` |
+| `gfx_clear`, `gfx_fill_rect`, `gfx_copy_rect` | `gfx_draw`, `gfx_batch`, `v9958_gfx`, `gfx_v9958_io` |
+| `gfx_begin`, `gfx_end`, `gfx_flush` | `gfx_batch`, `v9958_gfx`, `gfx_v9958_io` |
 | `gfx_set_palette` | `gfx_palette`, `v9958_gfx`, `gfx_v9958_io` |
 | `gfx_upload_begin`, `gfx_upload_write`, `gfx_upload_end` | `gfx_upload`, `gfx_v9958_io` |
 

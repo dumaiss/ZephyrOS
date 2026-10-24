@@ -76,10 +76,10 @@ int main(int argc, char **argv)
 			return 1;
 		}
 	}
-	/* Clear both pages first: the console's bitmap would otherwise show
-	 * around a smaller picture.  Byte 0 is black in GRAPHIC 7 and in
-	 * YJK; a 16-colour byte is a palette index, so that mode clears to
-	 * the picture palette's darkest entry. */
+	/* Clear the visible page first: the console's bitmap would
+	 * otherwise show around a smaller picture.  Byte 0 is black in
+	 * GRAPHIC 7 and in YJK; a 16-colour byte is a palette index, so
+	 * that mode clears to the picture palette's darkest entry. */
 	{
 		gfx_color_t background = 0u;
 

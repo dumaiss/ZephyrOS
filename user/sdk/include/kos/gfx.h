@@ -68,9 +68,36 @@ int gfx_set_mode(enum gfx_mode mode);
 /* Turn the display on (enabled nonzero) or off.  No VIDEO IPC. */
 int gfx_display_enable(uint8_t enabled);
 
-/* Clear both VRAM pages' visible area to `color` (in the 16-colour
- * mode 0..15) with one high-speed fill, waited for.  No VIDEO IPC. */
+/* Clear the visible page to `color` (in the 16-colour mode 0..15)
+ * with one high-speed fill, waited for.  Inside a batch the fill is
+ * queued and executed with the batch.  No VIDEO IPC. */
 int gfx_clear(gfx_color_t color);
+
+/* Batch drawing commands: between gfx_begin and the matching gfx_end,
+ * drawing calls append compact records to a process-local queue (32
+ * records; a full queue flushes itself).  gfx_end flushes when the
+ * outermost batch closes; nested begin/end pairs are counted.
+ * gfx_flush executes the queued records now.  A drawing call outside a
+ * batch executes at once.  No VIDEO IPC. */
+void gfx_begin(void);
+int gfx_end(void);
+int gfx_flush(void);
+
+/* Fill the rectangle (x, y, width, height) with `color` (HMMV): x and
+ * width even in the 16-colour mode, y may target the off-screen page
+ * (256-511).  A zero width or height is a no-op (0, nothing queued);
+ * a rectangle outside the mode's width or the 512-line space is
+ * -KOS_EINVAL and queues nothing.  Batched or immediate per above. */
+int gfx_fill_rect(uint16_t x, uint16_t y, uint16_t width, uint16_t height,
+		  gfx_color_t color);
+
+/* Copy the rectangle (width, height) from (src_x, src_y) to (dst_x,
+ * dst_y) with one high-speed move (HMMM); the direction is chosen
+ * from the overlap, so overlapping copies are exact in all four
+ * directions.  Source and destination may sit on either page.  Bounds
+ * and zero sizes as gfx_fill_rect. */
+int gfx_copy_rect(uint16_t src_x, uint16_t src_y, uint16_t dst_x,
+		  uint16_t dst_y, uint16_t width, uint16_t height);
 
 /* Program `count` palette entries starting at `first` (the 16-colour
  * mode holds 16 entries).  Direct I/O under the hardware WAIT; a mode

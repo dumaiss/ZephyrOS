@@ -23,6 +23,12 @@ port writes), and PView (the g7 and g6 pictures centered on the peer's
 VRAM with the g6 palette applied, the restored console after each, and
 a bad header touching no VIDEO dispatch at all).
 
+The primitives package adds: the batch (ordering, the 32-record queue
+auto-flushing on the 33rd command while the hold is intact), the fill
+and copy rectangles (HMMV/HMMM, the four overlap directions with their
+DIX/DIY blocks pinned, copies across the pages, the G6 odd-x refusal
+queuing nothing), and gfx_clear as the visible page's fill.
+
 The V9958 peer is the observable (`regs`, `vram`, `commands`,
 `vram_writes`, `protocol_errors`); the driver's exclusive flag is read
 from its bank-6 state, as tests/test_device_release.py does.
@@ -78,8 +84,8 @@ MODE_REGS = {
 CLEAR_COLOR = {"mode6": 0x04, "mode7": 0x1C, "yjk": 0x1C}
 PACKED = {"mode6": 0x44, "mode7": 0x1C, "yjk": 0x1C}
 WIDTH = {"mode6": 512, "mode7": 256, "yjk": 256}
-# gfx_clear's fill: one HMMV over both pages' visible 212 lines.
-CLEAR_LINES = 212 + 256
+# gfx_clear's fill: one HMMV over the visible page's 212 lines.
+CLEAR_LINES = 212
 
 # The ops KVIDEO_OP_WRITE (1), KOS_OP_ACQUIRE (0xFE), DIRECT_INFO (6)
 # and KOS_OP_RELEASE (0xFF) that a gfxtest run dispatches to the video
@@ -162,14 +168,16 @@ class GfxHostTests(unittest.TestCase):
         for path in (os.path.join(GFX_SRC, "gfx.c"),
                      os.path.join(GFX_SRC, "gfx_mode.c"),
                      os.path.join(GFX_SRC, "gfx_draw.c"),
+                     os.path.join(GFX_SRC, "gfx_batch.c"),
                      os.path.join(GFX_SRC, "gfx_upload.c"),
                      os.path.join(GFX_SRC, "gfx_palette.c"),
                      os.path.join(GFX_SRC, "backends", "v9958",
                                   "v9958_gfx.c"),
                      gfx_h):
             self.assertTrue(os.path.isfile(path), path)
-        for name in ("gfx.c", "gfx_mode.c", "gfx_draw.c", "gfx_upload.c",
-                     "gfx_palette.c", "backends/v9958/v9958_gfx.c"):
+        for name in ("gfx.c", "gfx_mode.c", "gfx_draw.c", "gfx_batch.c",
+                     "gfx_upload.c", "gfx_palette.c",
+                     "backends/v9958/v9958_gfx.c"):
             source = read_text(os.path.join(GFX_SRC, name))
             for token in ("__sfr", "__at", "outp(", "inp("):
                 self.assertNotIn(token, source,
@@ -197,6 +205,23 @@ class GfxHostTests(unittest.TestCase):
                      "_gfx_v9958_io_stream_vram",
                      "_gfx_v9958_io_palette_byte"):
             self.assertIn(name, asm)
+
+    def test_batch_and_primitives_surface(self):
+        """The public header declares the batch and the rectangle
+        primitives; the queue is 32 16-byte records and exe.mk builds
+        the batch member into libgfx."""
+        gfx_h = read_text(GFX_H)
+        for name in ("gfx_begin", "gfx_end", "gfx_flush",
+                     "gfx_fill_rect", "gfx_copy_rect"):
+            self.assertIn(name, gfx_h)
+        internal = read_text(os.path.join(GFX_SRC, "gfx_internal.h"))
+        self.assertIn("GFX_BATCH_ENTRIES  32u", internal)
+        self.assertIn('sizeof(struct gfx_cmd) == 16', internal)
+        self.assertIn("struct gfx_cmd {", internal)
+        self.assertIn("GFX_OP_FILL 1u", internal)
+        self.assertIn("GFX_OP_COPY 2u", internal)
+        exe_mk = read_text(EXE_MK)
+        self.assertIn("gfx_batch.c", exe_mk)
 
     def test_makefile_wires_gfxtest_with_libgfx(self):
         makefile = read_text(MAKEFILE)
@@ -288,10 +313,9 @@ class GfxReplay(HwtestReplay):
         self.assertEqual(fill["fill"],
                          (0, 0, WIDTH[mode], CLEAR_LINES,
                           PACKED[mode]))
-        # One rectangle, DY 0, NY 212 + 256: every row the HMMV covers -
-        # page 0's 256 and page 1's first 212 - holds the colour.
-        # A row is 256 bytes in both modes (512 dots of 4 bits, 256 of
-        # 8): the whole row holds the colour.
+        # One rectangle, DY 0, NY 212: every row of the visible page
+        # holds the colour.  A row is 256 bytes in both modes (512
+        # dots of 4 bits, 256 of 8): the whole row holds the colour.
         row = bytes([PACKED[mode]]) * 256
         for line in range(CLEAR_LINES):
             base = line * 256
@@ -582,11 +606,9 @@ class TestPView(GfxReplay):
                              "%s: row %u not cleared" % (where, row))
 
     def test_pictures_centered_palette_and_bad_header(self):
-        with open(os.path.join(FIXTURES, "parrot-64x32-g7.kimg"),
-                  "rb") as handle:
+        with open(os.path.join(FIXTURES, "parrot7.img"), "rb") as handle:
             g7 = handle.read()
-        with open(os.path.join(FIXTURES, "parrot-64x32-g6.kimg"),
-                  "rb") as handle:
+        with open(os.path.join(FIXTURES, "parrot6.img"), "rb") as handle:
             g6 = handle.read()
         with open(PVIEW_EXE, "rb") as handle:
             # The card's filesystem is 8.3, so the on-card names use
@@ -656,6 +678,169 @@ class TestPView(GfxReplay):
         self.assertTrue(all(op == OPS_WRITE for op in ops),
                         "a bad header must not reach the video "
                         "endpoint: %s" % (ops,))
+
+
+class TestGfxPrims(GfxReplay):
+    """`gfxtest prims`: the batch, the rectangle primitives, the
+    refusals, against the peer's executed commands and VRAM."""
+
+    def test_batch_primitives_and_refusals(self):
+        z = self.start()
+        before = self.snapshot(z)
+        ops = []
+        since = len(z.glyphs)
+        z.hid.hid_queue.extend(b"/fs/gfxtest.exe prims\r")
+
+        # The command count is taken at the hold: the console's own
+        # commands (the command echo) end there, and every later
+        # command is gfxtest's.  gfx_set_mode's R#46 stop write reads
+        # back as a code-0 entry, filtered below.
+        self.run_recording(z, ops, lambda z: OPS_ACQUIRE in ops)
+        c0 = len(z.vdp.commands)
+
+        def draws():
+            return [c for c in z.vdp.commands[c0:]
+                    if c["code"] != 0x00]
+
+        # The ordering batch and the 33-fill batch: the 33rd queued
+        # fill flushes the first 32 while the batch is still open, so
+        # 34 commands land before the key with the hold intact.
+        self.run_recording(z, ops, lambda z: len(draws()) >= 34)
+        self.assertNotIn(OPS_RELEASE, ops,
+                         "the auto-flush ran inside the batch")
+        cmds = draws()
+        self.assertEqual(len(cmds), 34, [c["fill"] for c in cmds])
+        self.assertEqual(cmds[0]["fill"], (0, 0, 40, 8, 0x11),
+                         "the first fill")
+        self.assertEqual(cmds[1]["fill"], (8, 2, 16, 4, 0x22),
+                         "the overlapping fill")
+        for i in range(32):
+            self.assertEqual(cmds[2 + i]["fill"],
+                             (i * 6, 100, 4, 2, i + 1),
+                             "fill %u" % i)
+
+        # Key 1: gfx_end flushes the 33rd fill; then the copies and the
+        # page fills run; the program blocks at key 2.
+        z.hid.hid_queue.extend(b"x")
+        self.run_recording(z, ops, lambda z: len(draws()) >= 43)
+        cmds = draws()
+        self.assertEqual(len(cmds), 43)
+        self.assertEqual(cmds[34]["fill"], (192, 100, 4, 2, 33),
+                         "the 33rd fill ran at gfx_end")
+        # The four overlap copies: DIX/DIY chosen from the overlap and
+        # the block carrying each rectangle's far edge.
+        copies = ((204, 22, 0x0C, 203, 23, 207, 25),
+                  (196, 22, 0x08, 200, 23, 196, 25),
+                  (204, 18, 0x04, 203, 20, 207, 18),
+                  (196, 18, 0x00, 200, 20, 196, 18))
+        for index, (dx, dy, arg, sx, sy, bx, by) in enumerate(copies):
+            entry = cmds[35 + index]
+            self.assertEqual(entry["code"], 0xD0, "copy %u" % index)
+            block = entry["block"]
+            self.assertEqual(block[0] | (block[1] << 8), sx,
+                             "copy %u SX" % index)
+            self.assertEqual(block[2] | (block[3] << 8), sy,
+                             "copy %u SY" % index)
+            self.assertEqual(block[4] | (block[5] << 8), bx,
+                             "copy %u DX" % index)
+            self.assertEqual(block[6] | (block[7] << 8), by,
+                             "copy %u DY" % index)
+            self.assertEqual(block[8] | (block[9] << 8), 4,
+                             "copy %u NX" % index)
+            self.assertEqual(block[10] | (block[11] << 8), 4,
+                             "copy %u NY" % index)
+            self.assertEqual(block[13], arg, "copy %u ARG" % index)
+        # The page commands: a fill and its copy, each way.  Without
+        # overlap the direction is the forward one per axis (sx < dx
+        # takes DIX, sy < dy takes DIY) and the block still carries
+        # the far edge.
+        self.assertEqual(cmds[39]["fill"], (0, 266, 6, 3, 0x55))
+        block = cmds[40]["block"]
+        self.assertEqual(block[13], 0x04)
+        self.assertEqual((block[0] | (block[1] << 8),
+                          block[2] | (block[3] << 8),
+                          block[4] | (block[5] << 8),
+                          block[6] | (block[7] << 8)),
+                         (5, 266, 55, 60))
+        self.assertEqual(cmds[41]["fill"], (150, 40, 6, 3, 0x66))
+        block = cmds[42]["block"]
+        self.assertEqual(block[13], 0x08)
+        self.assertEqual((block[0] | (block[1] << 8),
+                          block[2] | (block[3] << 8),
+                          block[4] | (block[5] << 8),
+                          block[6] | (block[7] << 8)),
+                         (150, 42, 150, 298))
+
+        # The VRAM outcome while the display is held: the ordering
+        # fills, the 33 queued fills, the four copy destinations equal
+        # to the uploaded pattern, the source intact, and the page
+        # copies across the page boundary.
+        peer = z.vdp
+        for row in (0, 1, 6, 7):
+            line = peer.vram[row * 256:(row + 1) * 256]
+            self.assertEqual(line[0:40], bytes([0x11]) * 40,
+                             "order row %u" % row)
+        for row in range(2, 6):
+            line = peer.vram[row * 256:(row + 1) * 256]
+            self.assertEqual(line[0:8], bytes([0x11]) * 8,
+                             "order row %u left" % row)
+            self.assertEqual(line[8:24], bytes([0x22]) * 16,
+                             "order row %u middle" % row)
+            self.assertEqual(line[24:40], bytes([0x11]) * 16,
+                             "order row %u right" % row)
+        for i in range(33):
+            col = i * 6
+            for row in (100, 101):
+                self.assertEqual(peer.vram[row * 256 + col:
+                                           row * 256 + col + 4],
+                                 bytes([i + 1]) * 4, "fill %u" % i)
+        pattern = bytes(upload_byte(i) for i in range(16))
+        for row in range(4):
+            self.assertEqual(peer.vram[(20 + row) * 256 + 200:
+                                       (20 + row) * 256 + 204],
+                             pattern[row * 4:(row + 1) * 4],
+                             "source row %u" % row)
+            for dx, dy, _arg, _sx, _sy, _bx, _by in copies:
+                self.assertEqual(peer.vram[(dy + row) * 256 + dx:
+                                           (dy + row) * 256 + dx + 4],
+                                 pattern[row * 4:(row + 1) * 4],
+                                 "copy to %u,%u row %u" % (dx, dy, row))
+        for row in range(3):
+            self.assertEqual(peer.vram[(60 + row) * 256 + 50:
+                                       (60 + row) * 256 + 56],
+                             bytes([0x55]) * 6, "page 1->0 row %u" % row)
+            self.assertEqual(peer.vram[0x10000 + (40 + row) * 256 + 150:
+                                       0x10000 + (40 + row) * 256 + 156],
+                             bytes([0x66]) * 6, "page 0->1 row %u" % row)
+
+        # Key 2: the G6 batch runs exactly one fill (the odd x refusal
+        # queued nothing), the zero sizes are silent no-ops, and the
+        # console is restored.  The count is cut at the release's
+        # dispatch: after it the console's restore redraw adds its own
+        # commands.
+        release_at = []
+
+        def until_prompt(z):
+            if OPS_RELEASE in ops and not release_at:
+                release_at.append(len(z.vdp.commands))
+            return SHELL_PROMPT in "".join(z.glyphs[since:])
+        z.hid.hid_queue.extend(b"x")
+        self.run_recording(z, ops, until_prompt)
+        self.settle(z, lambda z: z.vdp.regs[8] == 0x08)
+        cmds = [c for c in z.vdp.commands[c0:release_at[0]]
+                if c["code"] != 0x00]
+        self.assertEqual(len(cmds), 44,
+                         "the refusals queued nothing")
+        self.assertEqual(cmds[43]["fill"], (2, 0, 2, 2, 0x11),
+                         "the G6 fill packs two pixels per byte")
+        fresh = self.trace(z, since)
+        self.assertIn("gfxtest: prims -2 0 0 0", fresh)
+        self.assertIn("gfxtest: prims PASS", fresh)
+        self.assertNotIn("FAIL", fresh)
+        self.assert_hold_sequence(ops)
+        self.assert_restored(z, before)
+        self.assertEqual(self.exclusive(z), 0,
+                         "the exclusive flag survived the run")
 
 
 if __name__ == "__main__":

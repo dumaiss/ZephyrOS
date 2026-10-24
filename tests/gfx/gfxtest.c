@@ -15,6 +15,9 @@
  *                            nested refusals, then the result codes
  *   gfxtest palette          G6 palette entries, a key, the G7 refusal,
  *                            a key, then the result code
+ *   gfxtest prims            batch ordering, the auto-flush, the four
+ *                            overlap copies, page copies, the G6
+ *                            refusals, two keys
  *
  * While /dev/video is held the console's output to the VDP is dropped,
  * so every line is printed outside the hold.
@@ -305,6 +308,122 @@ static int gfxtest_palette(void)
 	return 1;
 }
 
+/* The primitives: batch ordering, the queue's auto-flush, copies in
+ * the four overlap directions and across pages, then the G6 refusals.
+ * GRAPHIC 7 runs one byte per pixel, so the tests read every byte
+ * straight off the peer's VRAM. */
+static int gfxtest_prims(void)
+{
+	unsigned int i;
+	int bad_result;
+	int good_result;
+	int zero_fill;
+	int zero_copy;
+	int result;
+
+	result = gfx_open();
+	if (result < 0) {
+		printf("gfxtest: FAIL open %d\r\n", result);
+		return 1;
+	}
+	result = gfx_set_mode(GFX_MODE_256x212_256);
+	if (result < 0) {
+		gfx_close();
+		printf("gfxtest: FAIL mode %d\r\n", result);
+		return 1;
+	}
+	/* Ordering: two batched fills, the second on top of the first. */
+	gfx_begin();
+	result = gfx_fill_rect(0u, 0u, 40u, 8u, 0x11u);
+	if (result < 0) {
+		gfx_close();
+		printf("gfxtest: FAIL fill A %d\r\n", result);
+		return 1;
+	}
+	result = gfx_fill_rect(8u, 2u, 16u, 4u, 0x22u);
+	if (result < 0) {
+		gfx_close();
+		printf("gfxtest: FAIL fill B %d\r\n", result);
+		return 1;
+	}
+	result = gfx_end();
+	if (result < 0) {
+		gfx_close();
+		printf("gfxtest: FAIL end %d\r\n", result);
+		return 1;
+	}
+	/* The auto-flush: 33 queued fills; the 33rd flushes the first 32
+	 * while the batch is still open (the tests stop at the 32nd peer
+	 * command and find the hold intact). */
+	gfx_begin();
+	for (i = 0u; i < 33u; ++i) {
+		result = gfx_fill_rect((uint16_t)(i * 6u), 100u, 4u, 2u,
+				       (gfx_color_t)(i + 1u));
+		if (result < 0) {
+			gfx_close();
+			printf("gfxtest: FAIL fill %u %d\r\n", i, result);
+			return 1;
+		}
+	}
+	(void)getchar(); /* key 1: the first 32 commands are on the peer */
+	result = gfx_end();
+	if (result < 0) {
+		gfx_close();
+		printf("gfxtest: FAIL end %d\r\n", result);
+		return 1;
+	}
+	/* A distinct source pattern, uploaded byte for byte, then copied
+	 * to the four overlap directions. */
+	for (i = 0u; i < 16u; ++i) {
+		gfxtest_upload_buffer[i] = gfxtest_upload_byte(i);
+	}
+	if (gfx_upload_begin(200u, 20u, 4u, 4u) < 0 ||
+	    gfx_upload_write(gfxtest_upload_buffer, 16u) < 0 ||
+	    gfx_upload_end() < 0 ||
+	    gfx_copy_rect(200u, 20u, 204u, 22u, 4u, 4u) < 0 ||
+	    gfx_copy_rect(200u, 20u, 196u, 22u, 4u, 4u) < 0 ||
+	    gfx_copy_rect(200u, 20u, 204u, 18u, 4u, 4u) < 0 ||
+	    gfx_copy_rect(200u, 20u, 196u, 18u, 4u, 4u) < 0) {
+		gfx_close();
+		printf("gfxtest: FAIL copies\r\n");
+		return 1;
+	}
+	/* Across the pages: page 1 to page 0, then page 0 to page 1. */
+	if (gfx_fill_rect(0u, 266u, 6u, 3u, 0x55u) < 0 ||
+	    gfx_copy_rect(0u, 266u, 50u, 60u, 6u, 3u) < 0 ||
+	    gfx_fill_rect(150u, 40u, 6u, 3u, 0x66u) < 0 ||
+	    gfx_copy_rect(150u, 40u, 150u, 296u, 6u, 3u) < 0) {
+		gfx_close();
+		printf("gfxtest: FAIL page copies\r\n");
+		return 1;
+	}
+	(void)getchar(); /* key 2: the peer holds every result */
+	/* The 16-colour refusals: odd x queues nothing, the even fill
+	 * beside it runs, and the zero sizes are silent no-ops. */
+	result = gfx_set_mode(GFX_MODE_512x212_16);
+	if (result < 0) {
+		gfx_close();
+		printf("gfxtest: FAIL mode %d\r\n", result);
+		return 1;
+	}
+	gfx_begin();
+	bad_result = gfx_fill_rect(1u, 0u, 2u, 2u, 1u);
+	good_result = gfx_fill_rect(2u, 0u, 2u, 2u, 1u);
+	(void)gfx_end();
+	zero_fill = gfx_fill_rect(0u, 0u, 0u, 4u, 1u);
+	zero_copy = gfx_copy_rect(0u, 0u, 10u, 10u, 4u, 0u);
+	gfx_close();
+	printf("gfxtest: prims %d %d %d %d\r\n", bad_result, good_result,
+	       zero_fill, zero_copy);
+	if (bad_result == -KOS_EINVAL && good_result == 0 &&
+	    zero_fill == 0 && zero_copy == 0) {
+		printf("gfxtest: prims PASS\r\n");
+		return 0;
+	}
+	printf("gfxtest: prims FAIL\r\n");
+	return 1;
+}
+
 int main(int argc, char **argv)
 {
 	int leak;
@@ -312,7 +431,7 @@ int main(int argc, char **argv)
 	/* argv holds the command-tail words only (the kernel transports no
 	 * program name), so argv[0] is the mode. */
 	if (argc < 1) {
-		printf("gfxtest: mode6|mode7|yjk|info|upload|palette [leak]"
+		printf("gfxtest: mode6|mode7|yjk|info|upload|palette|prims [leak]"
 		       "\r\n");
 		return 1;
 	}
@@ -325,6 +444,9 @@ int main(int argc, char **argv)
 	}
 	if (strcmp(argv[0], "palette") == 0) {
 		return gfxtest_palette();
+	}
+	if (strcmp(argv[0], "prims") == 0) {
+		return gfxtest_prims();
 	}
 	if (strcmp(argv[0], "mode6") == 0) {
 		return gfxtest_run("mode6", GFX_MODE_512x212_16,

@@ -106,9 +106,9 @@ class KimgHostTests(unittest.TestCase):
 
     def test_fixtures_match_the_format(self):
         for name, mode, palette_count, payload_size in (
-                ("parrot-64x32-g6.kimg", 0, 16, 1024),
-                ("parrot-64x32-g7.kimg", 1, 0, 2048),
-                ("parrot-64x32-yjk.kimg", 2, 0, 2048)):
+                ("parrot6.img", 0, 16, 1024),
+                ("parrot7.img", 1, 0, 2048),
+                ("parroty.img", 2, 0, 2048)):
             header = parse_header(os.path.join(FIXTURES, name))
             self.assertEqual(header["magic"], b"KIMG", name)
             self.assertEqual(header["version"], 1, name)

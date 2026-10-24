@@ -30,6 +30,11 @@ int gfx_set_mode(enum gfx_mode mode)
 	    (gfx_state.caps & KVIDEO_YJK) == 0u) {
 		return -KOS_ENOTSUP;
 	}
+	/* A queued batch holds records validated in the current mode:
+	 * it executes before the register state changes. */
+	if (gfx_flush() < 0) {
+		return -KOS_EINVAL;
+	}
 	v9958_set_mode(&gfx_state, mode);
 	gfx_state.mode_set = 1u;
 	gfx_state.mode = (uint8_t)mode;

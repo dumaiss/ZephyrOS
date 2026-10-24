@@ -7,9 +7,9 @@
  * bytes(width, height) and a chunk that would run past the end is
  * refused whole.  One VRAM address is set per row (one for the whole
  * transfer when the rectangle spans the full width, whose rows are
- * contiguous).  A pending drawing batch is flushed first (there is
- * none before the batching package); the upload cannot be nested, and
- * the off-screen page (y 256-511) is an ordinary target.
+ * contiguous).  A pending drawing batch is flushed first, so the
+ * stream lands after every queued command; the upload cannot be
+ * nested, and the off-screen page (y 256-511) is an ordinary target.
  *
  * No VIDEO IPC: every write is direct I/O through the backend's
  * assembly port layer.
@@ -62,7 +62,11 @@ int gfx_upload_begin(uint16_t x, uint16_t y, uint16_t width,
 	    ((x | width) & 3u) != 0u) {
 		return -KOS_EINVAL;
 	}
-	/* A pending drawing batch flushes here (a no-op until batching). */
+	/* A pending drawing batch flushes first, so the stream's bytes
+	 * land after every command the application queued. */
+	if (gfx_flush() < 0) {
+		return -KOS_EINVAL;
+	}
 	gfx_state.upload_active = 1u;
 	gfx_state.upload_full_width = (x == 0u && width == full_width) ? 1u
 		: 0u;

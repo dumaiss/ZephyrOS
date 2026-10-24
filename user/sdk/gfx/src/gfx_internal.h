@@ -19,10 +19,34 @@
 #define GFX_BPP_G6    4u
 #define GFX_BPP_G7    8u
 
-/* gfx_clear's fill height: the visible 212 lines of page 0, then the
- * 256-line page stride, then page 1's 212 visible lines, so one HMMV
- * clears the visible area of both pages. */
-#define GFX_CLEAR_LINES (GFX_HEIGHT + 256u)
+/* The command queue: one 16-byte record per drawing call, 32 records
+ * (512 bytes of the process's data), flushed automatically when full;
+ * begin/end nest to at most this depth. */
+#define GFX_BATCH_ENTRIES  32u
+#define GFX_BATCH_DEPTH_MAX 8u
+
+#define GFX_OP_FILL 1u
+#define GFX_OP_COPY 2u
+
+/* One batched drawing call: the design's fixed-size backend-
+ * independent record (docs/gfx-sdk.md 9.1). */
+struct gfx_cmd {
+	uint8_t opcode;
+	uint8_t flags;
+	uint16_t sx;
+	uint16_t sy;
+	uint16_t dx;
+	uint16_t dy;
+	uint16_t width;
+	uint16_t height;
+	uint8_t color;
+	uint8_t reserved;
+};
+
+#if defined(__SDCC)
+_Static_assert(sizeof(struct gfx_cmd) == 16, "gfx_cmd is 16 bytes");
+_Static_assert(GFX_BATCH_ENTRIES == 32, "the batch holds 32 records");
+#endif /* __SDCC */
 
 struct gfx_state {
 	int video_handle;              /* 0 while closed, >= 1 the handle */
@@ -45,17 +69,33 @@ struct gfx_state {
 	uint16_t upload_row_bytes;     /* payload bytes per row           */
 	uint16_t upload_row_left;      /* bytes left in the current row   */
 	uint16_t upload_remaining;     /* bytes left of the whole upload  */
+
+	/* The drawing batch (gfx_batch.c): begin/end nest to
+	 * GFX_BATCH_DEPTH_MAX; a record queued at count ==
+	 * GFX_BATCH_ENTRIES flushes the queue first. */
+	uint8_t batch_depth;
+	uint8_t batch_count;
+	struct gfx_cmd batch_queue[GFX_BATCH_ENTRIES];
 };
 
 extern struct gfx_state gfx_state;
+
+/* --- the shared batch path (gfx_batch.c) ----------------------------- */
+
+/* Append one validated record: executed at once outside a batch,
+ * queued inside (the queue flushes itself when full). */
+void gfx_batch_submit(const struct gfx_cmd *cmd);
 
 /* --- the V9958 backend (backends/v9958/v9958_gfx.c) ------------------ */
 
 void v9958_set_mode(struct gfx_state *state, enum gfx_mode mode);
 void v9958_display_enable(struct gfx_state *state, uint8_t enabled);
-void v9958_clear(struct gfx_state *state, gfx_color_t color);
 void v9958_set_palette(struct gfx_state *state, uint8_t first,
 		       uint8_t count, const struct gfx_rgb *colors);
+/* Execute `count` queued records in order, each as its own command,
+ * every one started and waited for. */
+void v9958_run_batch(struct gfx_state *state, const struct gfx_cmd *cmds,
+		     uint8_t count);
 
 /* --- the backend's port layer (backends/v9958/v9958_io.asm) ----------
  *
@@ -109,9 +149,14 @@ void gfx_v9958_io_palette_byte(uint8_t value);
 #define GFX_V9958_CMD_REGISTER_BASE 32u
 #define GFX_V9958_CMD_REGISTER_COUNT 15u
 #define GFX_V9958_CMD_HMMV 0xC0u
+#define GFX_V9958_CMD_HMMM 0xD0u
 #define GFX_V9958_STATUS2_CE 0x01u
 
 /* The 15-byte command block's offsets (R#32..R#46). */
+#define GFX_V9958_CMD_SX_LO  0u
+#define GFX_V9958_CMD_SX_HI  1u
+#define GFX_V9958_CMD_SY_LO  2u
+#define GFX_V9958_CMD_SY_HI  3u
 #define GFX_V9958_CMD_DX_LO  4u
 #define GFX_V9958_CMD_DX_HI  5u
 #define GFX_V9958_CMD_DY_LO  6u
@@ -121,6 +166,13 @@ void gfx_v9958_io_palette_byte(uint8_t value);
 #define GFX_V9958_CMD_NY_LO  10u
 #define GFX_V9958_CMD_NY_HI  11u
 #define GFX_V9958_CMD_CLR    12u
+#define GFX_V9958_CMD_ARG    13u
 #define GFX_V9958_CMD_CODE   14u
+
+/* The HMMM argument's direction bits: DIX copies the rows right to
+ * left, DIY the columns bottom to top (the block then carries each
+ * rectangle's far edge). */
+#define GFX_V9958_CMD_DIX 0x04u
+#define GFX_V9958_CMD_DIY 0x08u
 
 #endif /* KOS_SDK_GFX_INTERNAL_H */

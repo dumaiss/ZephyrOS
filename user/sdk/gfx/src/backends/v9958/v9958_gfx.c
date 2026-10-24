@@ -1,9 +1,9 @@
 /* libgfx V9958 backend (user/sdk/gfx/src/backends/v9958/).
  *
- * Mode setup, the display switch and the clear, in C over the assembly
- * port layer (v9958_io.asm owns every A0h-A4h access).  The ports come
- * from the KVIDEO_OP_DIRECT_INFO record, not from board constants; the
- * register numbers are V9958 facts.
+ * Mode setup, the display switch and the primitives' command engine,
+ * in C over the assembly port layer (v9958_io.asm owns every A0h-A4h
+ * access).  The ports come from the KVIDEO_OP_DIRECT_INFO record, not
+ * from board constants; the register numbers are V9958 facts.
  *
  * gfx_set_mode's register set mirrors the proven bring-up baseline
  * (drivers/v9958/v9958.c v9958_init_g6) through native-WAIT writes:
@@ -15,7 +15,7 @@
  * the hardware WAIT is on, so no write is software-paced.
  *
  * The tables are const (a program cannot hold an initialized
- * non-const static array); the command block is built on the stack.
+ * non-const static array); the command blocks are built on the stack.
  */
 
 #include "kos/gfx.h"
@@ -94,35 +94,97 @@ void v9958_display_enable(struct gfx_state *state, uint8_t enabled)
 			 GFX_V9958_R1_DISPLAY_OFF, GFX_V9958_REG_R1);
 }
 
-void v9958_clear(struct gfx_state *state, gfx_color_t color)
+/* Build one HMMV block: the dot coordinates go in whole dots (the
+ * chip divides by the mode's dots per byte), the fill byte packs two
+ * 4-bit pixels in the 16-colour mode. */
+static void v9958_hmmv_block(uint8_t *cmd, uint16_t x, uint16_t y,
+			     uint16_t width, uint16_t height,
+			     gfx_color_t color, uint8_t g6)
 {
-	uint8_t cmd[GFX_V9958_CMD_REGISTER_COUNT];
-	uint16_t width = (state->mode == (uint8_t)GFX_MODE_512x212_16) ?
-		GFX_WIDTH_G6 : GFX_WIDTH_G7;
-	uint16_t lines = GFX_CLEAR_LINES;
 	uint8_t i;
 
 	for (i = 0u; i < GFX_V9958_CMD_REGISTER_COUNT; ++i) {
 		cmd[i] = 0x00u;
 	}
-	cmd[GFX_V9958_CMD_DX_LO] = 0x00u;
-	cmd[GFX_V9958_CMD_DX_HI] = 0x00u;
-	cmd[GFX_V9958_CMD_DY_LO] = 0x00u;
-	cmd[GFX_V9958_CMD_DY_HI] = 0x00u;
-	cmd[GFX_V9958_CMD_NX_LO] = (uint8_t)(width & 0xFFu);
-	cmd[GFX_V9958_CMD_NX_HI] = (uint8_t)((width >> 8) & 0xFFu);
-	cmd[GFX_V9958_CMD_NY_LO] = (uint8_t)(lines & 0xFFu);
-	cmd[GFX_V9958_CMD_NY_HI] = (uint8_t)((lines >> 8) & 0xFFu);
-	if (state->mode == (uint8_t)GFX_MODE_512x212_16) {
-		/* Two 4-bit pixels share a byte. */
-		cmd[GFX_V9958_CMD_CLR] = (uint8_t)((color << 4) | color);
-	} else {
-		cmd[GFX_V9958_CMD_CLR] = color;
-	}
+	cmd[GFX_V9958_CMD_DX_LO] = (uint8_t)x;
+	cmd[GFX_V9958_CMD_DX_HI] = (uint8_t)(x >> 8);
+	cmd[GFX_V9958_CMD_DY_LO] = (uint8_t)y;
+	cmd[GFX_V9958_CMD_DY_HI] = (uint8_t)(y >> 8);
+	cmd[GFX_V9958_CMD_NX_LO] = (uint8_t)width;
+	cmd[GFX_V9958_CMD_NX_HI] = (uint8_t)(width >> 8);
+	cmd[GFX_V9958_CMD_NY_LO] = (uint8_t)height;
+	cmd[GFX_V9958_CMD_NY_HI] = (uint8_t)(height >> 8);
+	cmd[GFX_V9958_CMD_CLR] = g6 != 0u ?
+		(uint8_t)((color << 4) | color) : color;
 	cmd[GFX_V9958_CMD_CODE] = GFX_V9958_CMD_HMMV;
+}
+
+/* Build one HMMM block.  When the source sits left of (or above) the
+ * destination the overlapping rows (or columns) must copy from the
+ * far edge, so DIX (or DIY) is set and the block carries each
+ * rectangle's far edge; otherwise the near edge and the forward
+ * direction.  Coordinates are dots, 9-bit for the 512-dot axis and
+ * the 512-line space. */
+static void v9958_hmmm_block(uint8_t *cmd, const struct gfx_cmd *record)
+{
+	uint16_t sx = record->sx;
+	uint16_t sy = record->sy;
+	uint16_t dx = record->dx;
+	uint16_t dy = record->dy;
+	uint8_t arg = 0u;
+	uint8_t i;
+
+	for (i = 0u; i < GFX_V9958_CMD_REGISTER_COUNT; ++i) {
+		cmd[i] = 0x00u;
+	}
+	if (sx < dx) {
+		arg |= GFX_V9958_CMD_DIX;
+		sx = (uint16_t)(sx + record->width - 1u);
+		dx = (uint16_t)(dx + record->width - 1u);
+	}
+	if (sy < dy) {
+		arg |= GFX_V9958_CMD_DIY;
+		sy = (uint16_t)(sy + record->height - 1u);
+		dy = (uint16_t)(dy + record->height - 1u);
+	}
+	cmd[GFX_V9958_CMD_SX_LO] = (uint8_t)sx;
+	cmd[GFX_V9958_CMD_SX_HI] = (uint8_t)(sx >> 8);
+	cmd[GFX_V9958_CMD_SY_LO] = (uint8_t)sy;
+	cmd[GFX_V9958_CMD_SY_HI] = (uint8_t)(sy >> 8);
+	cmd[GFX_V9958_CMD_DX_LO] = (uint8_t)dx;
+	cmd[GFX_V9958_CMD_DX_HI] = (uint8_t)(dx >> 8);
+	cmd[GFX_V9958_CMD_DY_LO] = (uint8_t)dy;
+	cmd[GFX_V9958_CMD_DY_HI] = (uint8_t)(dy >> 8);
+	cmd[GFX_V9958_CMD_NX_LO] = (uint8_t)record->width;
+	cmd[GFX_V9958_CMD_NX_HI] = (uint8_t)(record->width >> 8);
+	cmd[GFX_V9958_CMD_NY_LO] = (uint8_t)record->height;
+	cmd[GFX_V9958_CMD_NY_HI] = (uint8_t)(record->height >> 8);
+	cmd[GFX_V9958_CMD_ARG] = arg;
+	cmd[GFX_V9958_CMD_CODE] = GFX_V9958_CMD_HMMM;
+}
+
+/* Execute `count` records in order: one command per record, each one
+ * programmed, started and waited for, so the caller observes the
+ * batch exactly as queued. */
+void v9958_run_batch(struct gfx_state *state, const struct gfx_cmd *cmds,
+		     uint8_t count)
+{
+	uint8_t block[GFX_V9958_CMD_REGISTER_COUNT];
+	uint8_t g6 = state->mode == (uint8_t)GFX_MODE_512x212_16 ? 1u : 0u;
+	uint8_t i;
+
 	v9958_load_ports(&state->info);
-	gfx_v9958_io_start_command(cmd);
-	gfx_v9958_io_wait_command();
+	for (i = 0u; i < count; ++i) {
+		if (cmds[i].opcode == GFX_OP_FILL) {
+			v9958_hmmv_block(block, cmds[i].dx, cmds[i].dy,
+					 cmds[i].width, cmds[i].height,
+					 cmds[i].color, g6);
+		} else {
+			v9958_hmmm_block(block, &cmds[i]);
+		}
+		gfx_v9958_io_start_command(block);
+		gfx_v9958_io_wait_command();
+	}
 }
 
 /* The palette, only in the 16-colour mode (gfx_palette.c refuses the

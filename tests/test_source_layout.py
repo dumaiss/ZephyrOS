@@ -187,6 +187,7 @@ OWNER_FILES = (
     "user/sdk/gfx/src/gfx.c",
     "user/sdk/gfx/src/gfx_mode.c",
     "user/sdk/gfx/src/gfx_draw.c",
+    "user/sdk/gfx/src/gfx_batch.c",
     "user/sdk/gfx/src/gfx_upload.c",
     "user/sdk/gfx/src/gfx_palette.c",
     "user/sdk/gfx/src/backends/v9958/v9958_gfx.c",

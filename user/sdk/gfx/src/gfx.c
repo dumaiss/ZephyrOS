@@ -80,6 +80,10 @@ void gfx_close(void)
 	}
 	(void)unbind((unsigned char)gfx_state.video_handle);
 	gfx_state.video_handle = 0;
+	/* The queue dies with the handle: whatever was pending never
+	 * runs, and the next open starts an empty batch. */
+	gfx_state.batch_depth = 0u;
+	gfx_state.batch_count = 0u;
 }
 
 int gfx_get_info(struct gfx_info *info)
