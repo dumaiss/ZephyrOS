@@ -1285,7 +1285,8 @@ SDK_INPUTS := $(wildcard abi/kos/*.h) \
 	$(wildcard user/sdk/template/*) $(wildcard user/sdk/examples/*) \
 	docs/sdk.md docs/tui.md docs/exe-format.md mk/kos.mk \
 	formats/include/exe.h \
-	tools/exepack.py tools/exemanifest.py tools/ihx.py tools/sdkpack.py
+	tools/exepack.py tools/exemanifest.py tools/ihx.py tools/kimg.py \
+	tools/sdkpack.py
 
 sdk: $(KOS_SDK_TARBALL)
 	@echo "sdk: $(KOS_SDK_DIR)"

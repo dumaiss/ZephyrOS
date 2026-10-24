@@ -15,6 +15,14 @@ Two families:
   read from HL); and the console is restored after the key - also when
   the program exits without gfx_close (the kernel's handle release).
 
+The image package adds: the streaming upload (four rectangles in chunk
+sizes 1, 7, 256 and 4096, the short/overlong/nested refusals, each
+transfer's VRAM bytes checked at the release), the palette (the G6
+entries while the display is held, then the G7 refusal with no palette
+port writes), and PView (the g7 and g6 pictures centered on the peer's
+VRAM with the g6 palette applied, the restored console after each, and
+a bad header touching no VIDEO dispatch at all).
+
 The V9958 peer is the observable (`regs`, `vram`, `commands`,
 `vram_writes`, `protocol_errors`); the driver's exclusive flag is read
 from its bank-6 state, as tests/test_device_release.py does.
@@ -37,12 +45,18 @@ from replay import SHELL_PROMPT  # noqa: E402
 from z80sim import IocCommandPeer  # noqa: E402
 
 GFXTEST_EXE = os.path.join(ROOT, "build", "user", "gfxtest.exe")
+PVIEW_EXE = os.path.join(ROOT, "UserSoftware", "PView", "build", "user",
+                         "pview.exe")
+FIXTURES = os.path.join(ROOT, "tests", "gfx", "fixtures")
 DEV_NAME = "GFXTEST.EXE"
+PVIEW_DEV = "PVIEW.EXE"
 MODULE_DIR = os.path.join(ROOT, "build", "modules")
 PROTOCOL_H = os.path.join(ROOT, "abi", "kos", "protocol.h")
 KVIDEO_H = os.path.join(ROOT, "abi", "kos", "kvideo.h")
 MAKEFILE = os.path.join(ROOT, "Makefile")
 GFX_SRC = os.path.join(ROOT, "user", "sdk", "gfx", "src")
+EXE_MK = os.path.join(ROOT, "user", "sdk", "exe.mk")
+GFX_H = os.path.join(ROOT, "user", "sdk", "include", "kos", "gfx.h")
 
 # The record the driver answers.
 FLAGS = 0x000F
@@ -97,6 +111,22 @@ def header_value(path, name):
     raise AssertionError("%s defines no %s" % (path, name))
 
 
+def upload_byte(i):
+    """gfxtest_upload_byte: the upload mode's payload byte at offset i
+    (two identical 4-bit pixels per GRAPHIC 6 byte)."""
+    return ((i * 7 + 5) & 0x0F) * 0x11
+
+
+# gfxtest upload's four rectangles (first byte address, rows, bytes per
+# row, row stride, payload length), all GRAPHIC 6 (2 pixels per byte).
+UPLOAD_RECTS = (
+    (0x10000, 4, 256, 256, 1024),   # chunk 1: full width, page 1
+    (0x10820, 6, 64, 256, 384),     # chunk 7: x 64, y 264
+    (0x12C00, 8, 128, 256, 1024),   # chunk 256: x 0, y 300
+    (0x00000, 16, 256, 256, 4096),  # chunk 4096: full width, page 0
+)
+
+
 class GfxHostTests(unittest.TestCase):
     """Constants, headers and source discipline, no emulation."""
 
@@ -132,12 +162,14 @@ class GfxHostTests(unittest.TestCase):
         for path in (os.path.join(GFX_SRC, "gfx.c"),
                      os.path.join(GFX_SRC, "gfx_mode.c"),
                      os.path.join(GFX_SRC, "gfx_draw.c"),
+                     os.path.join(GFX_SRC, "gfx_upload.c"),
+                     os.path.join(GFX_SRC, "gfx_palette.c"),
                      os.path.join(GFX_SRC, "backends", "v9958",
                                   "v9958_gfx.c"),
                      gfx_h):
             self.assertTrue(os.path.isfile(path), path)
-        for name in ("gfx.c", "gfx_mode.c", "gfx_draw.c",
-                     "backends/v9958/v9958_gfx.c"):
+        for name in ("gfx.c", "gfx_mode.c", "gfx_draw.c", "gfx_upload.c",
+                     "gfx_palette.c", "backends/v9958/v9958_gfx.c"):
             source = read_text(os.path.join(GFX_SRC, name))
             for token in ("__sfr", "__at", "outp(", "inp("):
                 self.assertNotIn(token, source,
@@ -146,6 +178,25 @@ class GfxHostTests(unittest.TestCase):
                                      "v9958_io.asm"))
         self.assertIn("out\t(c),a", asm)
         self.assertIn("in\ta,(c)", asm)
+
+    def test_upload_and_palette_surface(self):
+        """The public header declares the palette and upload API, the
+        backend's assembly layer exports their port helpers, and exe.mk
+        builds the new sources into libgfx."""
+        gfx_h = read_text(GFX_H)
+        self.assertIn("struct gfx_rgb {", gfx_h)
+        for name in ("gfx_set_palette", "gfx_upload_begin",
+                     "gfx_upload_write", "gfx_upload_end"):
+            self.assertIn(name, gfx_h)
+        exe_mk = read_text(EXE_MK)
+        self.assertIn("gfx_upload.c", exe_mk)
+        self.assertIn("gfx_palette.c", exe_mk)
+        asm = read_text(os.path.join(GFX_SRC, "backends", "v9958",
+                                     "v9958_io.asm"))
+        for name in ("_gfx_v9958_io_set_vram",
+                     "_gfx_v9958_io_stream_vram",
+                     "_gfx_v9958_io_palette_byte"):
+            self.assertIn(name, asm)
 
     def test_makefile_wires_gfxtest_with_libgfx(self):
         makefile = read_text(MAKEFILE)
@@ -168,10 +219,11 @@ class GfxReplay(HwtestReplay):
                   encoding="utf-8") as handle:
             self.dispatch = json.load(handle)["endpoints"][0]["dispatch"]
 
-    def start(self):
-        with open(GFXTEST_EXE, "rb") as handle:
-            files = {"/".join(KEEP_NAME): KEEP_CONTENT,
-                     DEV_NAME: handle.read()}
+    def start(self, files=None):
+        if files is None:
+            with open(GFXTEST_EXE, "rb") as handle:
+                files = {"/".join(KEEP_NAME): KEEP_CONTENT,
+                         DEV_NAME: handle.read()}
         z = self.make_cpu()
         z.hid = z.ioc_peer = IocCommandPeer(fs2_media=True,
                                             fs2_files=files)
@@ -376,6 +428,212 @@ class TestGfxExitWithoutClose(GfxReplay):
 
     def test_mode6_leak(self):
         self.run_mode("mode6", leak=True)
+
+
+class TestGfxUpload(GfxReplay):
+    """`gfxtest upload`: four streamed rectangles in chunk sizes 1, 7,
+    256 and 4096, then the short, overlong and nested refusals."""
+
+    def test_streams_refusals_and_restore(self):
+        z = self.start()
+        before = self.snapshot(z)
+        ops = []
+        since = len(z.glyphs)
+        z.hid.hid_queue.extend(b"/fs/gfxtest.exe upload\r")
+        # Each rectangle's stream starts its own pattern at offset 0
+        # (gfxtest's `at` restarts per run), so every row is checked
+        # against the matching slice from the pattern's beginning.
+        self.run_recording(z, ops, lambda z: OPS_RELEASE in ops)
+        peer = z.vdp
+        pattern = bytes(upload_byte(i) for i in range(4096))
+        for base, rows, row_bytes, stride, _length in UPLOAD_RECTS:
+            for row in range(rows):
+                start = base + row * stride
+                self.assertEqual(peer.vram[start:start + row_bytes],
+                                 pattern[row * row_bytes:
+                                         (row + 1) * row_bytes],
+                                 "rect %04X row %u" % (base, row))
+        # The short stream wrote 16 bytes of row 350 and 4 of row 351.
+        self.assertEqual(peer.vram[0x15E00:0x15E10], pattern[0:16])
+        self.assertEqual(peer.vram[0x15F00:0x15F04], pattern[16:20])
+        # The overlong stream's first chunk filled all four rows; the
+        # extra byte was refused whole.
+        for row in range(4):
+            base = 0x16800 + row * 256
+            self.assertEqual(peer.vram[base:base + 16],
+                             pattern[row * 16:(row + 1) * 16],
+                             "overlong row %u" % row)
+
+        self.run_recording(z, ops, lambda z:
+                           SHELL_PROMPT in "".join(z.glyphs[since:]))
+        self.settle(z, lambda z: z.vdp.regs[8] == 0x08)
+        fresh = self.trace(z, since)
+        self.assertIn("gfxtest: upload -2 -2 -2", fresh)
+        self.assertIn("gfxtest: upload PASS", fresh)
+        self.assert_hold_sequence(ops)
+        self.assert_restored(z, before)
+        self.assertEqual(self.exclusive(z), 0,
+                         "the exclusive flag survived the run")
+
+
+class TestGfxPalette(GfxReplay):
+    """`gfxtest palette`: the G6 entries while the display is held, a
+    key, then the G7 refusal without a single palette port write."""
+
+    def test_entries_then_g7_refusal(self):
+        z = self.start()
+        before = self.snapshot(z)
+        ops = []
+        since = len(z.glyphs)
+        pcount = len(z.vdp.palette_writes)
+        z.hid.hid_queue.extend(b"/fs/gfxtest.exe palette\r")
+        # Key 1: the program blocks with the three entries on the peer.
+        self.run_recording(z, ops, lambda z:
+                           len(z.vdp.palette_writes) >= pcount + 6)
+        self.assertEqual(z.vdp.regs[0], 0x0A, "key 1 still G6")
+        self.assertEqual(z.vdp.regs[16], 3,
+                         "R#16 ends on the last entry written")
+        self.assertEqual(z.vdp.palette[1], [0x07, 0x00], "entry 1")
+        self.assertEqual(z.vdp.palette[2], [0x70, 0x00], "entry 2")
+        self.assertEqual(z.vdp.palette[3], [0x00, 0x04], "entry 3")
+        self.assertEqual(len(z.vdp.palette_writes), pcount + 6)
+
+        # Key 1: switch to GRAPHIC 7 and refuse the palette in C.
+        pins = MODE_REGS["mode7"]
+        z.hid.hid_queue.extend(b"x")
+        self.run_recording(z, ops, lambda z:
+                           z.vdp.regs[0] == pins["r0"] and
+                           z.vdp.regs[9] == pins["r9"])
+        self.assertEqual(len(z.vdp.palette_writes), pcount + 6,
+                         "the G7 refusal must not reach the port")
+
+        # Key 2: close, the result line, the restored console.
+        z.hid.hid_queue.extend(b"x")
+        self.run_recording(z, ops, lambda z:
+                           SHELL_PROMPT in "".join(z.glyphs[since:]))
+        self.settle(z, lambda z: z.vdp.regs[8] == 0x08)
+        fresh = self.trace(z, since)
+        self.assertIn("gfxtest: palette -7", fresh)
+        self.assertIn("gfxtest: palette PASS", fresh)
+        self.assertNotIn("FAIL", fresh)
+        self.assert_hold_sequence(ops)
+        self.assert_restored(z, before)
+        self.assertEqual(self.exclusive(z), 0,
+                         "the exclusive flag survived the run")
+
+
+class TestPView(GfxReplay):
+    """`pview`: the pictures land centred on the peer's VRAM (the g6
+    one with its file palette), the console is restored after each, and
+    a bad header never reaches the video endpoint."""
+
+    def setUp(self):
+        super().setUp()
+        if not os.path.exists(PVIEW_EXE):
+            self.skipTest("%s missing; run make -C UserSoftware/PView"
+                          % PVIEW_EXE)
+
+    def pview_keyed(self, z, ops, card_file):
+        """Run pview on `card_file`; stop at the key block, where the
+        picture is on the peer and the display is enabled while held.
+
+        The console leaves R#1 at 40h, so the stop waits for the run's
+        own display cycle: the mode setup's display-off (00h) followed
+        by gfx_display_enable's 40h."""
+        since = len(z.glyphs)
+        z.hid.hid_queue.extend(("/fs/pview.exe /fs/%s\r" % card_file)
+                               .encode("ascii"))
+        seen_off = []
+
+        def picture_on(z):
+            if OPS_ACQUIRE not in ops:
+                return False
+            if z.vdp.regs[1] == 0x00:
+                seen_off.append(True)
+            return bool(seen_off) and z.vdp.regs[1] == 0x40
+        self.run_recording(z, ops, picture_on)
+        return since
+
+    def pview_done(self, z, ops, since, before):
+        """The key: close, the done line, the restored console."""
+        z.hid.hid_queue.extend(b"x")
+        self.run_recording(z, ops, lambda z:
+                           SHELL_PROMPT in "".join(z.glyphs[since:]))
+        self.settle(z, lambda z: z.vdp.regs[8] == 0x08)
+        fresh = self.trace(z, since)
+        self.assertIn("pview: done", fresh)
+        self.assertNotIn("FAIL", fresh)
+        self.assert_hold_sequence(ops)
+        self.assert_restored(z, before)
+        self.assertEqual(self.exclusive(z), 0,
+                         "the exclusive flag survived the run")
+
+    def test_pictures_centered_palette_and_bad_header(self):
+        with open(os.path.join(FIXTURES, "parrot-64x32-g7.kimg"),
+                  "rb") as handle:
+            g7 = handle.read()
+        with open(os.path.join(FIXTURES, "parrot-64x32-g6.kimg"),
+                  "rb") as handle:
+            g6 = handle.read()
+        with open(PVIEW_EXE, "rb") as handle:
+            # The card's filesystem is 8.3, so the on-card names use
+            # the .img extension (the host-side fixtures keep their
+            # .kimg names).
+            files = {"/".join(KEEP_NAME): KEEP_CONTENT,
+                     PVIEW_DEV: handle.read(),
+                     "TEST7.IMG": g7, "TEST6.IMG": g6,
+                     "BAD.IMG": b"not a picture\x00\x00"}
+        z = self.start(files)
+        before = self.snapshot(z)
+
+        # The 256-colour picture: centred at x 96, y 90, no palette.
+        ops = []
+        since = self.pview_keyed(z, ops, "test7.img")
+        peer = z.vdp
+        payload = g7[16:]
+        for row in range(32):
+            base = (90 + row) * 256 + 96
+            self.assertEqual(peer.vram[base:base + 64],
+                             payload[row * 64:(row + 1) * 64],
+                             "g7 row %u" % row)
+        self.assertEqual(peer.regs[0], 0x0E, "g7 R#0")
+        self.assertEqual([list(entry) for entry in peer.palette],
+                         before["palette"], "no palette for a g7 file")
+        self.pview_done(z, ops, since, before)
+
+        # The 16-colour picture: centred at x 224, y 90, with the
+        # file's 16 palette entries applied.
+        ops = []
+        since = self.pview_keyed(z, ops, "test6.img")
+        peer = z.vdp
+        palette_bytes = g6[16:64]
+        payload = g6[64:]
+        for entry in range(16):
+            red, green, blue = palette_bytes[entry * 3:entry * 3 + 3]
+            self.assertEqual(peer.palette[entry],
+                             [((red >> 5) << 4) | (blue >> 5),
+                              green >> 5], "entry %u" % entry)
+        for row in range(32):
+            base = (90 + row) * 256 + 112
+            self.assertEqual(peer.vram[base:base + 32],
+                             payload[row * 32:(row + 1) * 32],
+                             "g6 row %u" % row)
+        self.assertEqual(peer.regs[0], 0x0A, "g6 R#0")
+        self.pview_done(z, ops, since, before)
+
+        # The bad header: the error line, and no video dispatch at all.
+        ops = []
+        since = len(z.glyphs)
+        z.hid.hid_queue.extend(b"/fs/pview.exe /fs/bad.img\r")
+        self.run_recording(z, ops, lambda z:
+                           SHELL_PROMPT in "".join(z.glyphs[since:]))
+        fresh = self.trace(z, since)
+        self.assertIn("pview: /fs/bad.img: bad header", fresh)
+        # Only the console's own WRITE renders: pview never opened the
+        # video (no ACQUIRE, DIRECT_INFO or RELEASE).
+        self.assertTrue(all(op == OPS_WRITE for op in ops),
+                        "a bad header must not reach the video "
+                        "endpoint: %s" % (ops,))
 
 
 if __name__ == "__main__":

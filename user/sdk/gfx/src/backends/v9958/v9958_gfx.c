@@ -53,11 +53,14 @@ static const uint8_t v9958_common_regs[][2] = {
 	(sizeof(v9958_common_regs) / sizeof(v9958_common_regs[0]))
 
 /* Load the ports the record reported into the assembly layer's bytes:
- * the backend reaches the command and indirect ports through them. */
+ * the backend reaches the command, indirect, data and palette ports
+ * through them. */
 static void v9958_load_ports(const struct kvideo_direct_info *info)
 {
 	gfx_v9958_port_cmd = info->command_port;
 	gfx_v9958_port_indirect = info->indirect_port;
+	gfx_v9958_port_data = info->data_port;
+	gfx_v9958_port_palette = info->palette_port;
 }
 
 void v9958_set_mode(struct gfx_state *state, enum gfx_mode mode)
@@ -82,6 +85,15 @@ void v9958_set_mode(struct gfx_state *state, enum gfx_mode mode)
 				 v9958_common_regs[i][1]);
 	}
 	gfx_v9958_io_reg(r25, GFX_V9958_REG_R25);
+	if (mode == GFX_MODE_256x212_YJK) {
+		/* The YJK pixel carries J and K; its Y is palette entry 0,
+		 * so the mode establishes the shared luminance the host
+		 * encoder uses (tools/kimg.py). */
+		gfx_v9958_io_reg(0x00u, GFX_V9958_REG_R16);
+		gfx_v9958_io_palette_byte((uint8_t)((GFX_V9958_YJK_Y3 << 4) |
+						    GFX_V9958_YJK_Y3));
+		gfx_v9958_io_palette_byte((uint8_t)GFX_V9958_YJK_Y3);
+	}
 }
 
 void v9958_display_enable(struct gfx_state *state, uint8_t enabled)
@@ -120,4 +132,22 @@ void v9958_clear(struct gfx_state *state, gfx_color_t color)
 	v9958_load_ports(&state->info);
 	gfx_v9958_io_start_command(cmd);
 	gfx_v9958_io_wait_command();
+}
+
+/* The palette, only in the 16-colour mode (gfx_palette.c refuses the
+ * others): for each entry the V9958 representation is (R3 << 4) | B3
+ * then G3, the entry selected through R#16 and the palette pointer
+ * auto-advancing after every pair. */
+void v9958_set_palette(struct gfx_state *state, uint8_t first,
+		       uint8_t count, const struct gfx_rgb *colors)
+{
+	uint8_t i;
+
+	v9958_load_ports(&state->info);
+	for (i = 0u; i < count; ++i) {
+		gfx_v9958_io_reg((uint8_t)(first + i), GFX_V9958_REG_R16);
+		gfx_v9958_io_palette_byte((uint8_t)(((colors[i].r >> 5) << 4) |
+						    (colors[i].b >> 5)));
+		gfx_v9958_io_palette_byte((uint8_t)(colors[i].g >> 5));
+	}
 }

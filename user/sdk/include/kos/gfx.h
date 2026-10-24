@@ -28,6 +28,14 @@ enum gfx_mode {
 
 typedef uint8_t gfx_color_t;
 
+/* One palette entry in the portable representation: 8 bits per channel;
+ * the backend converts to its hardware's scale. */
+struct gfx_rgb {
+	uint8_t r;
+	uint8_t g;
+	uint8_t b;
+};
+
 /* The current mode's geometry (gfx_get_info). */
 struct gfx_info {
 	enum gfx_mode mode;
@@ -63,5 +71,34 @@ int gfx_display_enable(uint8_t enabled);
 /* Clear both VRAM pages' visible area to `color` (in the 16-colour
  * mode 0..15) with one high-speed fill, waited for.  No VIDEO IPC. */
 int gfx_clear(gfx_color_t color);
+
+/* Program `count` palette entries starting at `first` (the 16-colour
+ * mode holds 16 entries).  Direct I/O under the hardware WAIT; a mode
+ * without a programmable palette (256-colour and YJK) is
+ * -KOS_ENOTSUP.  No VIDEO IPC. */
+int gfx_set_palette(uint8_t first, uint8_t count,
+		    const struct gfx_rgb *colors);
+
+/* Begin a streaming pixel upload into the rectangle (x, y, width,
+ * height): the geometry is pixels, y may target the off-screen page
+ * (256-511), and the rectangle must lie inside the 512-line space and
+ * the mode's width (x and width even in the 16-colour mode).  The byte
+ * stream follows the mode's packing; the transfer takes exactly
+ * bytes(width, height), position is kept across gfx_upload_write
+ * calls, and a pending drawing batch is flushed first.  Not nestable.
+ * No VIDEO IPC. */
+int gfx_upload_begin(uint16_t x, uint16_t y, uint16_t width,
+		     uint16_t height);
+
+/* Stream `length` payload bytes of the current upload through the data
+ * port, one VRAM address per row (one for the whole transfer when the
+ * rectangle spans the full width).  Any chunk length; 0 or the bytes
+ * written, -KOS_EINVAL when the chunk would run past the upload's end
+ * (the chunk is refused whole and the position is unchanged). */
+int gfx_upload_write(const void *data, uint16_t length);
+
+/* Finish the upload: 0 when the exact byte count was received, or
+ * -KOS_EINVAL with the upload cancelled when bytes are missing. */
+int gfx_upload_end(void);
 
 #endif /* KOS_SDK_GFX_H */

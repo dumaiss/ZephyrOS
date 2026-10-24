@@ -63,6 +63,8 @@ user/sdk/
     src/gfx.c             gfx_open, gfx_close, gfx_get_info, the state
     src/gfx_mode.c        gfx_set_mode, gfx_display_enable
     src/gfx_draw.c        gfx_clear
+    src/gfx_upload.c      gfx_upload_begin/write/end (pixel streaming)
+    src/gfx_palette.c     gfx_set_palette
     src/backends/v9958/   the V9958 backend: mode/command C and port I/O
   template/               the copyable minimal program (Makefile, hello.c)
   examples/               hello, fardemo, fardata, files
@@ -144,6 +146,16 @@ The graphics SDK is the same deal: `LIBS=gfx` links `libgfx`, whose
 program includes `kos/gfx.h` and calls `gfx_open` to take `/dev/video`
 exclusively.  The design is [gfx-sdk.md](gfx-sdk.md); a program that
 uses no graphics pays no gfx code or data cost.
+
+The image pieces hang off the same library.  `gfx_upload_begin`,
+`gfx_upload_write` and `gfx_upload_end` stream a rectangle's pixels
+straight to VRAM through the data port (any chunk length, one address
+per row, the exact byte count enforced), and `gfx_set_palette`
+programs the 16-colour mode's palette.  Pictures come prepared: the
+KIMG v1 format (`kos/kimg.h`) carries a header, an optional palette and
+the payload in the mode's packing, `tools/kimg.py` converts
+PNG/JPEG to it on the host, and `pview.exe` (UserSoftware/PView)
+displays a picture file; the design is gfx-sdk.md sections 10-17.
 
 There is no hand-written manifest: `tools/exemanifest.py` computes
 `image_size = s__DATA - 0100h`, `bss_size = l__DATA` and
@@ -736,6 +748,8 @@ the gates the same way any client does:
 | `gfx_open`, `gfx_close`, `gfx_get_info` | `gfx`, `ipc`, `kos_ipcgate`, `nsgate` |
 | `gfx_set_mode`, `gfx_display_enable` | `gfx_mode`, `v9958_gfx`, `gfx_v9958_io` |
 | `gfx_clear` | `gfx_draw`, `v9958_gfx`, `gfx_v9958_io` |
+| `gfx_set_palette` | `gfx_palette`, `v9958_gfx`, `gfx_v9958_io` |
+| `gfx_upload_begin`, `gfx_upload_write`, `gfx_upload_end` | `gfx_upload`, `gfx_v9958_io` |
 
 The backend's assembly member is pulled only through the backend C
 member, so a program that calls none of the drawing entry points links
@@ -854,7 +868,8 @@ kos-sdk-<version>/
   lib/             libkos.lib (the runtime object included), libtui.lib,
                    libtui_128x35.lib, libtui_widgets.lib, libgfx.lib,
                    crt0.rel
-  tools/           exepack.py, exemanifest.py, ihx.py (Python standard library only)
+  tools/           exepack.py, exemanifest.py, ihx.py (Python standard
+                   library only), kimg.py (Pillow: the KIMG converter)
   mk/kos.mk        the program rule
   template/        Makefile and hello.c
   examples/        hello, fardemo, fardata, files, tui_demo, tui_keys,

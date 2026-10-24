@@ -44,7 +44,7 @@ import sys
 import tarfile
 from pathlib import Path
 
-TOOL_FILES = ("exepack.py", "exemanifest.py", "ihx.py")
+TOOL_FILES = ("exepack.py", "exemanifest.py", "ihx.py", "kimg.py")
 DOC_FILES = ("sdk.md", "tui.md", "exe-format.md")
 SDK_INCLUDE = "user/sdk/include"
 SDK_TEMPLATE = "user/sdk/template"
