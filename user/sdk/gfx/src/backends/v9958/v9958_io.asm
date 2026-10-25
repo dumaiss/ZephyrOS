@@ -36,6 +36,7 @@
 
 	.globl _gfx_v9958_io_reg
 	.globl _gfx_v9958_io_wait_command
+	.globl _gfx_v9958_io_wait_vblank
 	.globl _gfx_v9958_io_start_command
 	.globl _gfx_v9958_io_run_hmmv
 	.globl _gfx_v9958_io_run_hmmm
@@ -59,6 +60,7 @@ GFX_V9958_REG_R17       = 17
 GFX_V9958_CMD_BASE      = 32
 GFX_V9958_CMD_COUNT     = 15
 GFX_V9958_STATUS2_CE    = 0x01
+GFX_V9958_STATUS2_VR    = 0x40
 GFX_V9958_VRAM_ADDR_HI  = 0x40
 
 ; The command codes and argument bits (V9958 Technical Data Book, the
@@ -146,6 +148,25 @@ gfx_v9958_wait_loop:
 	in	a,(c)
 	and	#GFX_V9958_STATUS2_CE
 	jr	nz,gfx_v9958_wait_loop
+	ret
+
+; ---------------------------------------------------------------------------
+; void gfx_v9958_io_wait_vblank(void);
+;   Block until the start of the next vertical retrace: first wait for
+;   S#2.VR to clear (leaving any current retrace), then for it to rise.
+;   A call inside a retrace therefore waits for the following frame.
+; ---------------------------------------------------------------------------
+_gfx_v9958_io_wait_vblank::
+	ld	a,(_gfx_v9958_port_cmd)
+	ld	c,a
+gfx_v9958_vblank_clear:
+	in	a,(c)
+	and	#GFX_V9958_STATUS2_VR
+	jr	nz,gfx_v9958_vblank_clear
+gfx_v9958_vblank_set:
+	in	a,(c)
+	and	#GFX_V9958_STATUS2_VR
+	jr	z,gfx_v9958_vblank_set
 	ret
 
 ; ---------------------------------------------------------------------------

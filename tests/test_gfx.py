@@ -1336,6 +1336,203 @@ class TestGfxTiming(GfxReplay):
         self.assert_hold_sequence(ops)
 
 
+# 60 Hz at the emulated 10 MHz CPU; the retrace is the frame's last
+# 50 of its 262 lines.
+FRAME_TSTATES = 166667
+RETRACE_TSTATES = (FRAME_TSTATES * 50 + 131) // 262
+
+
+class TestGfxPages(GfxReplay):
+    """`gfxtest pages`: the asynchronous batches, the page switch at
+    vertical blank, the frame pacing and the partial present, with the
+    peer's frame clock and duration model on."""
+
+    def test_async_pages_and_partial_present(self):
+        z = self.start()
+        before = self.snapshot(z)
+        ops = []
+        since = len(z.glyphs)
+        z.hid.hid_queue.extend(b"/fs/gfxtest.exe pages\r")
+        self.run_recording(z, ops, lambda z: OPS_ACQUIRE in ops)
+        self.run_recording(z, ops, lambda z: OPS_DIRECT_INFO in ops)
+        # The hold owns the display (IE0 off): turn the frame clock and
+        # the per-command duration model on from here.
+        z.vdp.frame_period = FRAME_TSTATES
+        z.vdp.duration_model = True
+        self.assertEqual(z.vdp.frames, 0)
+
+        def draws():
+            return [c for c in z.vdp.commands[c0:]
+                    if c["code"] != 0x00]
+
+        c0 = len(z.vdp.commands)
+
+        def to_key(count, label):
+            """Run until the program blocks at a getchar: the draws
+            count reaches `count` and then goes quiet."""
+            steady = 0
+            seen = 0
+            for _step in range(EXEC_BUDGET * 3):
+                self.skip_delay(z)
+                self.feed(z)
+                z.step()
+                now = len(draws())
+                if now >= count and now == seen:
+                    steady += 1
+                else:
+                    steady = 0
+                seen = now
+                if steady >= 200000:
+                    return
+            self.fail("the pages run never reached %s" % label)
+
+        # Key 1: the async order - the fill and the 32-fill batch
+        # return with the engine still drawing, and the upload over
+        # the fill's rectangle waited for it (its bytes win).
+        to_key(34, "key 1")
+        self.assertNotIn(OPS_RELEASE, ops,
+                         "the pages run still holds the display")
+        peer = z.vdp
+        cmds = draws()
+        self.assertEqual(len(cmds), 34, [c["fill"] for c in cmds])
+        self.assertEqual(cmds[0]["fill"], (0, 0, 512, 212, 0x00),
+                         "the black clear")
+        self.assertEqual(cmds[1]["fill"], (8, 10, 64, 8, 0xAA),
+                         "the fill the upload overwrites")
+        for i in range(31):
+            color = (i & 0x07) + 1
+            self.assertEqual(cmds[2 + i]["fill"],
+                             (8 + i * 6, 40, 2, 2,
+                              color | (color << 4)),
+                             "batch fill %u" % i)
+        self.assertEqual(cmds[33]["fill"], (194, 40, 32, 8, 0xBB),
+                         "the batch's last, large fill")
+        # The marks bracket the batch: the second, right after gfx_end,
+        # was reached while the last fill's CE was still set (the batch
+        # returned asynchronously), and the pair prices the CPU's
+        # queue-and-return time.
+        marks = [now for value, reg, now in peer.reg_writes
+                 if reg == 16 and value == 15]
+        mark1, mark2 = marks[-2:]
+        self.assertGreater(cmds[33]["busy_until"], mark2,
+                           "the batch returned with CE still set")
+        print("gfx pages: 32-fill batch CPU time %d instructions"
+              % (mark2 - mark1))
+        # The upload's first VRAM access waited for the fill: a CE-busy
+        # status read between the fill's start and the address set.
+        fill_start = cmds[1]["start"]
+        first_addr = [now for now, addr in peer.addr_writes
+                      if now >= fill_start][0]
+        self.assertTrue(
+            any(fill_start <= now < first_addr and ce
+                for now, ce, _vr in peer.status_reads),
+            "the upload waited for the fill")
+        # The upload's bytes won, row by row.
+        pattern = bytes(upload_byte(i) for i in range(256))
+        for row in range(10, 18):
+            self.assertEqual(peer.vram[row * 256 + 4:row * 256 + 36],
+                             pattern[(row - 10) * 32:
+                                     (row - 9) * 32],
+                             "upload row %u" % row)
+        for i in range(31):
+            color = (i & 0x07) + 1
+            byte = color | (color << 4)
+            for row in (40, 41):
+                self.assertEqual(peer.vram[row * 256 + 4 + 3 * i],
+                                 byte, "batch fill %u row %u" % (i, row))
+        for row in range(40, 48):
+            self.assertEqual(peer.vram[row * 256 + 97:row * 256 + 113],
+                             bytes([0xBB]) * 16,
+                             "the large fill row %u" % row)
+
+        # Key 2: page 1's picture and the page switch.  The R#2 write
+        # lands inside a retrace window and the shown page reads 1.
+        z.hid.hid_queue.extend(b"x")
+        to_key(37, "key 2")
+        cmds = draws()
+        self.assertEqual(cmds[34]["fill"], (0, 0, 512, 212, 0xCC),
+                         "page 0's clear")
+        self.assertEqual(cmds[35]["fill"], (0, 256, 512, 212, 0xDD),
+                         "page 1's clear")
+        self.assertEqual(cmds[36]["fill"], (0, 256, 512, 70, 0xEE),
+                         "page 1's band")
+        self.assertEqual(peer.shown_page, 1)
+        _write_at, value, clock = peer.page2_writes[-1]
+        self.assertEqual(value, 0x3F, "R#2 with the page-1 bit")
+        self.assertGreaterEqual(clock, FRAME_TSTATES - RETRACE_TSTATES,
+                                "the page switch landed in the retrace")
+        for row in range(70):
+            self.assertEqual(peer.vram[256 * 256 + row * 256:
+                                       256 * 256 + (row + 1) * 256],
+                             bytes([0xEE]) * 256, "band row %u" % row)
+        for row in range(70, 212):
+            self.assertEqual(peer.vram[256 * 256 + row * 256:
+                                       256 * 256 + (row + 1) * 256],
+                             bytes([0xDD]) * 256, "page-1 row %u" % row)
+
+        # Key 3: the three wait_vblank calls returned in three frames
+        # (one retrace per frame).
+        z.hid.hid_queue.extend(b"x")
+        to_key(37, "key 3")
+        marks = [now for value, reg, now in peer.reg_writes
+                 if reg == 16 and value == 15][-2:]
+        reads = [(now, vr) for now, _ce, vr in peer.status_reads
+                 if marks[0] <= now <= marks[1]]
+        edges = 0
+        prev = reads[0][1]
+        for _now, vr in reads[1:]:
+            if vr and not prev:
+                edges += 1
+            prev = vr
+        self.assertEqual(edges, 3, "one retrace edge per wait_vblank")
+        self.assertGreaterEqual(peer.frames, 3, "three frames elapsed")
+
+        # Key 4: the partial present - page 0 shown again, the band
+        # copied from page 1 across the blank; page 0's band equals
+        # page 1's and the rest of page 0 is untouched.
+        z.hid.hid_queue.extend(b"x")
+        to_key(38, "key 4")
+        cmds = draws()
+        block = cmds[37]["block"]
+        self.assertEqual((block[0] | (block[1] << 8),
+                          block[2] | (block[3] << 8),
+                          block[4] | (block[5] << 8),
+                          block[6] | (block[7] << 8),
+                          block[8] | (block[9] << 8),
+                          block[10] | (block[11] << 8),
+                          block[13]),
+                         (0, 256, 0, 0, 512, 70, 0x00),
+                         "the band copy")
+        self.assertEqual(peer.shown_page, 0)
+        _write_at, value, clock = peer.page2_writes[-1]
+        self.assertEqual(value, 0x1F, "R#2 back to page zero")
+        self.assertGreaterEqual(clock, FRAME_TSTATES - RETRACE_TSTATES,
+                                "the switch back landed in the retrace")
+        for row in range(70):
+            self.assertEqual(peer.vram[row * 256:(row + 1) * 256],
+                             bytes([0xEE]) * 256,
+                             "presented band row %u" % row)
+        for row in range(70, 212):
+            self.assertEqual(peer.vram[row * 256:(row + 1) * 256],
+                             bytes([0xCC]) * 256,
+                             "page-0 row %u" % row)
+
+        # Key 5: the refusal, the release and the console back.
+        z.hid.hid_queue.extend(b"x")
+        self.run_recording(
+            z, ops,
+            lambda z: SHELL_PROMPT in "".join(z.glyphs[since:]))
+        self.settle(z, lambda z: z.vdp.regs[8] == 0x08)
+        fresh = self.trace(z, since)
+        self.assertIn("gfxtest: pages 0 -2 1", fresh)
+        self.assertIn("gfxtest: pages PASS", fresh)
+        self.assertNotIn("FAIL", fresh)
+        self.assert_hold_sequence(ops)
+        self.assert_restored(z, before)
+        self.assertEqual(self.exclusive(z), 0,
+                         "the exclusive flag survived the run")
+
+
 class TestGfxText(GfxReplay):
     """`gfxtest text`: the expansion and the opaque sink in both modes,
     two colour pairs, the right-edge clip, the redefined glyph and its

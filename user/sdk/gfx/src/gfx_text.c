@@ -155,6 +155,9 @@ static int gfx_text_run(uint16_t x, uint16_t y, const char *text,
 	if (gfx_flush() < 0) {
 		return -KOS_EINVAL;
 	}
+	/* The sink streams VRAM through the CPU: wait for the engine, so
+	 * the text lands after the last command the flush issued. */
+	gfx_v9958_io_wait_command();
 	for (i = 0u; i < length; ++i) {
 		uint16_t col = g6 != 0u ?
 			(uint16_t)((x + i * GFX_FONT_GLYPH_WIDTH) / 2u) :

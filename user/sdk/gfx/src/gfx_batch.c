@@ -61,7 +61,7 @@ int gfx_wait(void)
 	if (gfx_state.video_handle == 0) {
 		return -KOS_EINVAL;
 	}
-	gfx_v9958_io_wait_command();
+	v9958_wait_command(&gfx_state);
 	return 0;
 }
 

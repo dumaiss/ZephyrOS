@@ -74,8 +74,9 @@ void v9958_set_mode(struct gfx_state *state, enum gfx_mode mode)
 		r25 |= GFX_V9958_R25_YJK;
 	}
 	v9958_load_ports(&state->info);
-
-	/* A previous holder may have left a command running. */
+	/* A previous holder may have left a command running: the mode set
+	 * waits for it (the register writes must not race the engine). */
+	gfx_v9958_io_wait_command();
 	gfx_v9958_io_reg(0x00u, GFX_V9958_REG_R46);
 	gfx_v9958_io_reg(GFX_V9958_R8_64K_DRAM | GFX_V9958_R8_SPRITES_OFF,
 			 GFX_V9958_REG_R8);
@@ -116,8 +117,10 @@ static void v9958_hmmm_adjust(struct gfx_cmd *record)
 
 /* Execute `count` records in order: one command per record, each one
  * built and started by the assembly builders (the block build and the
- * R#32-46 write live there: one R#17 select, then OUTI/OTIR), and
- * waited for, so the caller observes the batch exactly as queued. */
+ * R#32-46 write live there: one R#17 select, then OUTI/OTIR).  The
+ * builders wait for the engine before each command; the batch returns
+ * as soon as its last command is issued, with the VDP still drawing,
+ * so the CPU runs while the engine finishes (gfx_wait waits for it). */
 void v9958_run_batch(struct gfx_state *state, const struct gfx_cmd *cmds,
 		     uint8_t count)
 {
@@ -150,8 +153,37 @@ void v9958_run_batch(struct gfx_state *state, const struct gfx_cmd *cmds,
 			gfx_v9958_io_run_pset(&cmds[i]);
 			break;
 		}
-		gfx_v9958_io_wait_command();
 	}
+}
+
+/* Wait for the command engine: gfx_wait, and the CPU VRAM paths that
+ * must never race a running command. */
+void v9958_wait_command(struct gfx_state *state)
+{
+	v9958_load_ports(&state->info);
+	gfx_v9958_io_wait_command();
+}
+
+/* Wait for the start of the next vertical retrace (gfx_wait_vblank). */
+void v9958_wait_vblank(struct gfx_state *state)
+{
+	v9958_load_ports(&state->info);
+	gfx_v9958_io_wait_vblank();
+}
+
+/* Switch the displayed page at the next vertical blank: wait for the
+ * engine (a running command may touch either page), then for the
+ * retrace, then write R#2's page bit (A16 of the pattern name table)
+ * with every other bit kept at the mode's value. */
+void v9958_show_page(struct gfx_state *state, uint8_t page)
+{
+	v9958_load_ports(&state->info);
+	gfx_v9958_io_wait_command();
+	gfx_v9958_io_wait_vblank();
+	gfx_v9958_io_reg((uint8_t)(GFX_V9958_R2_PAGE_ZERO |
+				  (page != 0u ? GFX_V9958_R2_PAGE_BIT
+					      : 0u)),
+			 GFX_V9958_REG_R2);
 }
 
 /* The palette, only in the 16-colour mode (gfx_palette.c refuses the
@@ -164,6 +196,7 @@ void v9958_set_palette(struct gfx_state *state, uint8_t first,
 	uint8_t i;
 
 	v9958_load_ports(&state->info);
+	gfx_v9958_io_wait_command();
 	for (i = 0u; i < count; ++i) {
 		gfx_v9958_io_reg((uint8_t)(first + i), GFX_V9958_REG_R16);
 		gfx_v9958_io_palette_byte((uint8_t)(((colors[i].r >> 5) << 4) |

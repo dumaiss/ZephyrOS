@@ -1,8 +1,10 @@
-/* KonaOS libgfx: mode setup and the display switch.
+/* KonaOS libgfx: mode setup, the display switch and page flipping.
  *
  * gfx_set_mode establishes a complete known register state from any
  * VDP state, with the display off; gfx_display_enable is the only call
- * that turns it on.  Both go straight to the backend: no VIDEO IPC.
+ * that turns it on.  gfx_show_page switches the displayed page at the
+ * next vertical blank; gfx_wait_vblank waits for one.  All go straight
+ * to the backend: no VIDEO IPC.
  */
 
 #include "kos.h"
@@ -38,6 +40,7 @@ int gfx_set_mode(enum gfx_mode mode)
 	v9958_set_mode(&gfx_state, mode);
 	gfx_state.mode_set = 1u;
 	gfx_state.mode = (uint8_t)mode;
+	gfx_state.shown_page = 0u;
 	if (mode == GFX_MODE_512x212_16) {
 		gfx_state.width = GFX_WIDTH_G6;
 		gfx_state.height = GFX_HEIGHT;
@@ -59,5 +62,35 @@ int gfx_display_enable(uint8_t enabled)
 		return -KOS_EINVAL;
 	}
 	v9958_display_enable(&gfx_state, enabled);
+	return 0;
+}
+
+int gfx_show_page(uint8_t page)
+{
+	if (gfx_state.video_handle == 0 || gfx_state.mode_set == 0u) {
+		return -KOS_EINVAL;
+	}
+	if (page > 1u) {
+		return -KOS_EINVAL;
+	}
+	/* A queued batch flushes first, so the switch follows every
+	 * command the application queued. */
+	if (gfx_flush() < 0) {
+		return -KOS_EINVAL;
+	}
+	v9958_show_page(&gfx_state, page);
+	gfx_state.shown_page = page;
+	return 0;
+}
+
+int gfx_wait_vblank(void)
+{
+	if (gfx_state.video_handle == 0 || gfx_state.mode_set == 0u) {
+		return -KOS_EINVAL;
+	}
+	if (gfx_flush() < 0) {
+		return -KOS_EINVAL;
+	}
+	v9958_wait_vblank(&gfx_state);
 	return 0;
 }

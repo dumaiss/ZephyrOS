@@ -80,6 +80,12 @@ void gfx_close(void)
 	if (gfx_state.video_handle == 0) {
 		return;
 	}
+	/* The release hands the screen back to the console: finish any
+	 * command still drawing, so the engine is idle for the console's
+	 * bring-up. */
+	if (gfx_state.mode_set != 0u) {
+		gfx_v9958_io_wait_command();
+	}
 	(void)unbind((unsigned char)gfx_state.video_handle);
 	gfx_state.video_handle = 0;
 	/* The queue dies with the handle: whatever was pending never
@@ -100,5 +106,6 @@ int gfx_get_info(struct gfx_info *info)
 	info->width = gfx_state.width;
 	info->height = gfx_state.height;
 	info->bpp = gfx_state.bpp;
+	info->page = gfx_state.shown_page;
 	return 0;
 }

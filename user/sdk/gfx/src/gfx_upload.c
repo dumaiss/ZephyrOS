@@ -67,6 +67,10 @@ int gfx_upload_begin(uint16_t x, uint16_t y, uint16_t width,
 	if (gfx_flush() < 0) {
 		return -KOS_EINVAL;
 	}
+	/* And the stream waits for the engine, so its bytes land after
+	 * the last command the flush issued (the batch returns with it
+	 * still drawing). */
+	gfx_v9958_io_wait_command();
 	gfx_state.upload_active = 1u;
 	gfx_state.upload_full_width = (x == 0u && width == full_width) ? 1u
 		: 0u;

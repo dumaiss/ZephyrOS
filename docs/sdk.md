@@ -183,6 +183,23 @@ HMMV for an aligned COPY and the per-pixel LMMV otherwise.  The
 ellipse walk runs on the CPU; the spans queue like any other record
 and the batch auto-flushes as it fills.  In YJK only an aligned COPY
 `gfx_fill_rect` is accepted; the other shapes are -KOS_ENOTSUP.
+
+Drawing is asynchronous: the backend waits for the VDP's command
+engine before it starts each command, not after, so `gfx_end` (and a
+call outside a batch) returns with the VDP still drawing and the CPU
+runs while it finishes; every CPU VRAM path - the upload, the text
+sink, the palette, a mode set, a page switch, `gfx_close` - waits for
+the engine first, so it can never race a running command.  `gfx_wait`
+waits for the last command to finish, for a program that reads VRAM
+or times its frame.  Both drawing modes hold two 256-line pages, and
+`gfx_show_page(0|1)` switches the displayed page at the next vertical
+blank (it waits for the engine and the retrace, then writes R#2 -
+atomic, no tearing; `gfx_get_info` reports the shown page);
+`gfx_wait_vblank` waits for the start of the next retrace, for a
+frame loop or a partial present: draw a band on the hidden page
+(y + 256 for page 1), then `gfx_wait_vblank()` and `gfx_copy_rect`
+it onto the shown page - the VDP's copy speed decides how much of the
+band lands inside the ~3.2 ms blank.
 Pictures come prepared: the
 KIMG v1 format (`kos/kimg.h`) carries a header, an optional palette and
 the payload in the mode's packing, `tools/kimg.py` converts
@@ -797,11 +814,11 @@ the gates the same way any client does:
 
 | a program calls | gfx members linked |
 |---|---|
-| `gfx_open`, `gfx_close`, `gfx_get_info` | `gfx`, `gfx_font`, `ipc`, `kos_ipcgate`, `nsgate` |
-| `gfx_set_mode`, `gfx_display_enable` | `gfx_mode`, `v9958_gfx`, `gfx_v9958_io` |
+| `gfx_open`, `gfx_close`, `gfx_get_info` | `gfx`, `gfx_font`, `ipc`, `kos_ipcgate`, `nsgate`, `gfx_v9958_io` |
+| `gfx_set_mode`, `gfx_display_enable`, `gfx_show_page`, `gfx_wait_vblank` | `gfx_mode`, `v9958_gfx`, `gfx_v9958_io` |
 | `gfx_clear`, `gfx_fill_rect`, `gfx_copy_rect` | `gfx_draw`, `gfx_batch`, `v9958_gfx`, `gfx_v9958_io` |
 | `gfx_rect`, `gfx_line`, `gfx_point`, `gfx_ellipse`, `gfx_fill_ellipse` | `gfx_shapes`, `gfx_batch`, `v9958_gfx`, `gfx_v9958_io` |
-| `gfx_begin`, `gfx_end`, `gfx_flush` | `gfx_batch`, `v9958_gfx`, `gfx_v9958_io` |
+| `gfx_begin`, `gfx_end`, `gfx_flush`, `gfx_wait` | `gfx_batch`, `v9958_gfx`, `gfx_v9958_io` |
 | `gfx_set_palette` | `gfx_palette`, `v9958_gfx`, `gfx_v9958_io` |
 | `gfx_upload_begin`, `gfx_upload_write`, `gfx_upload_end` | `gfx_upload`, `gfx_v9958_io` |
 | `gfx_font_set_glyph`, `gfx_font_reset_glyph`, `gfx_font_reset` | `gfx_font` |

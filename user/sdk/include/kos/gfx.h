@@ -42,6 +42,7 @@ struct gfx_info {
 	uint16_t width;
 	uint16_t height;
 	uint8_t bpp;
+	uint8_t page;
 };
 
 /* Take `/dev/video` exclusively and initialize the graphics context:
@@ -94,6 +95,17 @@ int gfx_flush(void);
 /* Wait until the last drawing command has finished, for a program
  * that reads VRAM or times its frame.  No VIDEO IPC. */
 int gfx_wait(void);
+
+/* Show the page (0 or 1): wait for the command engine and the next
+ * vertical blank, then switch the displayed page (R#2) - atomic, no
+ * tearing.  gfx_get_info reports the shown page; gfx_set_mode shows
+ * page 0.  No VIDEO IPC. */
+int gfx_show_page(uint8_t page);
+
+/* Wait for the start of the next vertical retrace (status register
+ * 2's VR: low, then high), for a frame loop or a partial present.  No
+ * VIDEO IPC. */
+int gfx_wait_vblank(void);
 
 /* A timing marker: one register write (R#16 = 15, the palette
  * pointer) that the gfxtest timing replay reads back to count CPU

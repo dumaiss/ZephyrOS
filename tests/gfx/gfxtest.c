@@ -759,6 +759,94 @@ static int gfxtest_timing(void)
 	return 0;
 }
 
+static int gfxtest_pages(void)
+{
+	static uint8_t pattern[256];
+	struct gfx_info info;
+	unsigned int i;
+	uint8_t page_seen = 0u;
+	int result;
+	int page2_result;
+
+	result = gfx_open();
+	if (result < 0) {
+		printf("gfxtest: FAIL open %d\r\n", result);
+		return 1;
+	}
+	result = gfx_set_mode(GFX_MODE_512x212_16);
+	if (result < 0) {
+		gfx_close();
+		printf("gfxtest: FAIL mode %d\r\n", result);
+		return 1;
+	}
+	(void)gfx_clear(0x00u);
+	(void)gfx_display_enable(1u);
+
+	/* The asynchronous order: the fill dispatches and returns with
+	 * the engine still drawing; the upload over the same rectangle
+	 * waits for it, and the upload's bytes win.  The pattern is
+	 * computed first, so the upload runs while the fill still is. */
+	for (i = 0u; i < 256u; ++i) {
+		pattern[i] = gfxtest_upload_byte(i);
+	}
+	result = gfx_fill_rect(8u, 10u, 64u, 8u, 0x0Au, GFX_OP_COPY);
+	result |= gfx_upload_begin(8u, 10u, 64u, 8u);
+	result |= gfx_upload_write(pattern, 256u) != 256;
+	result |= gfx_upload_end();
+	/* A 32-fill batch returns while the engine is still drawing: the
+	 * marks bracket gfx_end, and the replay sees the second land
+	 * before the last fill's CE clears (the last fill is large, so
+	 * its busy window outlasts gfx_end's return). */
+	gfxtest_mark();
+	gfx_begin();
+	for (i = 0u; i < 31u; ++i) {
+		result |= gfx_fill_rect((uint16_t)(8u + i * 6u), 40u, 2u, 2u,
+					(gfx_color_t)((i & 0x07u) + 1u),
+					GFX_OP_COPY);
+	}
+	result |= gfx_fill_rect(194u, 40u, 32u, 8u, 0x0Bu, GFX_OP_COPY);
+	result |= gfx_end();
+	gfxtest_mark();
+	(void)getchar(); /* key 1: the replay holds the async order */
+
+	/* Page 1's picture: a full clear, then a band (a third of the
+	 * screen) for the partial present. */
+	result |= gfx_clear(0x0Cu);
+	result |= gfx_fill_rect(0u, 256u, 512u, 212u, 0x0Du, GFX_OP_COPY);
+	result |= gfx_fill_rect(0u, 256u, 512u, 70u, 0x0Eu, GFX_OP_COPY);
+	result |= gfx_show_page(1u);
+	(void)gfx_get_info(&info);
+	page_seen = info.page;
+	(void)getchar(); /* key 2: page 1 is shown */
+
+	/* Three frames, one per call, wherever in the frame the first
+	 * call lands. */
+	gfxtest_mark();
+	result |= gfx_wait_vblank();
+	result |= gfx_wait_vblank();
+	result |= gfx_wait_vblank();
+	gfxtest_mark();
+	(void)getchar(); /* key 3: the replay counts the frames */
+
+	/* The partial present: page 0 back, then the band copied from
+	 * page 1 across the vertical blank. */
+	result |= gfx_show_page(0u);
+	result |= gfx_wait_vblank();
+	result |= gfx_copy_rect(0u, 256u, 0u, 0u, 512u, 70u);
+	(void)getchar(); /* key 4: the replay checks page 0's band */
+
+	page2_result = gfx_show_page(2u);
+	gfx_close();
+	printf("gfxtest: pages %d %d %u\r\n", result, page2_result,
+	       page_seen);
+	if (result == 0 && page2_result == -KOS_EINVAL && page_seen == 1u) {
+		printf("gfxtest: pages PASS\r\n");
+		return 0;
+	}
+	printf("gfxtest: pages FAIL\r\n");
+	return 1;
+}
+
 int main(int argc, char **argv)
 {
 	int leak;
@@ -788,6 +876,9 @@ int main(int argc, char **argv)
 	}
 	if (strcmp(argv[0], "timing") == 0) {
 		return gfxtest_timing();
+	}
+	if (strcmp(argv[0], "pages") == 0) {
+		return gfxtest_pages();
 	}
 	if (strcmp(argv[0], "text") == 0) {
 		return gfxtest_text();

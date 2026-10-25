@@ -101,6 +101,7 @@ struct gfx_state {
 	uint16_t caps;                 /* KVIDEO_* flags           */
 	uint8_t mode_set;              /* 1 after gfx_set_mode     */
 	uint8_t mode;                  /* enum gfx_mode once set   */
+	uint8_t shown_page;            /* R#2's page bit, set at mode/set */
 	uint16_t width;
 	uint16_t height;
 	uint8_t bpp;
@@ -187,10 +188,17 @@ void v9958_set_mode(struct gfx_state *state, enum gfx_mode mode);
 void v9958_display_enable(struct gfx_state *state, uint8_t enabled);
 void v9958_set_palette(struct gfx_state *state, uint8_t first,
 		       uint8_t count, const struct gfx_rgb *colors);
-/* Execute `count` queued records in order, each as its own command,
- * every one started and waited for. */
+/* Execute `count` queued records in order, each as its own command.
+ * The engine is waited for before each one starts; the batch returns
+ * with its last command still drawing (asynchronous execution). */
 void v9958_run_batch(struct gfx_state *state, const struct gfx_cmd *cmds,
 		     uint8_t count);
+/* Wait for the command engine (gfx_wait and the CPU VRAM paths). */
+void v9958_wait_command(struct gfx_state *state);
+/* Wait for the start of the next vertical retrace. */
+void v9958_wait_vblank(struct gfx_state *state);
+/* Switch the displayed page at the next vertical blank. */
+void v9958_show_page(struct gfx_state *state, uint8_t page);
 
 /* --- the backend's port layer (backends/v9958/v9958_io.asm) ----------
  *
@@ -207,6 +215,7 @@ extern uint8_t gfx_v9958_port_palette;
 extern uint8_t gfx_v9958_g6;
 void gfx_v9958_io_reg(uint8_t value, uint8_t reg);
 void gfx_v9958_io_wait_command(void);
+void gfx_v9958_io_wait_vblank(void);
 void gfx_v9958_io_start_command(const uint8_t *cmd);
 void gfx_v9958_io_run_hmmv(const struct gfx_cmd *cmd);
 void gfx_v9958_io_run_hmmm(const struct gfx_cmd *cmd);
@@ -220,6 +229,7 @@ void gfx_v9958_io_palette_byte(uint8_t value);
 /* V9958 register numbers (V9958 facts, private to the backend). */
 #define GFX_V9958_REG_R0  0u
 #define GFX_V9958_REG_R1  1u
+#define GFX_V9958_REG_R2  2u
 #define GFX_V9958_REG_R8  8u
 #define GFX_V9958_REG_R15 15u
 #define GFX_V9958_REG_R16 16u
@@ -238,6 +248,7 @@ void gfx_v9958_io_palette_byte(uint8_t value);
 #define GFX_V9958_R1_DISPLAY_OFF 0x00u
 #define GFX_V9958_R1_DISPLAY_ON  0x40u
 #define GFX_V9958_R2_PAGE_ZERO 0x1Fu
+#define GFX_V9958_R2_PAGE_BIT  0x20u
 #define GFX_V9958_R8_SPRITES_OFF 0x02u
 #define GFX_V9958_R8_64K_DRAM  0x08u
 #define GFX_V9958_R9_212       0x80u

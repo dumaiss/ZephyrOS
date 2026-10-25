@@ -1440,7 +1440,22 @@ class V9958Peer:
       - the palette port (A2h): two-byte entries selected through R#16,
         auto-advancing after every entry;
       - status register 2 (selected through R#15=2): CE stays set while a
-        command executes;
+        command executes, and VR is high through the vertical retrace -
+        with the frame clock on (frame_period nonzero), the retrace is
+        the frame's last 50 of its 262 lines (60 Hz, 212 displayed),
+        VR following the clock's position inside the period;
+      - R#2 writes record the displayed page (bit 5 = A16 of the
+        pattern name table), exposed through `shown_page` and
+        `page2_writes`;
+      - every command keeps CE busy for its execution time, computed
+        per byte or dot from openMSX's VDPCmdEngine deltas (which
+        reproduce the chip; display on, sprites off): HMMV 16
+        T-states per byte, HMMM 29.3 per byte, LMMV 32 per dot, LINE
+        28 per dot, PSET one 40-T access - plus a 40-T issue overhead,
+        converted to the peer's one-per-instruction clock at the CE
+        poll loop's rate (ten T-states an instruction), the model
+        omitting the display's access-slot contention, so real
+        commands run somewhat longer (about 20%);
       - HMMV fills and HMMM copies execute into the modeled VRAM, byte
         by byte in the block's DIX/DIY directions.  The V9958's
         high-speed commands move whole bytes, so their dot coordinates
@@ -1453,9 +1468,7 @@ class V9958Peer:
         one dot, both under the IMP and EOR operations (the stepping
         mirrors openMSX's VDPCmdEngine, which reproduces the chip;
         V9958 Technical Data Book, the drawing commands);
-      - not modelled: the display's scan position inside a line and
-        the per-command execution timing (every command completes at
-        once, a busy window of `command_busy` T-states apart), the
+      - not modelled: the display's scan position inside a line, the
         display's VRAM access slots, the other logical operations,
         the SRCH/POINT/ABRT/STOP commands, border colour detection,
         and the display's clipping at the screen edges;
@@ -1500,6 +1513,11 @@ class V9958Peer:
     def __init__(self, command_busy=400):
         self.now = 0
         self.command_busy = command_busy
+        # With `duration_model` off (the default) every command's busy
+        # window is a fixed `command_busy` clock units; with it on,
+        # each command stays busy for its modeled execution time
+        # (_command_duration).
+        self.duration_model = False
         # The frame interrupt, off unless a test sets `frame_period`
         # (T-states): the frame flag (S#0 bit 7) rises once a period,
         # reading S#0 clears it, and /INT is the flag while R#1's IE0 is
@@ -1510,6 +1528,8 @@ class V9958Peer:
         self.frame_flag = False
         self.frames = 0
         self.frame_irqs = 0
+        self.retrace_period = 0
+        self.shown_page = 0
         self.regs = [0x00] * 47
         self.addr = 0
         self.vram = bytearray(0x20000)
@@ -1533,8 +1553,9 @@ class V9958Peer:
         self.addr_writes = []      # (now, addr)
         self.palette_writes = []   # (now, value, entry, half)
         self.vram_writes = []      # (addr, value) from the data port
-        self.status_reads = []     # (now, ce)
+        self.status_reads = []     # (now, ce, vr)
         self.indirect_writes = []  # (now, register)
+        self.page2_writes = []     # (now, value, frame_clock)
         self.commands = []         # dict per command-engine start
         # Command codes after whose start the VRAM and R#23 are copied
         # into the command's entry ("vram", "r23"), for a test that needs
@@ -1562,7 +1583,15 @@ class V9958Peer:
     def status_read(self):
         ce = 1 if (self.now < self.busy_until or
                    self.transfer is not None) else 0
-        self.status_reads.append((self.now, ce))
+        # The retrace window: the frame's last 50 of its 262 lines
+        # (60 Hz, 212 displayed); VR is high while the frame clock sits
+        # in it.
+        if self.frame_period:
+            self.retrace_period = (self.frame_period * 50 + 131) // 262
+        vr = 1 if (self.frame_period and
+                   self.frame_clock >=
+                   self.frame_period - self.retrace_period) else 0
+        self.status_reads.append((self.now, ce, vr))
         # Reading status resets the command port's two-byte latch.
         self.cmd_first = True
         if self.frame_period and (self.regs[15] & 0x0F) == 0:
@@ -1573,8 +1602,8 @@ class V9958Peer:
             value = 0x00
             if ce:
                 value |= self.CE
-            if ce:
-                value |= 0x40  # VR high only while the engine is busy
+            if vr:
+                value |= 0x40  # VR: inside the vertical retrace
             return value
         return 0xFE  # S#0: no collision, vblank set
 
@@ -1639,16 +1668,60 @@ class V9958Peer:
             self.frame_irqs += 1
 
     # -- internal ------------------------------------------------------
+    def _command_duration(self, code, block):
+        """The command's execution time, in the peer's clock unit (one
+        per CPU instruction).  The VDP times come from openMSX's
+        VDPCmdEngine per-unit deltas (which reproduce the chip;
+        display on, sprites off): per byte 48 VDP ticks for HMMV, 88
+        for HMMM, per dot 96 for LMMV, 84 for LINE plus the 24-tick
+        first pixel, 112 for one PSET - three VDP ticks to a T-state.
+        Converted at the CE poll loop's rate: its three instructions
+        take about 30 T-states, ten each, so a real command's T-states
+        divide by ten.  The display's access-slot contention is
+        omitted (a lower bound, about 20% under the chip)."""
+        kind = code & 0xF0
+        nx = block[8] | (block[9] << 8)
+        ny = block[10] | (block[11] << 8)
+        if kind == self.OP_HMMV:
+            dots = self._dots_per_byte()
+            bytes_per_row = (nx + dots - 1) // dots
+            return (16 * bytes_per_row * ny + 40) // 10
+        if kind == self.OP_HMMM:
+            dots = self._dots_per_byte()
+            bytes_per_row = (nx + dots - 1) // dots
+            return ((88 * bytes_per_row * ny) // 3 + 40) // 10
+        if kind == self.OP_LMMV:
+            return (32 * nx * ny + 40) // 10
+        if kind == self.OP_LINE:
+            return (28 * nx + 36) // 10
+        if kind == self.OP_PSET:
+            return 4
+        return 0
+
     def _write_reg(self, reg, value):
         reg &= 0x3F
         value &= 0xFF
         self.regs[reg] = value
         self.reg_writes.append((value, reg, self.now))
-        if reg == 16:
+        if reg == 2:
+            # R#2 bit 5 = A16 of the pattern name table: the
+            # displayed page in GRAPHIC 6 and 7.  The write records
+            # the frame clock's position, so a replay can check that a
+            # page switch landed inside the retrace.
+            self.page2_writes.append((self.now, value, self.frame_clock))
+            self.shown_page = (value >> 5) & 0x01
+        elif reg == 16:
             self.pal_index = value & 0x0F
             self.pal_half = 0
         elif reg == self.REG_COMMAND:
             self._command_start(value)
+
+    def _busy_until(self, code, block):
+        """The command's completion time: the fixed window unless the
+        duration model is on."""
+        if self.duration_model:
+            return self.now + self._command_duration(code, block)
+        return self.now + self.command_busy
 
     def _command_start(self, code):
         block = list(self.regs[self.CMD_BLOCK_BASE:
@@ -1665,11 +1738,11 @@ class V9958Peer:
             color = block[12]
             entry["fill"] = (dx, dy, nx, ny, color)
             self._fill(dx, dy, nx, ny, color)
-            entry["busy_until"] = self.now + self.command_busy
+            entry["busy_until"] = self._busy_until(code, block)
             self.busy_until = entry["busy_until"]
         elif (code & 0xF0) == self.OP_HMMM:
             self._copy(block)
-            entry["busy_until"] = self.now + self.command_busy
+            entry["busy_until"] = self._busy_until(code, block)
             self.busy_until = entry["busy_until"]
         elif (code & 0xF0) == self.OP_LMMV:
             dx = block[4] | (block[5] << 8)
@@ -1680,7 +1753,7 @@ class V9958Peer:
             entry["logical_fill"] = (dx, dy, nx, ny, color, code & 0x0F)
             self._logical_fill(dx, dy, nx, ny, color, code & 0x0F,
                                block[13])
-            entry["busy_until"] = self.now + self.command_busy
+            entry["busy_until"] = self._busy_until(code, block)
             self.busy_until = entry["busy_until"]
         elif (code & 0xF0) == self.OP_LINE:
             self._line(block, code & 0x0F)
@@ -1689,14 +1762,14 @@ class V9958Peer:
                              block[8] | (block[9] << 8),
                              block[10] | (block[11] << 8),
                              block[12], code & 0x0F, block[13])
-            entry["busy_until"] = self.now + self.command_busy
+            entry["busy_until"] = self._busy_until(code, block)
             self.busy_until = entry["busy_until"]
         elif (code & 0xF0) == self.OP_PSET:
             self._pset(block, code & 0x0F)
             entry["pset"] = (block[4] | (block[5] << 8),
                              block[6] | (block[7] << 8),
                              block[12], code & 0x0F)
-            entry["busy_until"] = self.now + self.command_busy
+            entry["busy_until"] = self._busy_until(code, block)
             self.busy_until = entry["busy_until"]
         elif (code & 0xF0) == self.OP_LMMC or \
                 (code & 0xF0) == self.OP_HMMC:
