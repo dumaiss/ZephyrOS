@@ -37,6 +37,7 @@ int write(unsigned int handle, const void *buffer, unsigned int length);
 /* Returns the resulting 32-bit position (as a long) or -errno. */
 long seek(unsigned int handle, long offset, unsigned char whence);
 int sync(unsigned int handle);
+int  truncate(unsigned int handle, unsigned long length);
 /* Path metadata; `out` receives a `struct kfs_stat`. */
 int stat(const char *path, struct kfs_stat *out);
 int mkdir(const char *path);

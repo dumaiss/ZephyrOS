@@ -196,6 +196,19 @@ struct iocfat_file {
 	uint32_t next;   /* where the previous read ended (read-ahead cue)  */
 };
 
+/* KFILE_OP_TRUNCATE: `payload[1..4]` is the new length.  A length at or
+ * past the current size is a no-op (FatFs truncation only shrinks);
+ * otherwise the FS2 TRUNCATE, then the whole cache drops (the file's
+ * cached blocks would otherwise serve bytes past the new end) and the
+ * position past the new end clamps to it.  The 32-bit work lives in
+ * iocfat_trunc.asm so the operation fits the driver hot budget. */
+extern int16_t iocfat_truncate_op(struct kos_ipc_frame *frame);
+
+/* The extending-write size note (iocfat_trunc.asm): the position becomes
+ * the size when a write ends past it, so the truncate no-op rule sees the
+ * current size. */
+extern void iocfat_write_note(struct iocfat_file *handle);
+
 struct iocfat_dir {
 	uint8_t used;
 	uint16_t token;
@@ -254,7 +267,7 @@ struct iocfat_instance {
 	uint8_t read_only;
 };
 
-static struct iocfat_instance iocfat;
+struct iocfat_instance iocfat;
 
 /* Transport state captured at init. */
 const struct driver_api *iocfat_api;
@@ -263,8 +276,8 @@ static uint8_t iocfat_ready; /* CAPS and the root probe succeeded            */
 static uint8_t iocfat_run;   /* CAPS offers FS2_READ_RUN                       */
 static uint8_t iocfat_ring_lost; /* a change dropped the ring since its fill */
 static struct kos_ipc_frame iocfat_frame;
-static struct kioc_frame iocfat_request;
-static struct kioc_frame iocfat_reply;
+struct kioc_frame iocfat_request;
+struct kioc_frame iocfat_reply;
 static uint8_t iocfat_name[IOCFAT_NAME_LEN];
 static uint8_t iocfat_name2[IOCFAT_NAME_LEN];
 /* The read-ahead ring, also the write and enumeration staging, in
@@ -334,7 +347,7 @@ static int iocfat_media_readable(void);
 static int iocfat_file_open(const char *path, uint16_t flags, uint8_t *object,
 			    uint32_t *size);
 static int iocfat_file_close(uint8_t object);
-static struct iocfat_file *iocfat_file_get(uint8_t object);
+struct iocfat_file *iocfat_file_get(uint8_t object);
 
 static uint16_t iocfat_get16(const uint8_t *p)
 {
@@ -438,7 +451,7 @@ static int iocfat_exchange_op(uint8_t op, uint8_t type, uint8_t length)
 }
 
 /* A plain command exchange (KIOC_OP_COMMAND): 0 or a negative error. */
-static int iocfat_exchange(uint8_t type, uint8_t length)
+int iocfat_exchange(uint8_t type, uint8_t length)
 {
 	return iocfat_exchange_op(KIOC_OP_COMMAND, type, length);
 }
@@ -461,7 +474,7 @@ static const uint8_t iocfat_status_table[] = {
 	0x0Au  /* IO        -> EIO    */
 };
 
-static int iocfat_map_status(uint8_t status, uint8_t no_handle_emfile)
+int iocfat_map_status(uint8_t status, uint8_t no_handle_emfile)
 {
 	const uint8_t *table = iocfat_status_table;
 
@@ -482,7 +495,7 @@ static int iocfat_map_status(uint8_t status, uint8_t no_handle_emfile)
 /* Forget every cached block, every file record and the ring.  The open
  * instances keep their place but read through the ring only until they
  * are opened again. */
-static void iocfat_cache_drop_all(void)
+void iocfat_cache_drop_all(void)
 {
 	uint8_t i;
 
@@ -746,7 +759,7 @@ static uint8_t iocfat_file_alloc(void)
 	return 0u;
 }
 
-static struct iocfat_file *iocfat_file_get(uint8_t object)
+struct iocfat_file *iocfat_file_get(uint8_t object)
 {
 	if (object == 1u && iocfat.files[0].used != 0u) {
 		return &iocfat.files[0];
@@ -766,7 +779,7 @@ static struct iocfat_dir *iocfat_dir_alloc(void)
 	return (struct iocfat_dir *)0;
 }
 
-static int iocfat_file_generation(struct iocfat_file *file)
+int iocfat_file_generation(struct iocfat_file *file)
 {
 	if (file->generation != iocfat.generation) {
 		iocfat_cache_drop_all();
@@ -1304,6 +1317,7 @@ static int iocfat_file_write(struct iocfat_file *handle, uint16_t chunk)
 		return result;
 	}
 	handle->offset += chunk;
+	iocfat_write_note(handle); /* an extending write's end is the size */
 	return 0;
 }
 
@@ -2116,6 +2130,8 @@ int16_t iocfat_dispatch(struct kos_ipc_frame *frame)
 		return iocfat_meta_op(frame);
 	case KFILE_OP_SYNC:
 		return iocfat_sync_op(frame);
+	case KFILE_OP_TRUNCATE:
+		return iocfat_truncate_op(frame);
 #if KOS_IOC_PHASES
 	case KFILE_OP_PHASES:
 		return iocfat_phases_op(frame);

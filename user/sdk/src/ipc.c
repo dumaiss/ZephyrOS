@@ -170,5 +170,8 @@ int call(unsigned char handle, struct kos_ipc_request *req)
 		return result;
 	}
 	req->frame = kos_ipc_call_block.frame;
-	return (int)kos_ipc_call_block.status;
+	/* The primary result and the reply status carry the same value;
+	 * the primary result also reports an early kernel refusal, which
+	 * never reaches the frame. */
+	return result;
 }

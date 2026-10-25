@@ -165,7 +165,7 @@ int16_t vfs_ns_fs_call(uint8_t handle, uint8_t object,
 	    entry->endpoint != VFS_NS_FS_ENDPOINT) {
 		return -KOS_EINVAL;
 	}
-	if (args->op <= KFILE_OP_SYNC
+	if (args->op <= KFILE_OP_SYNC || args->op == KFILE_OP_TRUNCATE
 #if KOS_IOC_PHASES
 	    /* The measurement build's read-only fetch of the provider's
 	     * read-path phase table: forwarded like the other FILE

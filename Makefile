@@ -811,6 +811,11 @@ $(MODULES)/iocfat_memo.rel: drivers/iocfat/iocfat_memo.asm | $(MODULES)
 $(MODULES)/iocfat_cfile.rel: drivers/iocfat/iocfat_cfile.asm | $(MODULES)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
+# The truncate operation and the extending-write size note: hand-written
+# so their 32-bit compares stay inside the driver hot budget.
+$(MODULES)/iocfat_trunc.rel: drivers/iocfat/iocfat_trunc.asm | $(MODULES)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
+
 $(MODULES)/sdcc_indirect_calls.rel: drivers/runtime/sdcc_indirect_calls.asm \
 		| $(MODULES)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<

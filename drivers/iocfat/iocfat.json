@@ -6,6 +6,7 @@
     "iocfat_cache.rel",
     "iocfat_memo.rel",
     "iocfat_cfile.rel",
+    "iocfat_trunc.rel",
     "sdcc_indirect_calls.rel"
   ],
   "init": "iocfat_init",

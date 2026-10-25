@@ -452,6 +452,10 @@
  *                      target) serves it; every other provider answers
  *                      KOS_EINVAL (and KOS_ENODEV while it has no media,
  *                      like every `/fs` operation).
+ *   KFILE_OP_TRUNCATE (6)  no descriptor; payload[1..4] is the new
+ *                      length, little-endian unsigned 32-bit.  Returns
+ *                      0, or a negative errno; a read-only provider
+ *                      answers KOS_EROFS.
  */
 #define KFILE_OP_READ  0u
 #define KFILE_OP_WRITE 1u
@@ -459,6 +463,7 @@
 #define KFILE_OP_META  3u
 #define KFILE_OP_SYNC  4u
 #define KFILE_OP_PHASES 5u
+#define KFILE_OP_TRUNCATE 6u
 
 /* The steps of one block read the instrument stamps, in order.  Each is
  * recorded as the reading of two free-running CTC channel counters, so no

@@ -136,6 +136,7 @@ OWNER_FILES = (
     "user/sdk/src/diaggate.asm",
     "user/sdk/src/args.c",
     "user/sdk/src/fs.c",
+    "user/sdk/src/truncate.c",
     "user/sdk/src/exec.c",
     "user/sdk/src/console_io.c",
     "user/sdk/src/timer.c",
@@ -691,7 +692,7 @@ class TestProductionTestSeparation(unittest.TestCase):
         self.assertEqual(
             sorted(os.listdir(os.path.join(ROOT, "drivers", "iocfat"))),
             ["iocfat.c", "iocfat.json", "iocfat_cache.asm",
-             "iocfat_cfile.asm", "iocfat_memo.asm"])
+             "iocfat_cfile.asm", "iocfat_memo.asm", "iocfat_trunc.asm"])
         self.assertEqual(
             sorted(os.listdir(os.path.join(ROOT, "drivers", "runtime"))),
             ["sdcc_indirect_calls.asm"])

@@ -367,6 +367,99 @@ static int same(const char *a, const char *b)
 	return 0;
 }
 
+/* The `truncate` tail: one scratch file driven through the truncate
+ * operation - the shrink, the cache invalidation, the no-op rule, the
+ * position clamp and the read-only refusals.  Its check lines are the
+ * replay's count markers. */
+#define TR_FILE "/fs/TRUNCATE.TMP"
+
+static int truncate_case(void)
+{
+	int handle;
+	int ro;
+	long position;
+	int result;
+
+	make_pattern();
+	handle = open(TR_FILE, (unsigned char)(KFS_O_WRITE | KFS_O_CREATE));
+	check("trunc-open", handle >= 0);
+	if (handle < 0) {
+		return 1;
+	}
+	/* 3,000 bytes, the pattern repeated across the block boundary.
+	 * The pattern buffer is one block, so the file fills in
+	 * block-sized writes (one 440-byte tail). */
+	result = 0;
+	for (;;) {
+		unsigned int n = (3000u - (unsigned int)result < FS_BLOCK)
+					 ? (3000u - (unsigned int)result)
+					 : FS_BLOCK;
+
+		if (n == 0u) {
+			break;
+		}
+		if (write((unsigned int)handle, pattern, n) != (int)n) {
+			result = -1;
+			break;
+		}
+		result = (int)((unsigned int)result + n);
+	}
+	check("trunc-write", result == 3000);
+	/* A cached read at 1,500: the shrink must not leave these bytes
+	 * readable afterwards. */
+	position = seek((unsigned int)handle, 1500, KFS_SEEK_SET);
+	check("trunc-cache-read",
+	      position == 1500 &&
+	      read((unsigned int)handle, buf, FS_BLOCK) == FS_BLOCK &&
+	      slice_matches(1500u, FS_BLOCK));
+	/* The shrink, then the old tail reads as end of file. */
+	result = truncate((unsigned int)handle, 1000u);
+	check("trunc-shrink", result == 0);
+	(void)seek((unsigned int)handle, 1500, KFS_SEEK_SET);
+	check("trunc-eof", read((unsigned int)handle, buf, FS_BLOCK) == 0);
+	check("trunc-stat", stat(TR_FILE, &st) == 0 && st.size == 1000u);
+	/* The first 1,000 bytes are intact; 1,000 is end of file. */
+	(void)seek((unsigned int)handle, 0, KFS_SEEK_SET);
+	check("trunc-head",
+	      read((unsigned int)handle, buf, FS_BLOCK) == (int)FS_BLOCK &&
+	      slice_matches(0u, FS_BLOCK) &&
+	      read((unsigned int)handle, buf, 488u) == 488 &&
+	      slice_matches(FS_BLOCK, 488u));
+	(void)seek((unsigned int)handle, 1000, KFS_SEEK_SET);
+	check("trunc-end", read((unsigned int)handle, buf, FS_BLOCK) == 0);
+	/* At or past the size: no-ops. */
+	check("trunc-noop", truncate((unsigned int)handle, 1000u) == 0 &&
+		truncate((unsigned int)handle, 5000u) == 0);
+	/* A position past the new length clamps to it. */
+	(void)seek((unsigned int)handle, 1500, KFS_SEEK_SET);
+	result = truncate((unsigned int)handle, 500u);
+	position = seek((unsigned int)handle, 0, KFS_SEEK_CUR);
+	check("trunc-position", result == 0 && position == 500);
+	/* A read-only handle refuses; the file is unchanged. */
+	ro = open(TR_FILE, KFS_O_READ);
+	check("trunc-ro-handle",
+	      ro >= 0 && truncate((unsigned int)ro, 10u) < 0);
+	if (ro >= 0) {
+		(void)close((unsigned int)ro);
+	}
+	check("trunc-ro-unchanged",
+	      stat(TR_FILE, &st) == 0 && st.size == 500u);
+	/* The read-only provider refuses the same way. */
+	ro = open(SYS_FILE, KFS_O_READ);
+	check("trunc-ro-system",
+	      ro >= 0 && truncate((unsigned int)ro, 10u) < 0);
+	if (ro >= 0) {
+		(void)close((unsigned int)ro);
+	}
+	(void)close((unsigned int)handle);
+	(void)unlink(TR_FILE);
+	printf("fs-selftest: truncate %u checks, %u failures\r\n", checks,
+	       failures);
+	console_puts(failures == 0u ? "fs-selftest: truncate PASS\r\n"
+				    : "fs-selftest: truncate FAIL\r\n");
+	return (failures == 0u) ? 0 : 1;
+}
+
 static unsigned int length_of(const char *text)
 {
 	unsigned int length = 0u;
@@ -384,10 +477,14 @@ int main(int argc, char **argv)
 	int probe;
 
 	/* The stage tail selects the scratch paths and suppresses the
-	 * monitor handover; anything else is refused before a check runs. */
+	 * monitor handover; the truncate tail runs only the truncate
+	 * checks.  Anything else is refused before a check runs. */
 	if (argc == 1 && argv != (char **)0 && same(argv[0], FS_STAGE_TAIL)) {
 		stage = 1;
 		tail = FS_STAGE_TAIL;
+	} else if (argc == 1 && argv != (char **)0 &&
+		   same(argv[0], "truncate")) {
+		return truncate_case();
 	} else if (argc != 0) {
 		console_puts("fs-selftest: FAIL options\r\n");
 		return 2;

@@ -228,11 +228,10 @@ static const char path_letter[3] = { 'A', 'B', 'C' };
 /* One KFILE_OP_PHASES call: no descriptor, the packed table back in the
  * reply payload.  The payload is zeroed first so an image that does not
  * serve the operation cannot be mistaken for a provider that answered: a
- * dispatched call leaves the untouched zeroes behind (the kernel's own
- * refusal returns a value the call wrapper cannot carry), while a served
- * one always has the table's ENTERED bit set.  Returns -KOS_ENOTSUP for
- * that all-zero answer, -KOS_EINVAL or another refusal code from a
- * provider that refuses the operation itself. */
+ * dispatched call leaves the untouched zeroes behind, and the shipped
+ * kernel's own refusal (it does not forward the operation) arrives as a
+ * carried negative result, while a served call always has the table's
+ * ENTERED bit set.  Returns -KOS_ENOTSUP for either no-table answer. */
 static int fetch_phases(unsigned int handle, struct kfile_phases *out,
 			unsigned char control)
 {
@@ -255,7 +254,9 @@ static int fetch_phases(unsigned int handle, struct kfile_phases *out,
 	}
 	result = call((unsigned char)handle, &req);
 	if (result < 0) {
-		return result;
+		/* The shipped kernel does not forward the operation, and
+		 * its refusal now travels in the result. */
+		return -KOS_ENOTSUP;
 	}
 	for (i = 0u; i < (unsigned int)sizeof(struct kfile_phases); ++i) {
 		dst[i] = src[i];

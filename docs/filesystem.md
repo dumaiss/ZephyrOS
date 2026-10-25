@@ -41,8 +41,9 @@ Rules:
   There is no filesystem-wide sync.
 - `rename` within one provider uses the provider's rename. Across providers
   it returns `KOS_EXDEV`; the system never turns a rename into a copy.
-- Truncation is `KFS_O_TRUNC` at open; there is no truncate-to-size and no
-  `statfs`.
+- Truncation is `KFS_O_TRUNC` at open, and `truncate(handle, length)`
+  shrinks an open file to a size; a length at or past the current size is
+  a no-op.  There is no `statfs`.
 
 ## 3. The FILE protocol (type `FILE`)
 
@@ -57,6 +58,7 @@ state without a table of handles.
 | `KFILE_OP_SEEK` | 2 | `arg0` = origin, `payload[1..4]` = signed 32-bit offset | 0; the reply's `payload[1..4]` is the new position |
 | `KFILE_OP_META` | 3 | — | 0; the reply payload is a `struct kfs_stat` |
 | `KFILE_OP_SYNC` | 4 | — | 0 after the flush |
+| `KFILE_OP_TRUNCATE` | 6 | `payload[1..4]` = the new length, little-endian unsigned 32-bit | 0; a length at or past the size is a no-op, a shorter one shrinks the file, drops the driver's cached blocks and clamps a position past the new end to it. `KOS_EROFS` on a read-only provider |
 
 ## 4. The filesystem-namespace protocol (type `FS`)
 

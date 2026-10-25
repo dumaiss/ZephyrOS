@@ -262,6 +262,8 @@ int16_t vfs_ns_file_dispatch(uint8_t handle, uint8_t object,
 		return ns_file_meta(&entry->u.ns, frame);
 	case KFILE_OP_WRITE:
 		return -KOS_EROFS;
+	case KFILE_OP_TRUNCATE:
+		return -KOS_EROFS;
 	default:
 		return -KOS_EINVAL;
 	}

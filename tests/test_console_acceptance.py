@@ -51,11 +51,11 @@ import romfspack  # noqa: E402
 # tests; the store must deliver these exact bytes).  The monitor grew by
 # the B (reboot) command, by the `irq:` row's counters and the SDK's
 # longer system-info record, by the SDK's buffered console and by the
-# idle wait between input polls, so the pinned identity moved with each
-# relink.
-MONITOR_SIZE = 6790
+# idle wait between input polls, and shrank by the call() reply-status
+# load, so the pinned identity moved with each relink.
+MONITOR_SIZE = 6787
 MONITOR_SHA256 = (
-    "3f73f28b46ee928d08917045f68f9152b470339729da3264c6d6ea3f59bbce49")
+    "cc9257c66524819da8aeae7828e7d6d6015e5a0584326757a1445251725c515e")
 
 # The monitor's visible rows, decoded from the V9958 trace.
 PROMPT = "Z80> "

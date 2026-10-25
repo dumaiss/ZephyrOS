@@ -45,6 +45,7 @@ user/sdk/
   src/args.c              startup(), splitargs()
   src/ipc.c               call, bind, unbind, list, chdir, getcwd
   src/fs.c                open, read, write, seek, sync, stat, mkdir, ...
+  src/truncate.c          truncate
   src/exec.c              run()
   src/xmem.c              xalloc and friends
   src/seg.c               seginfo, segmap, farcall, farmap, blob
@@ -405,6 +406,7 @@ int  read(unsigned int handle, void *buffer, unsigned int length);
 int  write(unsigned int handle, const void *buffer, unsigned int length);
 long seek(unsigned int handle, long offset, unsigned char whence);
 int  sync(unsigned int handle);
+int  truncate(unsigned int handle, unsigned long length);
 int  stat(const char *path, struct kfs_stat *out);
 int  mkdir(const char *path);
 int  rmdir(const char *path);
@@ -754,6 +756,7 @@ needed.
 | `console_puts`, `getchar`, `console_readline` | `console_io`, plus the above |
 | `exit`, `getinfo`, `reboot` | `kos_gate` |
 | `open`, `read`, ... | `fs`, `ipc`, `kos_ipcgate`, `nsgate` |
+| `truncate` | `truncate`, `ipc`, `kos_ipcgate`, `nsgate` |
 | `bind`, `call`, `unbind`, `list`, `chdir`, `getcwd` | `ipc`, `kos_ipcgate`, `nsgate` |
 | `run` | `exec`, `ipc`, `kos_ipcgate`, `nsgate` |
 | `timer_open`, `timer_now`, `timer_us`, `timer_wait_us` | `timer`, `ipc`, `kos_ipcgate`, `nsgate` |
