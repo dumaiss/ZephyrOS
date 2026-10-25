@@ -149,6 +149,9 @@ void v9958_run_batch(struct gfx_state *state, const struct gfx_cmd *cmds,
 		case GFX_CMD_SPAN:
 			gfx_v9958_io_run_lmmv(&cmds[i]);
 			break;
+		case GFX_CMD_GLYPH:
+			gfx_v9958_io_run_lmmm(&cmds[i]);
+			break;
 		default:
 			gfx_v9958_io_run_pset(&cmds[i]);
 			break;

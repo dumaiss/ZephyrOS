@@ -28,6 +28,10 @@
  *   gfxtest text             two pairs in each mode, the right-edge
  *                            clip, the redefined glyph and its reset,
  *                            the odd-x and YJK refusals
+ *   gfxtest atlas            opaque 4x6 in both modes, transparent
+ *                            text over stripes (the LRU slot reuse),
+ *                            the stale redraw, the refusals and the
+ *                            out-of-range count, two keys
  *
  * While /dev/video is held the console's output to the VDP is dropped,
  * so every line is printed outside the hold.
@@ -55,6 +59,8 @@ static unsigned char gfxtest_upload_byte(unsigned int i)
 
 	return (unsigned char)((pixel << 4) | pixel);
 }
+
+static void gfxtest_mark(void);
 
 static int gfxtest_direct_info(int video, struct kvideo_direct_info *info)
 {
@@ -502,9 +508,9 @@ static int gfxtest_text(void)
 		return 1;
 	}
 	/* The redefined glyph, drawn, restored and drawn again. */
-	set_result = gfx_font_set_glyph(0x80u, block);
+	set_result = gfx_font_set_glyph(GFX_FONT_6X8, 0x80u, block);
 	result = gfx_text(8u, 50u, "\x80", &pair1);
-	reset_result = gfx_font_reset_glyph(0x80u);
+	reset_result = gfx_font_reset_glyph(GFX_FONT_6X8, 0x80u);
 	result |= gfx_text(8u, 60u, "\x80", &pair1);
 	if (result != 0) {
 		gfx_close();
@@ -540,6 +546,216 @@ static int gfxtest_text(void)
 		return 0;
 	}
 	printf("gfxtest: text FAIL\r\n");
+	return 1;
+}
+
+/* The atlas path: opaque 4x6 in both modes, transparent text over
+ * stripes with the LRU slot reuse, the stale redraw, the refusals
+ * and the out-of-range count, keys between the stages.  The tests
+ * decode the screen and the atlas band straight from the peer's
+ * VRAM. */
+static int gfxtest_atlas(void)
+{
+	static const struct gfx_text_style o1 = {0x01u, 0x02u, 0u, 1u};
+	static const struct gfx_text_style o2 = {0x03u, 0x04u, 0u, 1u};
+	static const struct gfx_text_style g7o = {0x1Cu, 0x00u, 0u, 1u};
+	/* A full 4x6 block: every row's four pixels on. */
+	static const uint8_t block[6] = {
+		0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F
+	};
+	static char row[129];
+	struct gfx_text_style trans;
+	int trans_no_atlas;
+	int bad_band;
+	int bad_short;
+	int bad_range;
+	int outside;
+	int stale_result;
+	int g7_no_atlas;
+	int yjk_text;
+	int yjk_atlas;
+	int result;
+	unsigned int i;
+	unsigned int c;
+
+	result = gfx_open();
+	if (result < 0) {
+		printf("gfxtest: FAIL open %d\r\n", result);
+		return 1;
+	}
+	result = gfx_set_mode(GFX_MODE_512x212_16);
+	if (result < 0) {
+		gfx_close();
+		printf("gfxtest: FAIL mode %d\r\n", result);
+		return 1;
+	}
+	(void)gfx_clear(0x00u);
+	(void)gfx_display_enable(1u);
+
+	/* The refusals: transparent text without an atlas, a band over
+	 * the visible lines, a band too short for one atlas, and a
+	 * range past the font. */
+	trans.fg = 0x01u;
+	trans.bg = 0x00u;
+	trans.flags = GFX_TEXT_TRANSPARENT;
+	trans.font = GFX_FONT_4X6;
+	trans_no_atlas = gfx_text(0u, 40u, "x", &trans);
+	bad_band = gfx_text_atlas(GFX_FONT_4X6, 0u, 44u, 32u, 95u);
+	bad_short = gfx_text_atlas(GFX_FONT_4X6, 212u, 5u, 32u, 95u);
+	bad_range = gfx_text_atlas(GFX_FONT_4X6, 212u, 42u, 32u, 230u);
+
+	/* Opaque 4x6 in two pairs and the right-edge clip (x 504 holds
+	 * exactly two glyphs). */
+	result = gfx_text(0u, 10u, "4x6", &o1);
+	result |= gfx_text(0u, 20u, "pair two", &o2);
+	result |= gfx_text(504u, 30u, "ABCD", &o1);
+	if (result != 0) {
+		gfx_close();
+		printf("gfxtest: FAIL text %d\r\n", result);
+		return 1;
+	}
+	/* The full 128-glyph row at x 0 (512 dots, every column): the
+	 * marks price the whole call. */
+	for (i = 0u; i < 128u; ++i) {
+		row[i] = (i & 1u) != 0u ? 'W' : 'M';
+	}
+	row[128] = '\0';
+	gfxtest_mark();
+	result = gfx_text(0u, 70u, row, &o1);
+	gfxtest_mark();
+	/* Eight 6x8 glyphs in the same cached pair (the 6x8 steady
+	 * cost: the warm-up draw first builds the pair's tables, then
+	 * the marks price the string, per glyph). */
+	{
+		static const struct gfx_text_style g6s = {0x01u, 0x02u};
+		(void)gfx_text(0u, 45u, "M", &g6s);
+		gfxtest_mark();
+		result |= gfx_text(0u, 80u, "MMMMMMMM", &g6s);
+		gfxtest_mark();
+	}
+	if (result != 0) {
+		gfx_close();
+		printf("gfxtest: FAIL row %d\r\n", result);
+		return 1;
+	}
+	/* The stripes: vertical 8-dot bars behind the text. */
+	for (i = 0u; i < 64u; ++i) {
+		result |= gfx_fill_rect((uint16_t)(i * 8u), 96u, 8u, 96u,
+					(i & 1u) != 0u ? 0x0Bu : 0x0Au,
+					GFX_OP_COPY);
+	}
+	result |= gfx_text_atlas(GFX_FONT_4X6, 212u, 42u, 32u, 95u);
+	if (result != 0) {
+		gfx_close();
+		printf("gfxtest: FAIL atlas %d\r\n", result);
+		return 1;
+	}
+	/* The first transparent draw builds colour 1's atlas (95 glyphs)
+	 * and submits its eight LMMMs: the marks price the build.  The
+	 * nine colours exceed the band's seven slots, so colours 8 and
+	 * 9 rebuild the least recently used slots. */
+	gfxtest_mark();
+	result = gfx_text(8u, 104u, "ABCDEFGH", &trans);
+	gfxtest_mark();
+	for (c = 2u; c <= 9u; ++c) {
+		trans.fg = (uint8_t)c;
+		result |= gfx_text((uint16_t)(8u + (c - 1u) * 48u), 104u,
+				  "ABCDEFGH", &trans);
+	}
+	/* The out-of-range count: two of the four glyphs draw nothing,
+	 * the other two land. */
+	trans.fg = 0x09u;
+	outside = gfx_text(300u, 116u, "\x01" "AB\x7F", &trans);
+	/* The steady transparent cost: a cached colour, four glyphs. */
+	gfxtest_mark();
+	result |= gfx_text(300u, 128u, "ABCD", &trans);
+	gfxtest_mark();
+	if (result != 0) {
+		gfx_close();
+		printf("gfxtest: FAIL transparent %d\r\n", result);
+		return 1;
+	}
+	(void)getchar(); /* key 1: the G6 screen and the atlas band */
+
+	/* The stale glyph: a full block, drawn transparently (the redraw
+	 * refreshes A's cell in every built atlas, then the LMMM), then
+	 * reset and drawn again. */
+	trans.fg = 0x05u;
+	stale_result = gfx_font_set_glyph(GFX_FONT_4X6, 0x41u, block);
+	gfxtest_mark();
+	stale_result |= gfx_text(300u, 140u, "A", &trans);
+	gfxtest_mark();
+	stale_result |= gfx_font_reset_glyph(GFX_FONT_4X6, 0x41u);
+	stale_result |= gfx_text(300u, 150u, "A", &trans);
+	/* A DIY copy: the target below the band (page 1's spare lines)
+	 * reverses the copy's Y direction. */
+	stale_result |= gfx_text(8u, 500u, "Q", &trans);
+
+	/* G7: the G6 atlas does not fit the new packing. */
+	result = gfx_set_mode(GFX_MODE_256x212_256);
+	if (result < 0) {
+		gfx_close();
+		printf("gfxtest: FAIL mode %d\r\n", result);
+		return 1;
+	}
+	trans.fg = 0x01u;
+	g7_no_atlas = gfx_text(0u, 40u, "x", &trans);
+	(void)gfx_clear(0x00u);
+	/* The opaque G7 glyph cost: six glyphs between the marks. */
+	gfxtest_mark();
+	result = gfx_text(100u, 10u, "g7 4x6", &g7o);
+	gfxtest_mark();
+	for (i = 0u; i < 32u; ++i) {
+		result |= gfx_fill_rect((uint16_t)(i * 8u), 96u, 8u, 96u,
+					(i & 1u) != 0u ? 0x0Bu : 0x0Au,
+					GFX_OP_COPY);
+	}
+	result |= gfx_text_atlas(GFX_FONT_4X6, 212u, 36u, 32u, 95u);
+	/* Four colours into three slots: colour 4 rebuilds colour 1's
+	 * slot, and the redraws rebuild colours 1 and 2 in turn. */
+	for (c = 1u; c <= 4u; ++c) {
+		trans.fg = (uint8_t)c;
+		result |= gfx_text((uint16_t)(8u + (c - 1u) * 48u), 104u,
+				  "ABCDEFGH", &trans);
+	}
+	trans.fg = 0x01u;
+	result |= gfx_text(8u, 116u, "ABCDEFGH", &trans);
+	trans.fg = 0x02u;
+	result |= gfx_text(56u, 116u, "ABCDEFGH", &trans);
+	/* The steady G7 transparent cost: a cached colour, four glyphs. */
+	gfxtest_mark();
+	result |= gfx_text(8u, 128u, "ABCD", &trans);
+	gfxtest_mark();
+	if (result != 0) {
+		gfx_close();
+		printf("gfxtest: FAIL g7 transparent %d\r\n", result);
+		return 1;
+	}
+	/* YJK: the atlas setup and the transparent draw both refuse. */
+	result = gfx_set_mode(GFX_MODE_256x212_YJK);
+	if (result < 0) {
+		gfx_close();
+		printf("gfxtest: FAIL mode %d\r\n", result);
+		return 1;
+	}
+	trans.fg = 0x01u;
+	yjk_text = gfx_text(0u, 0u, "x", &trans);
+	yjk_atlas = gfx_text_atlas(GFX_FONT_4X6, 212u, 42u, 32u, 95u);
+
+	(void)getchar(); /* key 2: the G7 screen and the G7 band */
+	gfx_close();
+	printf("gfxtest: atlas %d %d %d %d %d %d %d %d %d\r\n",
+	       trans_no_atlas, bad_band, bad_short, bad_range, outside,
+	       stale_result, g7_no_atlas, yjk_text, yjk_atlas);
+	if (trans_no_atlas == -KOS_EINVAL && bad_band == -KOS_EINVAL &&
+	    bad_short == -KOS_EINVAL && bad_range == -KOS_EINVAL &&
+	    outside == 2 && stale_result == 0 &&
+	    g7_no_atlas == -KOS_EINVAL && yjk_text == -KOS_ENOTSUP &&
+	    yjk_atlas == -KOS_ENOTSUP) {
+		printf("gfxtest: atlas PASS\r\n");
+		return 0;
+	}
+	printf("gfxtest: atlas FAIL\r\n");
 	return 1;
 }
 
@@ -854,7 +1070,7 @@ int main(int argc, char **argv)
 	/* argv holds the command-tail words only (the kernel transports no
 	 * program name), so argv[0] is the mode. */
 	if (argc < 1) {
-		printf("gfxtest: mode6|mode7|yjk|info|upload|palette|prims|text [leak]"
+		printf("gfxtest: mode6|mode7|yjk|info|upload|palette|prims|text|atlas [leak]"
 		       "\r\n");
 		return 1;
 	}
@@ -882,6 +1098,9 @@ int main(int argc, char **argv)
 	}
 	if (strcmp(argv[0], "text") == 0) {
 		return gfxtest_text();
+	}
+	if (strcmp(argv[0], "atlas") == 0) {
+		return gfxtest_atlas();
 	}
 	if (strcmp(argv[0], "mode6") == 0) {
 		return gfxtest_run("mode6", GFX_MODE_512x212_16,

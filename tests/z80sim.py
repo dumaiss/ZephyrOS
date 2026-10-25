@@ -1464,6 +1464,9 @@ class V9958Peer:
         high-speed move commands); both modes use a 256-byte row;
       - LMMV with the IMP and EOR operations executes into the modeled
         VRAM, dot by dot in the block's DIX/DIY directions;
+      - LMMM copies dot by dot from (SX, SY) in the DIX/DIY
+        directions, under IMP and TIMP (a colour-0 source dot leaves
+        the destination);
       - LINE draws with the VDP's Major/Minor error stepping and PSET
         one dot, both under the IMP and EOR operations (the stepping
         mirrors openMSX's VDPCmdEngine, which reproduces the chip;
@@ -1505,6 +1508,7 @@ class V9958Peer:
     OP_HMMV = 0xC0
     OP_HMMM = 0xD0
     OP_LMMV = 0x80
+    OP_LMMM = 0x90
     OP_LMMC = 0xB0
     OP_HMMC = 0xF0
     OP_LINE = 0x70
@@ -1692,6 +1696,8 @@ class V9958Peer:
             return ((88 * bytes_per_row * ny) // 3 + 40) // 10
         if kind == self.OP_LMMV:
             return (32 * nx * ny + 40) // 10
+        if kind == self.OP_LMMM:
+            return (40 * nx * ny + 40) // 10
         if kind == self.OP_LINE:
             return (28 * nx + 36) // 10
         if kind == self.OP_PSET:
@@ -1769,6 +1775,17 @@ class V9958Peer:
             entry["pset"] = (block[4] | (block[5] << 8),
                              block[6] | (block[7] << 8),
                              block[12], code & 0x0F)
+            entry["busy_until"] = self._busy_until(code, block)
+            self.busy_until = entry["busy_until"]
+        elif (code & 0xF0) == self.OP_LMMM:
+            entry["logical_copy"] = (block[0] | (block[1] << 8),
+                                     block[2] | (block[3] << 8),
+                                     block[4] | (block[5] << 8),
+                                     block[6] | (block[7] << 8),
+                                     block[8] | (block[9] << 8),
+                                     block[10] | (block[11] << 8),
+                                     code & 0x0F, block[13])
+            self._lmmm(block, code & 0x0F)
             entry["busy_until"] = self._busy_until(code, block)
             self.busy_until = entry["busy_until"]
         elif (code & 0xF0) == self.OP_LMMC or \
@@ -1882,6 +1899,44 @@ class V9958Peer:
             else:
                 value = color
         self.vram[address] = value
+
+    def _dot_read(self, x, address):
+        """One dot's pixel value at `x`: the four-bit pixel's nibble in
+        GRAPHIC 6 (the dot's x parity picks it), the whole byte in
+        GRAPHIC 7."""
+        value = self.vram[address]
+        if self._dots_per_byte() == 2:
+            return (value >> 4) & 0x0F if not (x & 1) else value & 0x0F
+        return value
+
+    def _lmmm(self, block, op):
+        """LMMM: NX by NY dots copied from (SX, SY) to (DX, DY) in the
+        ARG's DIX/DIY directions, dot by dot, under the logical
+        operation `op`: IMP (0) copies, TIMP (8) skips colour-0 source
+        dots so they leave the destination (V9958 Technical Data Book,
+        the logical move commands)."""
+        dots = self._dots_per_byte()
+        sx = block[0] | (block[1] << 8)
+        sy = block[2] | (block[3] << 8)
+        dx = block[4] | (block[5] << 8)
+        dy = block[6] | (block[7] << 8)
+        nx = block[8] | (block[9] << 8)
+        ny = block[10] | (block[11] << 8)
+        arg = block[13]
+        step_x = -1 if arg & 0x04 else 1
+        step_y = -1 if arg & 0x08 else 1
+        for line in range(ny):
+            dst = (((dy + line * step_y) & 0x1FF) * 256) & 0x1FFFF
+            src = (((sy + line * step_y) & 0x1FF) * 256) & 0x1FFFF
+            for index in range(nx):
+                x = dx + index * step_x
+                sx_i = sx + index * step_x
+                pixel = self._dot_read(sx_i,
+                                       (src + sx_i // dots) & 0x1FFFF)
+                if op == 0x08 and pixel == 0:
+                    continue  # TIMP: colour 0 leaves the destination
+                self._dot_write(x, (dst + x // dots) & 0x1FFFF,
+                                pixel, 0)
 
     def _logical_fill(self, dx, dy, nx, ny, color, op, arg):
         """LMMV: nx by ny dots, per dot, in the ARG's DIX/DIY

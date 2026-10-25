@@ -164,34 +164,64 @@ int gfx_fill_ellipse(uint16_t cx, uint16_t cy, uint16_t rx, uint16_t ry,
 int gfx_copy_rect(uint16_t src_x, uint16_t src_y, uint16_t dst_x,
 		  uint16_t dst_y, uint16_t width, uint16_t height);
 
-/* The built-in 6x8 CP850 font.  gfx_open copies it into the 2,048-byte
- * RAM font; these calls change that copy, so a redefined glyph is what
- * the next draw uses and there is no VRAM cache.  `rows` holds eight
- * row bytes whose low six bits are the pixels.  No VIDEO IPC. */
-int gfx_font_set_glyph(uint8_t code, const uint8_t rows[8]);
-int gfx_font_reset_glyph(uint8_t code);
-void gfx_font_reset(void);
+/* The built-in fonts.  gfx_open copies the 6x8 font into a 2,048-byte
+ * RAM font; the 4x6 font's RAM copy is made at its first use.  These
+ * calls change those copies, so a redefined glyph is what the next
+ * draw uses and there is no VRAM cache.  `rows` holds the font's row
+ * bytes (8 for the 6x8, 6 for the 4x6) whose low bits are the pixels
+ * - six for the 6x8, four for the 4x6.  No VIDEO IPC. */
+enum gfx_font {
+	GFX_FONT_6X8 = 0,
+	GFX_FONT_4X6 = 1,
+};
+int gfx_font_set_glyph(enum gfx_font font, uint8_t code,
+		       const uint8_t *rows);
+int gfx_font_reset_glyph(enum gfx_font font, uint8_t code);
+void gfx_font_reset(enum gfx_font font);
 
 /* Opaque text.  `fg` and `bg` are the mode's colour (0..15 in the
- * 16-colour mode). */
+ * 16-colour mode); a zeroed style is the opaque 6x8 font. */
 struct gfx_text_style {
 	gfx_color_t fg;
 	gfx_color_t bg;
+	uint8_t flags;
+	uint8_t font;
 };
+
+/* The style flags: GFX_TEXT_TRANSPARENT draws only the foreground
+ * pixels (each glyph is a VDP logical copy with transparency from the
+ * glyph atlas gfx_text_atlas set up), leaving the background
+ * untouched. */
+#define GFX_TEXT_TRANSPARENT 0x01u
+
+/* Give libgfx an off-screen band (y, lines) for the glyph atlas and a
+ * glyph range (`first`, `count`): transparent text of the same font
+ * draws each glyph as one LMMM with transparency from an atlas of its
+ * colour, built on the colour's first use and rebuilt least recently
+ * used when the band is full.  The band must lie entirely in one
+ * page's spare lines (212-255 or 468-511), must hold one atlas of the
+ * range, and rebuilds discard every atlas.  -KOS_EINVAL without a mode
+ * set or a bad band; -KOS_ENOTSUP in YJK.  No VIDEO IPC. */
+int gfx_text_atlas(enum gfx_font font, uint16_t y, uint16_t lines,
+		   uint8_t first, uint16_t count);
 
 /* Draw one line of byte-oriented text (no newlines, tabs or escapes)
  * at (x, y), the top-left pixel of the first glyph; x and width count
- * pixels (6 per glyph, height 8).  Glyphs are clipped whole at the
- * right edge; the off-screen page is an ordinary target.  A pending
- * drawing batch is flushed first.  The YJK mode is -KOS_ENOTSUP; in
- * the 16-colour mode x must be even.  No VIDEO IPC. */
+ * pixels (6 per 6x8 glyph, 4 per 4x6).  Glyphs are clipped whole at
+ * the right edge; the off-screen page is an ordinary target.  A
+ * pending drawing batch is flushed first.  The YJK mode is
+ * -KOS_ENOTSUP; in the 16-colour mode x must be even for opaque text.
+ * Transparent text needs a gfx_text_atlas of the style's font
+ * (-KOS_EINVAL without one) and returns the count of glyphs outside
+ * the atlas range, which draw nothing (0 when every glyph drew).  No
+ * VIDEO IPC. */
 int gfx_text(uint16_t x, uint16_t y, const char *text,
 	     const struct gfx_text_style *style);
 int gfx_text_n(uint16_t x, uint16_t y, const char *text, uint16_t length,
 	       const struct gfx_text_style *style);
 
-/* The default font's width of `text`: its length x 6. */
-uint16_t gfx_text_width(const char *text);
+/* The width of `text` in the font's pixels (6 or 4 per glyph). */
+uint16_t gfx_text_width(const char *text, enum gfx_font font);
 
 /* Program `count` palette entries starting at `first` (the 16-colour
  * mode holds 16 entries).  Direct I/O under the hardware WAIT; a mode

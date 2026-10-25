@@ -858,6 +858,13 @@ $(BUILD)/user/sdk/gfx/font_builtin.inc: \
 	@mkdir -p $(dir $@)
 	$(PYTHON) tools/fontpack.py table $< $@
 
+# libgfx's built-in 4x6 font: the pinned 4x6 asset as a C byte list the
+# const table (user/sdk/gfx/src/gfx_font4.c) includes.
+$(BUILD)/user/sdk/gfx/font4_builtin.inc: \
+		drivers/v9958/assets/font_cp850_4x6.inc tools/fontpack.py
+	@mkdir -p $(dir $@)
+	$(PYTHON) tools/fontpack.py table4x6 $< $@
+
 # --- target acceptance objects (tests/target/, acceptance builds only) -------
 
 $(BUILD)/target_test.rel: tests/target/support/target_test.c \
@@ -1671,6 +1678,7 @@ v9958-test: $(MODULES)/v9958.mod $(MODULES)/v9958-6x8.font
 	$(PYTHON) tools/modpack.py validate $(MODULES)/v9958.mod
 	$(PYTHON) tools/modpack.py dump $(MODULES)/v9958.mod
 	$(PYTHON) tools/fontpack.py verify drivers/v9958/assets/font_cp850_6x8.inc
+	$(PYTHON) tools/fontpack.py verify4x6 drivers/v9958/assets/font_cp850_4x6.inc
 	$(PYTHON) -m unittest discover -s tests -p 'test_v9958.py' -v
 	@echo "v9958-test: OK"
 

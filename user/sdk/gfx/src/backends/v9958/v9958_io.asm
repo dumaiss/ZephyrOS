@@ -43,6 +43,7 @@
 	.globl _gfx_v9958_io_run_line
 	.globl _gfx_v9958_io_run_pset
 	.globl _gfx_v9958_io_run_lmmv
+	.globl _gfx_v9958_io_run_lmmm
 	.globl _gfx_v9958_io_set_vram
 	.globl _gfx_v9958_io_stream_vram
 	.globl _gfx_v9958_io_palette_byte
@@ -71,6 +72,7 @@ GFX_V9958_CMD_HMMM      = 0xD0
 GFX_V9958_CMD_LINE      = 0x70
 GFX_V9958_CMD_PSET      = 0x50
 GFX_V9958_CMD_LMMV      = 0x80
+GFX_V9958_CMD_LMMM      = 0x90
 GFX_V9958_ARG_MAJ       = 0x01
 GFX_V9958_ARG_DIX       = 0x04
 GFX_V9958_ARG_DIY       = 0x08
@@ -93,6 +95,7 @@ GFX_CMD_DY              = 8
 GFX_CMD_WIDTH           = 10
 GFX_CMD_HEIGHT          = 12
 GFX_CMD_COLOR           = 14
+GFX_CMD_RESERVED        = 15
 
 	.area _DATA
 
@@ -277,6 +280,44 @@ gfx_v9958_fill_run:
 	ld	(#gfx_v9958_block+2),hl
 	ld	a,#0x00
 	ld	(#gfx_v9958_block+GFX_V9958_BLOCK_ARG),a
+	jp	gfx_v9958_issue_common
+
+; ---------------------------------------------------------------------------
+; void gfx_v9958_io_run_lmmm(const struct gfx_cmd *record);  HL=record
+;   LMMM (the logical copy, one transparent glyph): SX/SY, DX/DY and
+;   NX/NY from the record, CLR zero, ARG from the record's reserved
+;   byte (DIX/DIY, the C side moved the far edges), the code carries
+;   the operation nibble (TIMP 8).
+; ---------------------------------------------------------------------------
+_gfx_v9958_io_run_lmmm::
+	push	ix
+	push	hl
+	pop	ix			; IX = the record
+	ld	l,GFX_CMD_SX(ix)
+	ld	h,GFX_CMD_SX+1(ix)
+	ld	(#gfx_v9958_block+0),hl
+	ld	l,GFX_CMD_SY(ix)
+	ld	h,GFX_CMD_SY+1(ix)
+	ld	(#gfx_v9958_block+2),hl
+	ld	l,GFX_CMD_DX(ix)
+	ld	h,GFX_CMD_DX+1(ix)
+	ld	(#gfx_v9958_block+GFX_V9958_BLOCK_DX),hl
+	ld	l,GFX_CMD_DY(ix)
+	ld	h,GFX_CMD_DY+1(ix)
+	ld	(#gfx_v9958_block+GFX_V9958_BLOCK_DY),hl
+	ld	l,GFX_CMD_WIDTH(ix)
+	ld	h,GFX_CMD_WIDTH+1(ix)
+	ld	(#gfx_v9958_block+GFX_V9958_BLOCK_NX),hl
+	ld	l,GFX_CMD_HEIGHT(ix)
+	ld	h,GFX_CMD_HEIGHT+1(ix)
+	ld	(#gfx_v9958_block+GFX_V9958_BLOCK_NY),hl
+	ld	a,#0x00
+	ld	(#gfx_v9958_block+GFX_V9958_BLOCK_CLR),a
+	ld	a,GFX_CMD_RESERVED(ix)	; DIX/DIY from the C side
+	ld	(#gfx_v9958_block+GFX_V9958_BLOCK_ARG),a
+	ld	a,GFX_CMD_FLAGS(ix)	; the operation nibble (TIMP)
+	or	#GFX_V9958_CMD_LMMM
+	ld	(#gfx_v9958_block+14),a
 	jp	gfx_v9958_issue_common
 
 ; ---------------------------------------------------------------------------
@@ -535,4 +576,296 @@ _gfx_v9958_io_palette_byte::
 	ld	c,a
 	pop	af
 	out	(c),a
+	ret
+
+; ---------------------------------------------------------------------------
+; void gfx_v9958_io_text_row(const struct gfx_text_row_args *args);  HL=args
+;   One scanline of a text string: for each glyph, the font's row byte
+;   and its expansion to the data port, the VRAM address already set by
+;   the C side.  `mode` selects the expansion:
+;     0 GRAPHIC 6, 6x8: three table lookups (three 256-byte pages);
+;     1 GRAPHIC 6, 4x6: one 32-byte pair table (two bytes per row);
+;     2 GRAPHIC 7, 6x8: six pixels, one byte each;
+;     3 GRAPHIC 7, 4x6: four pixels, one byte each.
+;   Clobbers A, BC, DE, HL, IX.
+; ---------------------------------------------------------------------------
+GFX_TEXT_ARGS_TEXT      = 0
+GFX_TEXT_ARGS_FONT      = 2
+GFX_TEXT_ARGS_TABLE0    = 4
+GFX_TEXT_ARGS_TABLE1    = 6
+GFX_TEXT_ARGS_TABLE2    = 8
+GFX_TEXT_ARGS_COUNT     = 10
+GFX_TEXT_ARGS_MODE      = 11
+GFX_TEXT_ARGS_FG        = 12
+GFX_TEXT_ARGS_BG        = 13
+
+_gfx_v9958_io_text_row::
+	push	ix
+	push	hl
+	pop	ix			; IX = the row's arguments
+	ld	a,(_gfx_v9958_port_data)
+	ld	c,a			; C = the data port (out (c),a)
+	ld	l,GFX_TEXT_ARGS_TEXT(ix)
+	ld	h,GFX_TEXT_ARGS_TEXT+1(ix)
+	ex	de,hl			; DE = the string's codes
+	ld	a,GFX_TEXT_ARGS_COUNT(ix)
+	ld	b,a
+	ld	a,GFX_TEXT_ARGS_MODE(ix)
+	cp	#1
+	jp	c,gfx_v9958_text_g6
+	jp	z,gfx_v9958_text_g6_4
+	cp	#3
+	jp	z,gfx_v9958_text_g7_4
+; GRAPHIC 7, 6x8: six pixels per row, the font byte's bits 7..2,
+; unrolled (H holds the foreground, L the background; DE walks the
+; text).
+gfx_v9958_text_g7:
+	ld	a,GFX_TEXT_ARGS_FG(ix)
+	ld	h,a
+	ld	a,GFX_TEXT_ARGS_BG(ix)
+	ld	l,a
+gfx_v9958_text_g7_loop:
+	ld	a,(de)			; the glyph's code
+	inc	de
+	; The font byte: font[code * 8], the row pre-added in C.
+	push	hl			; save H = fg, L = bg
+	ld	l,a
+	ld	h,#0
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	ld	a,GFX_TEXT_ARGS_FONT(ix)
+	add	a,l
+	ld	l,a
+	ld	a,GFX_TEXT_ARGS_FONT+1(ix)
+	adc	a,h
+	ld	h,a
+	ld	a,(hl)			; the font row byte
+	pop	hl			; H = fg, L = bg again
+	; pixel 0: bit 7
+	rla
+	push	af
+	jr	c,gfx_v9958_text_g7_p0
+	ld	a,l
+	jr	gfx_v9958_text_g7_p0_out
+gfx_v9958_text_g7_p0:
+	ld	a,h
+gfx_v9958_text_g7_p0_out:
+	out	(c),a
+	pop	af
+	rla
+	push	af
+	jr	c,gfx_v9958_text_g7_p1
+	ld	a,l
+	jr	gfx_v9958_text_g7_p1_out
+gfx_v9958_text_g7_p1:
+	ld	a,h
+gfx_v9958_text_g7_p1_out:
+	out	(c),a
+	pop	af
+	rla
+	push	af
+	jr	c,gfx_v9958_text_g7_p2
+	ld	a,l
+	jr	gfx_v9958_text_g7_p2_out
+gfx_v9958_text_g7_p2:
+	ld	a,h
+gfx_v9958_text_g7_p2_out:
+	out	(c),a
+	pop	af
+	rla
+	push	af
+	jr	c,gfx_v9958_text_g7_p3
+	ld	a,l
+	jr	gfx_v9958_text_g7_p3_out
+gfx_v9958_text_g7_p3:
+	ld	a,h
+gfx_v9958_text_g7_p3_out:
+	out	(c),a
+	pop	af
+	rla
+	push	af
+	jr	c,gfx_v9958_text_g7_p4
+	ld	a,l
+	jr	gfx_v9958_text_g7_p4_out
+gfx_v9958_text_g7_p4:
+	ld	a,h
+gfx_v9958_text_g7_p4_out:
+	out	(c),a
+	pop	af
+	rla
+	push	af
+	jr	c,gfx_v9958_text_g7_p5
+	ld	a,l
+	jr	gfx_v9958_text_g7_p5_out
+gfx_v9958_text_g7_p5:
+	ld	a,h
+gfx_v9958_text_g7_p5_out:
+	out	(c),a
+	pop	af
+	djnz	gfx_v9958_text_g7_loop
+	pop	ix
+	ret
+
+; GRAPHIC 6, 6x8: the pair's three pages map the font byte.
+gfx_v9958_text_g6:
+gfx_v9958_text_g6_loop:
+	ld	a,(de)
+	inc	de
+	ld	l,a
+	ld	h,#0
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	ld	a,GFX_TEXT_ARGS_FONT(ix)
+	add	a,l
+	ld	l,a
+	ld	a,GFX_TEXT_ARGS_FONT+1(ix)
+	adc	a,h
+	ld	h,a
+	ld	a,(hl)			; the font row byte
+	push	af
+	ld	l,a
+	ld	h,#0
+	ld	a,GFX_TEXT_ARGS_TABLE0(ix)
+	add	a,l
+	ld	l,a
+	ld	a,GFX_TEXT_ARGS_TABLE0+1(ix)
+	adc	a,h
+	ld	h,a
+	ld	a,(hl)
+	out	(c),a
+	pop	af
+	push	af
+	ld	l,a
+	ld	h,#0
+	ld	a,GFX_TEXT_ARGS_TABLE1(ix)
+	add	a,l
+	ld	l,a
+	ld	a,GFX_TEXT_ARGS_TABLE1+1(ix)
+	adc	a,h
+	ld	h,a
+	ld	a,(hl)
+	out	(c),a
+	pop	af
+	ld	l,a
+	ld	h,#0
+	ld	a,GFX_TEXT_ARGS_TABLE2(ix)
+	add	a,l
+	ld	l,a
+	ld	a,GFX_TEXT_ARGS_TABLE2+1(ix)
+	adc	a,h
+	ld	h,a
+	ld	a,(hl)
+	out	(c),a
+	djnz	gfx_v9958_text_g6_loop
+	pop	ix
+	ret
+
+; GRAPHIC 6, 4x6: the pair table maps the font byte's high nibble to
+; the cell's two bytes.
+gfx_v9958_text_g6_4:
+gfx_v9958_text_g6_4_loop:
+	ld	a,(de)
+	inc	de
+	ld	l,a
+	ld	h,#0
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl			; code * 8, the font's stride
+	ld	a,GFX_TEXT_ARGS_FONT(ix)
+	add	a,l
+	ld	l,a
+	ld	a,GFX_TEXT_ARGS_FONT+1(ix)
+	adc	a,h
+	ld	h,a
+	ld	a,(hl)			; the font row byte
+	and	#0xF0			; the four pixels
+	rrca				; the pair table's index,
+	rrca				; bits 7..4 to bits 4..1
+	rrca
+	and	#0x1E			; index * 2
+	ld	l,a
+	ld	h,#0
+	ld	a,GFX_TEXT_ARGS_TABLE0(ix)
+	add	a,l
+	ld	l,a
+	ld	a,GFX_TEXT_ARGS_TABLE0+1(ix)
+	adc	a,h
+	ld	h,a
+	ld	a,(hl)
+	out	(c),a
+	inc	hl
+	ld	a,(hl)
+	out	(c),a
+	djnz	gfx_v9958_text_g6_4_loop
+	pop	ix
+	ret
+
+; GRAPHIC 7, 4x6: four pixels per row, the font byte's bits 7..4,
+; unrolled (H = foreground, L = background).
+gfx_v9958_text_g7_4:
+	ld	a,GFX_TEXT_ARGS_FG(ix)
+	ld	h,a
+	ld	a,GFX_TEXT_ARGS_BG(ix)
+	ld	l,a
+gfx_v9958_text_g7_4_loop:
+	ld	a,(de)			; the glyph's code
+	inc	de
+	push	hl
+	ld	l,a
+	ld	h,#0
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	ld	a,GFX_TEXT_ARGS_FONT(ix)
+	add	a,l
+	ld	l,a
+	ld	a,GFX_TEXT_ARGS_FONT+1(ix)
+	adc	a,h
+	ld	h,a
+	ld	a,(hl)
+	pop	hl
+	rla
+	push	af
+	jr	c,gfx_v9958_text_g7_4_p0
+	ld	a,l
+	jr	gfx_v9958_text_g7_4_p0_out
+gfx_v9958_text_g7_4_p0:
+	ld	a,h
+gfx_v9958_text_g7_4_p0_out:
+	out	(c),a
+	pop	af
+	rla
+	push	af
+	jr	c,gfx_v9958_text_g7_4_p1
+	ld	a,l
+	jr	gfx_v9958_text_g7_4_p1_out
+gfx_v9958_text_g7_4_p1:
+	ld	a,h
+gfx_v9958_text_g7_4_p1_out:
+	out	(c),a
+	pop	af
+	rla
+	push	af
+	jr	c,gfx_v9958_text_g7_4_p2
+	ld	a,l
+	jr	gfx_v9958_text_g7_4_p2_out
+gfx_v9958_text_g7_4_p2:
+	ld	a,h
+gfx_v9958_text_g7_4_p2_out:
+	out	(c),a
+	pop	af
+	rla
+	push	af
+	jr	c,gfx_v9958_text_g7_4_p3
+	ld	a,l
+	jr	gfx_v9958_text_g7_4_p3_out
+gfx_v9958_text_g7_4_p3:
+	ld	a,h
+gfx_v9958_text_g7_4_p3_out:
+	out	(c),a
+	pop	af
+	djnz	gfx_v9958_text_g7_4_loop
+	pop	ix
 	ret

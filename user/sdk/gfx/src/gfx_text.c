@@ -1,17 +1,16 @@
 /* KonaOS libgfx: text (docs/gfx-sdk.md sections 13 and 14).
  *
- * Two stages, kept apart behind a sink interface: the expansion turns
- * a glyph's eight font rows into pixel bytes in the style's colours
- * (in GRAPHIC 6 three bytes per row through the pair's three
- * 256-entry tables, the most recent pairs cached; in GRAPHIC 7 six
- * bytes per row, one per pixel), and the sink places them.  The
- * opaque sink writes each glyph row through the data port with one
- * VRAM address per row, so a string is one run with no command
- * engine.  A transparent sink is one more emit function (see
- * gfx_internal.h): it would start one LMMC per string with TIMP set
- * and R#17's auto-increment off and feed the expanded rows through
- * R#44, the chip skipping colour-0 pixels - the font, the expansion
- * and the text calls stay as they are.
+ * Opaque text is scanline-major: the C side validates once per call,
+ * waits for the engine, then sets one VRAM address per scanline of
+ * the string and hands the row to the assembly loop
+ * (gfx_v9958_io_text_row), which streams every glyph's bytes (font
+ * row byte, the pair-table lookup, OUT).  In GRAPHIC 6 the 6x8
+ * expansion is the pair cache's three 256-entry pages; the 4x6's is
+ * the 32-byte pair table (gfx_font4.c).  In GRAPHIC 7 the loop
+ * expands the font row's pixels, one byte each.
+ *
+ * Transparent text (GFX_TEXT_TRANSPARENT) goes to the glyph atlas
+ * (gfx_atlas.c): each glyph is one batched LMMM with transparency.
  *
  * gfx_text is single-line and byte-oriented: no newlines, tabs,
  * escapes or encodings.  Glyphs are clipped whole at the right edge;
@@ -48,8 +47,8 @@ static void gfx_text_build_pages(struct gfx_text_cache_entry *entry)
 	}
 }
 
-/* The cache slot for a colour pair: reuse a matching slot, otherwise
- * build one in the round-robin slot. */
+/* The 6x8 pair cache: a matching entry, or a fresh round-robin
+ * one. */
 static struct gfx_text_cache_entry *gfx_text_pair(uint8_t fg, uint8_t bg)
 {
 	struct gfx_text_cache_entry *entry;
@@ -74,58 +73,98 @@ static struct gfx_text_cache_entry *gfx_text_pair(uint8_t fg, uint8_t bg)
 	return entry;
 }
 
-/* Expand one font row byte into the style's pixels; returns the row
- * width in bytes (3 in G6, 6 in G7). */
-uint8_t gfx_text_expand_row(uint8_t font_row, uint8_t fg, uint8_t bg,
-			    uint8_t *row)
+/* The font's RAM bytes and its geometry. */
+static const uint8_t *gfx_text_font_ram(uint8_t font)
 {
-	uint8_t bit;
-
-	if (gfx_state.mode == (uint8_t)GFX_MODE_512x212_16) {
-		const struct gfx_text_cache_entry *entry =
-			gfx_text_pair(fg, bg);
-
-		row[0] = entry->pages[0][font_row];
-		row[1] = entry->pages[1][font_row];
-		row[2] = entry->pages[2][font_row];
-		return 3u;
+	if (font == GFX_FONT_4X6) {
+		return gfx_font4_ram();
 	}
-	for (bit = 0u; bit < 6u; ++bit) {
-		row[bit] = (font_row & (0x80u >> bit)) != 0u ? fg : bg;
-	}
-	return 6u;
+	return gfx_state.font_ram;
 }
 
-/* The opaque sink: one VRAM address per glyph row, the expanded bytes
- * streamed through the data port. */
-static void gfx_text_opaque_emit(const struct gfx_text_sink *sink,
-				 uint16_t col, uint16_t y,
-				 const uint8_t *row, uint8_t row_bytes)
+static uint8_t gfx_text_font_stride(uint8_t font)
 {
-	uint16_t offset = (uint16_t)((uint16_t)y * 256u + col);
-	uint8_t r14 = (uint8_t)(((offset >> 14) & 0x03u) |
-				((y >> 8) << 2));
-
-	(void)sink;
-	gfx_v9958_io_set_vram(r14, offset);
-	gfx_v9958_io_stream_vram(row, row_bytes);
+	return font == GFX_FONT_4X6 ? GFX_FONT4_GLYPH_STRIDE
+		: GFX_FONT_GLYPH_BYTES;
 }
 
-const struct gfx_text_sink gfx_text_sink_opaque = {
-	gfx_text_opaque_emit
-};
+static uint8_t gfx_text_font_width(uint8_t font)
+{
+	return font == GFX_FONT_4X6 ? GFX_FONT4_GLYPH_WIDTH
+		: GFX_FONT_GLYPH_WIDTH;
+}
 
-/* The shared run: validation, the batch flush, then every glyph
- * through the expansion and the sink, whole-glyph clipped at the
+static uint8_t gfx_text_font_height(uint8_t font)
+{
+	return font == GFX_FONT_4X6 ? GFX_FONT4_GLYPH_HEIGHT
+		: GFX_FONT_GLYPH_HEIGHT;
+}
+
+/* One opaque glyph cell at (x, y) through the scanline emit.  The
+ * caller owns the validations and the engine wait (every set_vram
+ * waits again, so the bytes can never race a running command). */
+void gfx_text_emit_glyph(uint16_t x, uint16_t y, uint8_t code,
+			 uint8_t fg, uint8_t bg, uint8_t font)
+{
+	uint8_t g6 = gfx_state.mode == (uint8_t)GFX_MODE_512x212_16 ?
+		1u : 0u;
+	const uint8_t *ram = gfx_text_font_ram(font);
+	uint8_t height = gfx_text_font_height(font);
+	uint16_t col = g6 != 0u ? (uint16_t)(x / 2u) : x;
+	uint8_t row_index;
+
+	for (row_index = 0u; row_index < height; ++row_index) {
+		struct gfx_text_row_args args;
+		uint8_t code_here = code;
+		uint16_t offset = (uint16_t)((uint16_t)(y + row_index) *
+					     256u + col);
+		uint8_t r14 = (uint8_t)(((offset >> 14) & 0x03u) |
+					(((y + row_index) >> 8) << 2));
+
+		gfx_v9958_io_set_vram(r14, offset);
+		args.text = &code_here;
+		args.font = ram + row_index;
+		args.table0 = (const uint8_t *)0;
+		args.table1 = (const uint8_t *)0;
+		args.table2 = (const uint8_t *)0;
+		args.count = 1u;
+		args.fg = fg;
+		args.bg = bg;
+		if (g6 != 0u) {
+			if (font == GFX_FONT_4X6) {
+				args.table0 = gfx_font4_pair(fg, bg);
+				args.mode = 1u;
+			} else {
+				struct gfx_text_cache_entry *entry =
+					gfx_text_pair(fg, bg);
+
+				args.table0 = entry->pages[0];
+				args.table1 = entry->pages[1];
+				args.table2 = entry->pages[2];
+				args.mode = 0u;
+			}
+		} else {
+			args.mode = font == GFX_FONT_4X6 ? 3u : 2u;
+		}
+		gfx_v9958_io_text_row(&args);
+	}
+}
+
+/* The shared run: validation, then the transparent path (the atlas)
+ * or the scanline-major opaque emit, whole glyphs clipped at the
  * right edge. */
 static int gfx_text_run(uint16_t x, uint16_t y, const char *text,
-			uint16_t length,
-			const struct gfx_text_style *style,
-			const struct gfx_text_sink *sink)
+			uint16_t length, const struct gfx_text_style *style)
 {
 	uint8_t g6;
-	uint8_t row[6];
-	uint16_t i;
+	uint8_t font;
+	uint8_t width;
+	uint8_t height;
+	uint16_t fit;
+	uint16_t col;
+	uint8_t row_index;
+	const uint8_t *ram;
+	uint8_t stride;
 
 	if (gfx_state.video_handle == 0 || gfx_state.mode_set == 0u) {
 		return -KOS_EINVAL;
@@ -137,17 +176,31 @@ static int gfx_text_run(uint16_t x, uint16_t y, const char *text,
 	    (text == (const char *)0 && length != 0u)) {
 		return -KOS_EINVAL;
 	}
-	if (y > 512u - GFX_FONT_GLYPH_HEIGHT) {
+	font = style->font;
+	if (font != GFX_FONT_6X8 && font != GFX_FONT_4X6) {
+		return -KOS_EINVAL;
+	}
+	if ((style->flags & ~(uint8_t)GFX_TEXT_TRANSPARENT) != 0u) {
 		return -KOS_EINVAL;
 	}
 	g6 = gfx_state.mode == (uint8_t)GFX_MODE_512x212_16 ? 1u : 0u;
 	if (g6 != 0u) {
-		if ((x & 1u) != 0u) {
-			return -KOS_EINVAL;
-		}
 		if ((style->fg | style->bg) & 0xF0u) {
 			return -KOS_EINVAL;
 		}
+	}
+	if ((style->flags & GFX_TEXT_TRANSPARENT) != 0u) {
+		return gfx_atlas_draw(x, y, text, length, style->fg);
+	}
+	/* Opaque: the stream writes whole bytes, so in GRAPHIC 6 x is
+	 * byte-aligned (the 4x6's columns are always so). */
+	if (g6 != 0u && (x & 1u) != 0u) {
+		return -KOS_EINVAL;
+	}
+	width = gfx_text_font_width(font);
+	height = gfx_text_font_height(font);
+	if (y > 512u - height) {
+		return -KOS_EINVAL;
 	}
 	if (x >= gfx_state.width) {
 		return -KOS_EINVAL;
@@ -155,32 +208,51 @@ static int gfx_text_run(uint16_t x, uint16_t y, const char *text,
 	if (gfx_flush() < 0) {
 		return -KOS_EINVAL;
 	}
-	/* The sink streams VRAM through the CPU: wait for the engine, so
-	 * the text lands after the last command the flush issued. */
+	/* The stream's bytes must land after every queued command: wait
+	 * for the engine once. */
 	gfx_v9958_io_wait_command();
-	for (i = 0u; i < length; ++i) {
-		uint16_t col = g6 != 0u ?
-			(uint16_t)((x + i * GFX_FONT_GLYPH_WIDTH) / 2u) :
-			(uint16_t)(x + i * GFX_FONT_GLYPH_WIDTH);
-		uint8_t code = (uint8_t)text[i];
-		uint8_t row_index;
+	fit = (gfx_state.width - x) / width;
+	if (fit > length) {
+		fit = length;
+	}
+	ram = gfx_text_font_ram(font);
+	stride = gfx_text_font_stride(font);
+	col = g6 != 0u ? (uint16_t)(x / 2u) : x;
+	for (row_index = 0u; row_index < height; ++row_index) {
+		struct gfx_text_row_args args;
+		uint16_t offset = (uint16_t)((uint16_t)(y + row_index) *
+					     256u + col);
+		uint8_t r14 = (uint8_t)(((offset >> 14) & 0x03u) |
+					(((y + row_index) >> 8) << 2));
 
-		/* The mode's width is 256 bytes in either mode: a glyph
-		 * whose row bytes cross the edge is not drawn. */
-		if ((uint16_t)(col + (g6 != 0u ? 3u : 6u)) > 256u) {
-			break;
-		}
-		for (row_index = 0u; row_index < GFX_FONT_GLYPH_BYTES;
-		     ++row_index) {
-			uint8_t count = gfx_text_expand_row(
-				gfx_state.font_ram[(uint16_t)code *
-						   GFX_FONT_GLYPH_BYTES +
-						   row_index],
-				style->fg, style->bg, row);
+		gfx_v9958_io_set_vram(r14, offset);
+		args.text = (const uint8_t *)text;
+		args.font = ram + row_index;
+		args.table0 = (const uint8_t *)0;
+		args.table1 = (const uint8_t *)0;
+		args.table2 = (const uint8_t *)0;
+		args.count = (uint8_t)fit;
+		args.fg = style->fg;
+		args.bg = style->bg;
+		if (g6 != 0u) {
+			if (font == GFX_FONT_4X6) {
+				args.table0 = gfx_font4_pair(style->fg,
+							     style->bg);
+				args.mode = 1u;
+			} else {
+				struct gfx_text_cache_entry *entry =
+					gfx_text_pair(style->fg,
+						      style->bg);
 
-			sink->emit(sink, col, (uint16_t)(y + row_index),
-				   row, count);
+				args.table0 = entry->pages[0];
+				args.table1 = entry->pages[1];
+				args.table2 = entry->pages[2];
+				args.mode = 0u;
+			}
+		} else {
+			args.mode = font == GFX_FONT_4X6 ? 3u : 2u;
 		}
+		gfx_v9958_io_text_row(&args);
 	}
 	return 0;
 }
@@ -190,21 +262,28 @@ int gfx_text(uint16_t x, uint16_t y, const char *text,
 {
 	return gfx_text_run(x, y, text,
 			    text != (const char *)0 ?
-			    (uint16_t)strlen(text) : 0u, style,
-			    &gfx_text_sink_opaque);
+			    (uint16_t)strlen(text) : 0u, style);
 }
 
 int gfx_text_n(uint16_t x, uint16_t y, const char *text, uint16_t length,
 	       const struct gfx_text_style *style)
 {
-	return gfx_text_run(x, y, text, length, style,
-			    &gfx_text_sink_opaque);
+	return gfx_text_run(x, y, text, length, style);
 }
 
-uint16_t gfx_text_width(const char *text)
+uint16_t gfx_text_width(const char *text, enum gfx_font font)
 {
+	uint8_t width;
+
 	if (text == (const char *)0) {
 		return 0u;
 	}
-	return (uint16_t)(strlen(text) * GFX_FONT_GLYPH_WIDTH);
+	if (font == GFX_FONT_4X6) {
+		width = GFX_FONT4_GLYPH_WIDTH;
+	} else if (font == GFX_FONT_6X8) {
+		width = GFX_FONT_GLYPH_WIDTH;
+	} else {
+		return 0u;
+	}
+	return (uint16_t)(strlen(text) * width);
 }

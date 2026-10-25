@@ -29,13 +29,13 @@ void gfx_font_install(void)
 	memcpy(gfx_state.font_ram, gfx_font_builtin, GFX_FONT_SIZE);
 }
 
-int gfx_font_set_glyph(uint8_t code, const uint8_t rows[8])
+/* The 6x8 glyph calls' bodies (the public gfx_font_* dispatch lives
+ * in gfx_font4.c, so a program that never uses the 4x6 font links
+ * neither its table nor its copy). */
+int gfx_font_set_glyph6(uint8_t code, const uint8_t rows[8])
 {
 	uint8_t row;
 
-	if (gfx_state.video_handle == 0) {
-		return -KOS_EINVAL;
-	}
 	if (rows == (const uint8_t *)0) {
 		return -KOS_EINVAL;
 	}
@@ -48,13 +48,10 @@ int gfx_font_set_glyph(uint8_t code, const uint8_t rows[8])
 	return 0;
 }
 
-int gfx_font_reset_glyph(uint8_t code)
+int gfx_font_reset_glyph6(uint8_t code)
 {
 	uint8_t row;
 
-	if (gfx_state.video_handle == 0) {
-		return -KOS_EINVAL;
-	}
 	for (row = 0u; row < GFX_FONT_GLYPH_BYTES; ++row) {
 		gfx_state.font_ram[(uint16_t)code * GFX_FONT_GLYPH_BYTES +
 				   row] =
@@ -64,7 +61,7 @@ int gfx_font_reset_glyph(uint8_t code)
 	return 0;
 }
 
-void gfx_font_reset(void)
+void gfx_font_reset6(void)
 {
 	gfx_font_install();
 }

@@ -58,6 +58,8 @@ GFXDEMO_EXE = os.path.join(ROOT, "UserSoftware", "GfxDemo", "build",
 FIXTURES = os.path.join(ROOT, "tests", "gfx", "fixtures")
 FONT_ASSET = os.path.join(ROOT, "drivers", "v9958", "assets",
                           "font_cp850_6x8.inc")
+FONT4_ASSET = os.path.join(ROOT, "drivers", "v9958", "assets",
+                           "font_cp850_4x6.inc")
 DEV_NAME = "GFXTEST.EXE"
 PVIEW_DEV = "PVIEW.EXE"
 GFXDEMO_DEV = "GFXDEMO.EXE"
@@ -135,6 +137,13 @@ def load_font():
     return parse_font(FONT_ASSET)
 
 
+def load_font4():
+    """The pinned CP850 4x6 font (pixels in bits 7..4), parsed from
+    the reviewable asset."""
+    from fontpack import parse_font
+    return parse_font(FONT4_ASSET, size=256 * 6, glyph_bytes=6)
+
+
 def g6_pair(fg, bg):
     """The expansion's pair table: two font bits (the left pixel in
     bit 1) to one packed GRAPHIC 6 byte."""
@@ -153,6 +162,30 @@ def g7_text_row(font, code, row, fg, bg):
     """One expanded glyph row's six GRAPHIC 7 bytes."""
     byte = font[code * 8 + row]
     return bytes(fg if byte & (0x80 >> bit) else bg for bit in range(6))
+
+
+def g6_text_row4(font4, code, row, fg, bg):
+    """One expanded 4x6 glyph row's two GRAPHIC 6 bytes (the font's
+    pixels live in bits 7..4)."""
+    byte = font4[code * 6 + row]
+    pair = g6_pair(fg, bg)
+    return bytes((pair[(byte >> 6) & 3], pair[(byte >> 4) & 3]))
+
+
+def g7_text_row4(font4, code, row, fg, bg):
+    """One expanded 4x6 glyph row's four GRAPHIC 7 bytes."""
+    byte = font4[code * 6 + row]
+    return bytes(fg if byte & (0x80 >> bit) else bg for bit in range(4))
+
+
+def atlas_cell4(font4, code, fg, g6):
+    """One 4x6 atlas cell's rows: two GRAPHIC 6 bytes or four
+    GRAPHIC 7 bytes each."""
+    for row in range(6):
+        if g6:
+            yield g6_text_row4(font4, code, row, fg, 0)
+        else:
+            yield g7_text_row4(font4, code, row, fg, 0)
 
 
 # gfxtest upload's four rectangles (first byte address, rows, bytes per
@@ -283,28 +316,36 @@ class GfxHostTests(unittest.TestCase):
 
     def test_text_and_font_surface(self):
         """The public header declares the font and text API; the
-        internal header holds the 2048-byte font size, the pair cache
-        and the sink interface; the font table is generated from the
-        pinned asset at build."""
+        internal header holds the two 2048-byte font sizes, the pair
+        caches and the text-row args; both font tables are generated
+        from the pinned assets at build."""
         gfx_h = read_text(GFX_H)
-        for name in ("gfx_font_set_glyph", "gfx_font_reset_glyph",
-                     "gfx_font_reset", "gfx_text", "gfx_text_n",
-                     "gfx_text_width", "struct gfx_text_style"):
+        for name in ("enum gfx_font", "gfx_font_set_glyph",
+                     "gfx_font_reset_glyph", "gfx_font_reset",
+                     "gfx_text", "gfx_text_n", "gfx_text_width",
+                     "gfx_text_atlas", "GFX_TEXT_TRANSPARENT",
+                     "struct gfx_text_style"):
             self.assertIn(name, gfx_h)
         internal = read_text(os.path.join(GFX_SRC, "gfx_internal.h"))
         self.assertIn("GFX_FONT_SIZE", internal)
+        self.assertIn("GFX_FONT4_SIZE", internal)
+        self.assertIn("GFX_CMD_GLYPH", internal)
         self.assertIn("GFX_TEXT_CACHE_ENTRIES 2u", internal)
-        self.assertIn("struct gfx_text_sink {", internal)
-        self.assertIn("gfx_text_sink_opaque", internal)
+        self.assertIn("struct gfx_text_row_args {", internal)
         exe_mk = read_text(EXE_MK)
-        self.assertIn("gfx_font.c", exe_mk)
-        self.assertIn("gfx_text.c", exe_mk)
+        for member in ("gfx_font.c", "gfx_font4.c", "gfx_atlas.c",
+                       "gfx_text.c"):
+            self.assertIn(member, exe_mk)
         font_c = read_text(os.path.join(GFX_SRC, "gfx_font.c"))
         self.assertIn('#include "font_builtin.inc"', font_c)
+        font4_c = read_text(os.path.join(GFX_SRC, "gfx_font4.c"))
+        self.assertIn('#include "font4_builtin.inc"', font4_c)
         makefile = read_text(MAKEFILE)
         self.assertIn("fontpack.py table $< $@", makefile)
+        self.assertIn("fontpack.py table4x6 $< $@", makefile)
         fontpack = read_text(FONTPACK)
         self.assertIn('command == "table"', fontpack)
+        self.assertIn('command == "table4x6"', fontpack)
 
     def test_makefile_wires_gfxtest_with_libgfx(self):
         makefile = read_text(MAKEFILE)
@@ -1590,6 +1631,394 @@ class TestGfxText(GfxReplay):
         fresh = self.trace(z, since)
         self.assertIn("gfxtest: text -2 0 0 -7", fresh)
         self.assertIn("gfxtest: text PASS", fresh)
+        self.assertNotIn("FAIL", fresh)
+        self.assert_hold_sequence(ops)
+        self.assert_restored(z, before)
+        self.assertEqual(self.exclusive(z), 0,
+                         "the exclusive flag survived the run")
+
+
+class TestGfxAtlas(GfxReplay):
+    """`gfxtest atlas`: the opaque 4x6 font, the transparent text over
+    stripes with the atlas builds, the LRU slot reuse, the stale glyph
+    redraw, the refusals and the out-of-range count."""
+
+    # The G6 band (y 212, 42 lines, 6-line slots) after the nine
+    # colours: colours 8 and 9 rebuilt the two least recently used
+    # slots (1 and 2's).  The G7 band (36 lines, 12-line slots) after
+    # four colours and the two redraws: 4 in slot 0, 1 in slot 1
+    # (rebuilt over 2), 2 in slot 2 (rebuilt over 3).
+    G6_SLOT_COLOUR = {0: 8, 1: 9, 2: 3, 3: 4, 4: 5, 5: 6, 6: 7}
+    G7_SLOT_COLOUR = {0: 4, 1: 1, 2: 2}
+
+    def stripe_colour(self, x):
+        """The stripe behind dot x: 8-dot bars alternating 0x0A and
+        0x0B from x 0."""
+        return 0x0A if (x // 8) % 2 == 0 else 0x0B
+
+    def glyph_over(self, font4, code, row, fg, g6, x0):
+        """One 4x6 glyph row drawn transparently over the stripes at
+        x0: foreground pixels take `fg`, the rest keep the stripe."""
+        byte = font4[code * 6 + row]
+        if g6:
+            out = []
+            for j in range(2):
+                hi = fg if byte & (0x80 >> 2 * j) \
+                    else self.stripe_colour(x0 + 2 * j)
+                lo = fg if byte & (0x80 >> (2 * j + 1)) \
+                    else self.stripe_colour(x0 + 2 * j + 1)
+                out.append((hi << 4) | lo)
+            return bytes(out)
+        return bytes(fg if byte & (0x80 >> j)
+                     else self.stripe_colour(x0 + j) for j in range(4))
+
+    def cell4(self, font4, code, row, fg, g6):
+        """One 4x6 cell row on colour 0 (the atlas): two GRAPHIC 6
+        bytes or four GRAPHIC 7 bytes."""
+        byte = font4[code * 6 + row]
+        if g6:
+            pair = g6_pair(fg, 0)
+            return bytes((pair[(byte >> 6) & 3], pair[(byte >> 4) & 3]))
+        return bytes(fg if byte & (0x80 >> j) else 0 for j in range(4))
+
+    def assert_text4(self, z, font4, text, x, y, fg, bg, g6, where):
+        """Opaque 4x6 text decoded from the peer's VRAM against the
+        pinned asset."""
+        peer = z.vdp
+        for index, code in enumerate(text.encode("latin-1")):
+            for row in range(6):
+                got = g6_text_row4(font4, code, row, fg, bg) if g6 \
+                    else g7_text_row4(font4, code, row, fg, bg)
+                col = (x + index * 4) // 2 if g6 else x + index * 4
+                self.assertEqual(
+                    peer.vram[(y + row) * 256 + col:
+                              (y + row) * 256 + col + len(got)], got,
+                    "%s: '%s' glyph %u row %u"
+                    % (where, text, index, row))
+
+    def assert_text_over(self, z, font4, text, x, y, fg, g6, where):
+        """Transparent 4x6 text: the glyph's pixels over the stripes,
+        decoded dot by dot."""
+        peer = z.vdp
+        for index, code in enumerate(text.encode("latin-1")):
+            x0 = x + index * 4
+            for row in range(6):
+                got = self.glyph_over(font4, code, row, fg, g6, x0)
+                col = x0 // 2 if g6 else x0
+                self.assertEqual(
+                    peer.vram[(y + row) * 256 + col:
+                              (y + row) * 256 + col + len(got)], got,
+                    "%s: '%s' glyph %u row %u"
+                    % (where, text, index, row))
+
+    def assert_band(self, z, font4, g6, slot_colour):
+        """Every glyph cell of every occupied atlas slot, decoded
+        against the RAM font (colour 0 background).  Only the cell
+        area is compared: the band's remaining bytes keep the boot
+        console's remnants."""
+        peer = z.vdp
+        slots = 7 if g6 else 3
+        for slot in range(slots):
+            colour = slot_colour[slot]
+            base = 212 + (6 if g6 else 12) * slot
+            rows = 6 if g6 else 12
+            for row in range(rows):
+                expected = bytearray()
+                if g6:
+                    for code in range(32, 127):
+                        expected += self.cell4(font4, code, row,
+                                               colour, True)
+                else:
+                    first = 32 if row < 6 else 96
+                    for code in range(first, min(first + 64, 127)):
+                        expected += self.cell4(font4, code, row % 6,
+                                               colour, False)
+                line = peer.vram[(base + row) * 256:
+                                 (base + row) * 256 + len(expected)]
+                self.assertEqual(bytes(line), bytes(expected),
+                                 "%s slot %u row %u" %
+                                 ("G6" if g6 else "G7", slot, row))
+
+    def test_atlas_mode(self):
+        font4 = load_font4()
+        z = self.start()
+        before = self.snapshot(z)
+        ops = []
+        since = len(z.glyphs)
+        z.hid.hid_queue.extend(b"/fs/gfxtest.exe atlas\r")
+        self.run_recording(z, ops, lambda z: OPS_ACQUIRE in ops)
+        self.run_recording(z, ops, lambda z: OPS_DIRECT_INFO in ops)
+        peer = z.vdp
+        c0 = len(peer.commands)
+
+        def draws():
+            return [c for c in peer.commands[c0:] if c["code"] != 0x00]
+
+        def to_count(count, label):
+            steady = 0
+            seen = 0
+            for _step in range(EXEC_BUDGET * 3):
+                self.skip_delay(z)
+                self.feed(z)
+                z.step()
+                now = len(draws())
+                if now >= count and now == seen:
+                    steady += 1
+                else:
+                    steady = 0
+                seen = now
+                if steady >= 200000:
+                    return
+            self.fail("the atlas run never reached %s" % label)
+
+        def to_draw(count, label):
+            """Step until exactly `count` draws dispatched (the states
+            between the keys are transient: the program never parks
+            there, so no quiet window)."""
+            for _step in range(EXEC_BUDGET):
+                self.skip_delay(z)
+                self.feed(z)
+                z.step()
+                if len(draws()) >= count:
+                    self.assertEqual(len(draws()), count, label)
+                    return
+            self.fail("the atlas run never reached %s" % label)
+
+        # -- key 1: the whole G6 stage --------------------------------
+        to_count(143, "key 1")
+        self.assertNotIn(OPS_RELEASE, ops,
+                         "the atlas run still holds the display")
+        cmds = draws()
+        self.assertEqual(len(cmds), 143, [c["code"] for c in cmds])
+        self.assertEqual(cmds[0]["fill"], (0, 0, 512, 212, 0x00),
+                         "the clear")
+        for i in range(64):
+            self.assertEqual(cmds[1 + i]["fill"],
+                             (i * 8, 96, 8, 96,
+                              (0x0A if i % 2 == 0 else 0x0B) * 0x11),
+                             "stripe %u" % i)
+        # The 78 glyph copies: colours 1..9 into the seven slots (8
+        # and 9 rebuilt the LRU slots), then the two in-range glyphs
+        # of the out-of-range string and the four-glyph cost run.
+        expected = []
+        slot_of = {1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 0, 9: 1}
+        for colour in range(1, 10):
+            x = 8 + 48 * (colour - 1)
+            sy = 212 + 6 * slot_of[colour]
+            for k in range(8):
+                sx = (33 + k) * 4
+                if sx < x + 4 * k:
+                    expected.append((sx + 3, sy, x + 4 * k + 3, 104,
+                                     4, 6, 8, 4))
+                else:
+                    expected.append((sx, sy, x + 4 * k, 104, 4, 6, 8,
+                                     0))
+        for k in range(2):
+            x = 304 + 4 * k
+            sx = (33 + k) * 4
+            expected.append((sx + 3, 218, x + 3, 116, 4, 6, 8, 4))
+        for k in range(4):
+            x = 300 + 4 * k
+            sx = (33 + k) * 4
+            expected.append((sx + 3, 218, x + 3, 128, 4, 6, 8, 4))
+        self.assertEqual([c["logical_copy"] for c in cmds[65:]],
+                         expected, "the G6 glyph copies")
+        # The opaque 4x6 text: two pairs and the right-edge clip
+        # (x 504 holds exactly two glyphs).
+        self.assert_text4(z, font4, "4x6", 0, 10, 0x01, 0x02, True,
+                          "g6 pair1")
+        self.assert_text4(z, font4, "pair two", 0, 20, 0x03, 0x04,
+                          True, "g6 pair2")
+        self.assert_text4(z, font4, "AB", 504, 30, 0x01, 0x02, True,
+                          "the clip")
+        for row in range(30, 36):
+            self.assertEqual(peer.vram[row * 256:(row + 1) * 256 - 4],
+                             bytes(256 - 4), "clip row %u left" % row)
+        # The full 128-glyph row: 512 dots, every column, in the
+        # cached pair.
+        for row in range(70, 76):
+            got = peer.vram[row * 256:(row + 1) * 256]
+            exp = b"".join(
+                g6_text_row4(font4, ord("M" if i % 2 == 0 else "W"),
+                             row - 70, 0x01, 0x02)
+                for i in range(128))
+            self.assertEqual(got, exp, "128-row %u" % row)
+        # The stripes behind the text rows.
+        stripe_row = b"".join(bytes([0x0A * 0x11 if i % 2 == 0
+                                     else 0x0B * 0x11]) * 4
+                              for i in range(64))
+        for row in range(96, 192):
+            if row in range(104, 110) or row in range(116, 122) or \
+                    row in range(128, 134):
+                continue
+            self.assertEqual(peer.vram[row * 256:(row + 1) * 256],
+                             stripe_row, "stripe row %u" % row)
+        # The transparent strings in nine colours; the out-of-range
+        # string's two glyphs; the cost run.
+        for colour in range(1, 10):
+            self.assert_text_over(z, font4, "ABCDEFGH",
+                                  8 + 48 * (colour - 1), 104, colour,
+                                  True, "g6 fg%d" % colour)
+        self.assert_text_over(z, font4, "AB", 304, 116, 9, True,
+                              "the in-range pair")
+        for row in range(116, 122):
+            line = peer.vram[row * 256:(row + 1) * 256]
+            self.assertEqual(line[150:152], bytes([0xBB]) * 2,
+                             "the 0x01 slot row %u" % row)
+            self.assertEqual(line[156:158], bytes([0xBB]) * 2,
+                             "the 0x7F slot row %u" % row)
+        self.assert_text_over(z, font4, "ABCD", 300, 128, 9, True,
+                              "the cost run")
+        # The atlas band: every cell of every occupied slot, nothing
+        # beyond byte 190.
+        self.assert_band(z, font4, True, self.G6_SLOT_COLOUR)
+
+        # -- the stale glyph ------------------------------------------
+        z.hid.hid_queue.extend(b"x")
+        to_draw(144, "the block draw")
+        cmds = draws()
+        self.assertEqual(cmds[143]["logical_copy"],
+                         (135, 236, 303, 140, 4, 6, 8, 4),
+                         "the block copy (DIX)")
+        for row in range(140, 146):
+            line = peer.vram[row * 256:(row + 1) * 256]
+            self.assertEqual(line[150:152], bytes([0x55]) * 2,
+                             "the block row %u" % row)
+            self.assertEqual(line[148:150], bytes([0xBB]) * 2,
+                             "the stripe left of the block row %u" % row)
+            self.assertEqual(line[152:154], bytes([0xAA]) * 2,
+                             "the stripe right of the block row %u"
+                             % row)
+        # Exactly the A cells of the seven slots were redrawn.
+        for slot in range(7):
+            colour = self.G6_SLOT_COLOUR[slot]
+            for row in range(6):
+                expected = bytearray()
+                for code in range(32, 127):
+                    byt = self.cell4(font4, code, row, colour, True)
+                    if code == 0x41:
+                        byt = bytes([colour * 0x11]) * 2
+                    expected += byt
+                line = peer.vram[(212 + 6 * slot + row) * 256:
+                                 (212 + 6 * slot + row) * 256 +
+                                 len(expected)]
+                self.assertEqual(bytes(line), bytes(expected),
+                                 "the stale band slot %u row %u"
+                                 % (slot, row))
+        to_draw(145, "the reset draw")
+        cmds = draws()
+        self.assertEqual(cmds[144]["logical_copy"],
+                         (135, 236, 303, 150, 4, 6, 8, 4),
+                         "the reset copy (DIX)")
+        self.assert_text_over(z, font4, "A", 300, 150, 5, True,
+                              "the reset A")
+        self.assert_band(z, font4, True, self.G6_SLOT_COLOUR)
+        to_draw(146, "the DIY draw")
+        cmds = draws()
+        self.assertEqual(cmds[145]["logical_copy"],
+                         (196, 241, 8, 505, 4, 6, 8, 8),
+                         "the DIY copy")
+        # The Q lands on page 1's spare lines, rows reversed by DIY.
+        # Row 504 carries the console's cursor pattern (0xE0 pairs):
+        # the transparency leaves that background, so the copy merges
+        # over it; the other spare rows were untouched.
+        for row in range(500, 504):
+            got = peer.vram[row * 256:(row + 1) * 256]
+            self.assertEqual(got[:4], b"\x00" * 4,
+                             "Q row %u left" % row)
+            self.assertEqual(got[6:], bytes(250),
+                             "Q row %u right" % row)
+        for step, row in enumerate(range(500, 506)):
+            cell = self.cell4(font4, ord("Q"), step, 5, True)
+            prev = bytes([0xE0]) * 2 if row == 504 else bytes(2)
+            merged = bytearray(2)
+            for j in range(2):
+                hi = cell[j] >> 4
+                lo = cell[j] & 0x0F
+                merged[j] = (((hi if hi else prev[j] >> 4) << 4) |
+                              (lo if lo else prev[j] & 0x0F))
+            self.assertEqual(
+                peer.vram[row * 256 + 4:row * 256 + 6], bytes(merged),
+                "Q copy row %u" % row)
+
+        # -- key 2: the G7 stage and the YJK refusals -----------------
+        to_count(231, "key 2")
+        cmds = draws()
+        self.assertEqual(len(cmds), 231)
+        self.assertEqual(cmds[146]["fill"], (0, 0, 256, 212, 0x00),
+                         "the G7 clear")
+        for i in range(32):
+            self.assertEqual(cmds[147 + i]["fill"],
+                             (i * 8, 96, 8, 96, 0x0A if i % 2 == 0
+                              else 0x0B),
+                             "G7 stripe %u" % i)
+        # The G7 glyph copies: four colours into three slots (colour 4
+        # rebuilt slot 0), then the redraws rebuilding slots 1 and 2,
+        # then the cost run.
+        sequence = ((1, 212, 8, 104), (2, 224, 56, 104),
+                    (3, 236, 104, 104), (4, 212, 152, 104),
+                    (1, 224, 8, 116), (2, 236, 56, 116))
+        expected = []
+        for _colour, sy, x, y in sequence:
+            for k in range(8):
+                sx = (33 + k) * 4
+                if sx < x + 4 * k:
+                    expected.append((sx + 3, sy, x + 4 * k + 3, y, 4,
+                                     6, 8, 4))
+                else:
+                    expected.append((sx, sy, x + 4 * k, y, 4, 6, 8, 0))
+        for k in range(4):
+            expected.append(((33 + k) * 4, 236, 8 + 4 * k, 128, 4, 6,
+                             8, 0))
+        self.assertEqual([c["logical_copy"] for c in cmds[179:]],
+                         expected, "the G7 glyph copies")
+        self.assert_text4(z, font4, "g7 4x6", 100, 10, 0x1C, 0x00,
+                          False, "g7 opaque")
+        stripe_row = b"".join(bytes([0x0A]) * 8 if i % 2 == 0
+                              else bytes([0x0B]) * 8 for i in range(32))
+        for row in range(96, 192):
+            if row in range(104, 110) or row in range(116, 122) or \
+                    row in range(128, 134):
+                continue
+            self.assertEqual(peer.vram[row * 256:(row + 1) * 256],
+                             stripe_row, "G7 stripe row %u" % row)
+        for colour in range(1, 5):
+            self.assert_text_over(z, font4, "ABCDEFGH",
+                                  8 + 48 * (colour - 1), 104, colour,
+                                  False, "g7 fg%d" % colour)
+        self.assert_text_over(z, font4, "ABCDEFGH", 8, 116, 1, False,
+                              "g7 fg1 redraw")
+        self.assert_text_over(z, font4, "ABCDEFGH", 56, 116, 2, False,
+                              "g7 fg2 redraw")
+        self.assert_text_over(z, font4, "ABCD", 8, 128, 2, False,
+                              "the G7 cost run")
+        self.assert_band(z, font4, False, self.G7_SLOT_COLOUR)
+
+        # -- the marks, the budgets and the close ---------------------
+        marks = [now for _value, reg, now in peer.reg_writes
+                 if reg == 16 and _value == 15][2:]
+        self.assertGreaterEqual(len(marks), 14, marks)
+        pairs = list(zip(marks[::2], marks[1::2]))
+        row128, g6s, build, trans4, stale, g7opaque, g7trans = \
+            (b - a for a, b in pairs)
+        print("gfx atlas: 128-row %d g6s %d build %d transparent4 %d "
+              "stale %d g7opaque %d g7transparent4 %d"
+              % (row128, g6s, build, trans4, stale, g7opaque,
+                 g7trans))
+        self.assertLessEqual(row128, 100000, "the full 4x6 row")
+        self.assertLessEqual(row128, 128 * 700, "per-glyph 4x6 G6")
+        self.assertLessEqual(g6s, 8 * 1000, "opaque 6x8 G6, cached pair")
+        self.assertLessEqual(g7opaque, 6 * 1000, "opaque 4x6 G7")
+        self.assertLessEqual(trans4, 4 * 1000, "transparent G6")
+        self.assertLessEqual(g7trans, 4 * 1000, "transparent G7")
+
+        z.hid.hid_queue.extend(b"x")
+        self.run_recording(z, ops, lambda z:
+                           SHELL_PROMPT in "".join(z.glyphs[since:]))
+        self.settle(z, lambda z: z.vdp.regs[8] == 0x08)
+        fresh = self.trace(z, since)
+        self.assertIn("gfxtest: atlas -2 -2 -2 -2 2 0 -2 -7 -7", fresh)
+        self.assertIn("gfxtest: atlas PASS", fresh)
         self.assertNotIn("FAIL", fresh)
         self.assert_hold_sequence(ops)
         self.assert_restored(z, before)

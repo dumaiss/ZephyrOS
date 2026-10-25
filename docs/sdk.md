@@ -68,8 +68,11 @@ user/sdk/
     src/gfx_batch.c       gfx_begin/end/flush, the command queue
     src/gfx_upload.c      gfx_upload_begin/write/end (pixel streaming)
     src/gfx_palette.c     gfx_set_palette
-    src/gfx_font.c        the RAM font, gfx_font_set/reset_glyph/reset
-    src/gfx_text.c        gfx_text/text_n/text_width (pairs, the sink)
+    src/gfx_font.c        the 6x8 RAM font and its glyph bodies
+    src/gfx_font4.c       the 4x6 RAM font, the 32-byte pair tables,
+                          the glyph calls' dispatch (font + stale marks)
+    src/gfx_text.c        gfx_text/text_n/text_width, the row loop
+    src/gfx_atlas.c       gfx_text_atlas, the transparent path
     src/backends/v9958/   the V9958 backend: mode/command C and port I/O
   template/               the copyable minimal program (Makefile, hello.c)
   examples/               hello, fardemo, fardata, files
@@ -163,14 +166,36 @@ batch executes at once.  `gfx_upload_begin`,
 straight to VRAM through the data port (any chunk length, one address
 per row, the exact byte count enforced), and `gfx_set_palette`
 programs the 16-colour mode's palette.  `gfx_text` and `gfx_text_n`
-draw a string with a style (the foreground and background colours),
-each glyph expanded from the RAM font and streamed through the data
-port with one VRAM address per row - the 16-colour mode packs two
-pixels per byte through a pair cache, the 256-colour mode one byte
-per pixel - and `gfx_text_width` measures a string in pixels.
-`gfx_font_set_glyph` installs a 6x8 glyph (the low six bits of each
-row) into the RAM font, `gfx_font_reset_glyph` restores one glyph and
-`gfx_font_reset` restores them all.  The shapes of gfx-sdk.md section
+draw a string with a style: the colours, a `font` (the built-in 6x8
+CP850, or the 4x6 that fits 128 columns in the 16-colour mode) and a
+`flags` word; a zeroed style is opaque 6x8.  Opaque text is
+scanline-major in assembly: one VRAM address per scanline of the
+string, then a row loop streams every glyph's bytes (the font row
+byte, the pair-table lookup, OUT) - in the 16-colour mode the 6x8
+expansion comes from a cached three-page pair table and the 4x6's
+from a 32-byte table per pair, in the 256-colour mode one byte per
+pixel - and `gfx_text_width` measures a string in the font's pixels
+(6 or 4 per glyph).  `GFX_TEXT_TRANSPARENT` draws only each glyph's
+foreground: `gfx_text_atlas` hands libgfx an off-screen band, a font
+and a glyph range, and each glyph is one batched LMMM with
+transparency (TIMP) from an atlas of its colour, so colour-0 pixels
+leave the screen untouched.  The band must lie whole in one page's
+spare lines (212-255 or 468-511) and hold one atlas; an atlas is
+built on its colour's first transparent use and rebuilt least
+recently used when the band is full, and a glyph redefined since the
+atlas was built is redrawn into every atlas at its next use, alone.
+`gfx_font_set_glyph(font, code, rows)` installs a glyph (the low six
+bits of each 6x8 row, the low four of each 4x6 row) into the font's
+RAM copy, `gfx_font_reset_glyph` restores one glyph and
+`gfx_font_reset` restores them all.  The 6x8 glyph calls live in
+gfx_font.c, the dispatch in gfx_font4.c, so a 6x8-only program links
+no 4x6 member and a program that never uses transparent text links
+no atlas member; the atlas build uses the same opaque emit, so it
+adds no second expansion.  Measured on the emulated 10 MHz CPU: a
+full 128-glyph 4x6 row costs ~28,000 instructions (216 per glyph), a
+6x8 glyph in a cached pair ~680, a 4x6 glyph in the 256-colour mode
+~530, a transparent glyph ~900 of CPU plus its LMMM, and one
+95-glyph atlas build ~197,000 - a once-per-colour cost.  The shapes of gfx-sdk.md section
 8.1 take an `enum gfx_op` (COPY or XOR) each: `gfx_rect` is four LINE
 commands with each corner plotted exactly once, `gfx_line` and
 `gfx_point` are one LINE or PSET from the endpoint coordinates (the
@@ -188,9 +213,9 @@ Drawing is asynchronous: the backend waits for the VDP's command
 engine before it starts each command, not after, so `gfx_end` (and a
 call outside a batch) returns with the VDP still drawing and the CPU
 runs while it finishes; every CPU VRAM path - the upload, the text
-sink, the palette, a mode set, a page switch, `gfx_close` - waits for
-the engine first, so it can never race a running command.  `gfx_wait`
-waits for the last command to finish, for a program that reads VRAM
+stream, an atlas build, the palette, a mode set, a page switch,
+`gfx_close` - waits for the engine first, so it can never race a
+running command.  `gfx_wait` waits for the last command to finish, for a program that reads VRAM
 or times its frame.  Both drawing modes hold two 256-line pages, and
 `gfx_show_page(0|1)` switches the displayed page at the next vertical
 blank (it waits for the engine and the retrace, then writes R#2 -
