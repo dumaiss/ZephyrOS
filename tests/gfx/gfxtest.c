@@ -319,6 +319,9 @@ static int gfxtest_prims(void)
 	int good_result;
 	int zero_fill;
 	int zero_copy;
+	int yjk_fill;
+	int yjk_copy;
+	int yjk_good;
 	int result;
 
 	result = gfx_open();
@@ -332,6 +335,9 @@ static int gfxtest_prims(void)
 		printf("gfxtest: FAIL mode %d\r\n", result);
 		return 1;
 	}
+	/* A black screen, shown: the owner watches the drawing happen. */
+	(void)gfx_clear(0x00u);
+	(void)gfx_display_enable(1u);
 	/* Ordering: two batched fills, the second on top of the first. */
 	gfx_begin();
 	result = gfx_fill_rect(0u, 0u, 40u, 8u, 0x11u);
@@ -412,11 +418,23 @@ static int gfxtest_prims(void)
 	(void)gfx_end();
 	zero_fill = gfx_fill_rect(0u, 0u, 0u, 4u, 1u);
 	zero_copy = gfx_copy_rect(0u, 0u, 10u, 10u, 4u, 0u);
+	/* YJK: x and width keep the four-pixel J/K runs. */
+	result = gfx_set_mode(GFX_MODE_256x212_YJK);
+	if (result < 0) {
+		gfx_close();
+		printf("gfxtest: FAIL mode %d\r\n", result);
+		return 1;
+	}
+	yjk_fill = gfx_fill_rect(2u, 0u, 4u, 2u, 0u);
+	yjk_copy = gfx_copy_rect(0u, 0u, 6u, 8u, 4u, 4u);
+	yjk_good = gfx_fill_rect(4u, 0u, 4u, 2u, 0u);
 	gfx_close();
-	printf("gfxtest: prims %d %d %d %d\r\n", bad_result, good_result,
-	       zero_fill, zero_copy);
+	printf("gfxtest: prims %d %d %d %d %d %d %d\r\n", bad_result,
+	       good_result, zero_fill, zero_copy, yjk_fill, yjk_copy,
+	       yjk_good);
 	if (bad_result == -KOS_EINVAL && good_result == 0 &&
-	    zero_fill == 0 && zero_copy == 0) {
+	    zero_fill == 0 && zero_copy == 0 && yjk_fill == -KOS_EINVAL &&
+	    yjk_copy == -KOS_EINVAL && yjk_good == 0) {
 		printf("gfxtest: prims PASS\r\n");
 		return 0;
 	}

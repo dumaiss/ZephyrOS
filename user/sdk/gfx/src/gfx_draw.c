@@ -34,6 +34,11 @@ static int gfx_draw_ready(uint16_t x, uint16_t width)
 	    ((x | width) & 1u) != 0u) {
 		return -KOS_EINVAL;
 	}
+	/* Four YJK pixels share one J/K pair: x and width keep the runs. */
+	if (gfx_state.mode == (uint8_t)GFX_MODE_256x212_YJK &&
+	    ((x | width) & 3u) != 0u) {
+		return -KOS_EINVAL;
+	}
 	if (x >= full_width || (uint16_t)(x + width) > full_width) {
 		return -KOS_EINVAL;
 	}

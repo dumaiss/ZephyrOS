@@ -702,12 +702,21 @@ class TestGfxPrims(GfxReplay):
             return [c for c in z.vdp.commands[c0:]
                     if c["code"] != 0x00]
 
+        # First the black, shown screen the owner watches: the visible
+        # page's clear; the counts below start after it.
+        self.run_recording(z, ops, lambda z: len(draws()) >= 1)
+        self.assertEqual(draws()[0]["fill"], (0, 0, 256, 212, 0x00),
+                         "the black clear")
+        c0 = z.vdp.commands.index(draws()[0]) + 1
+
         # The ordering batch and the 33-fill batch: the 33rd queued
         # fill flushes the first 32 while the batch is still open, so
         # 34 commands land before the key with the hold intact.
         self.run_recording(z, ops, lambda z: len(draws()) >= 34)
         self.assertNotIn(OPS_RELEASE, ops,
                          "the auto-flush ran inside the batch")
+        self.assertEqual(z.vdp.regs[1] & 0x40, 0x40,
+                         "the display is on while prims draws")
         cmds = draws()
         self.assertEqual(len(cmds), 34, [c["fill"] for c in cmds])
         self.assertEqual(cmds[0]["fill"], (0, 0, 40, 8, 0x11),
@@ -829,12 +838,16 @@ class TestGfxPrims(GfxReplay):
         self.settle(z, lambda z: z.vdp.regs[8] == 0x08)
         cmds = [c for c in z.vdp.commands[c0:release_at[0]]
                 if c["code"] != 0x00]
-        self.assertEqual(len(cmds), 44,
+        self.assertEqual(len(cmds), 45,
                          "the refusals queued nothing")
         self.assertEqual(cmds[43]["fill"], (2, 0, 2, 2, 0x11),
                          "the G6 fill packs two pixels per byte")
+        # The YJK refusals (x 2, a copy to x 6) queue nothing; the
+        # aligned fill at x 4 is the last command.
+        self.assertEqual(cmds[44]["fill"], (4, 0, 4, 2, 0x00),
+                         "the aligned YJK fill")
         fresh = self.trace(z, since)
-        self.assertIn("gfxtest: prims -2 0 0 0", fresh)
+        self.assertIn("gfxtest: prims -2 0 0 0 -2 -2 0", fresh)
         self.assertIn("gfxtest: prims PASS", fresh)
         self.assertNotIn("FAIL", fresh)
         self.assert_hold_sequence(ops)

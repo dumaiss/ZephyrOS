@@ -84,7 +84,8 @@ int gfx_end(void);
 int gfx_flush(void);
 
 /* Fill the rectangle (x, y, width, height) with `color` (HMMV): x and
- * width even in the 16-colour mode, y may target the off-screen page
+ * width even in the 16-colour mode and multiples of 4 in YJK (four
+ * pixels share one J/K pair), y may target the off-screen page
  * (256-511).  A zero width or height is a no-op (0, nothing queued);
  * a rectangle outside the mode's width or the 512-line space is
  * -KOS_EINVAL and queues nothing.  Batched or immediate per above. */
