@@ -198,12 +198,13 @@ The default growth policy is `max(required, old_capacity + ceil(old_capacity / 2
 
 An interruption before step 3 completes leaves the header naming the previous area, whose catalog is intact. Records allocated since the last flush are then merely unreferenced, and compaction reclaims them. Metadata changes are coalesced to flush or close; nothing rewrites the catalog per byte written.
 
-## 6. SDK API (illustrative, not frozen)
+## 6. SDK API
+
+The shipped API is `kos/kres.h`, described in `docs/sdk.md` §13; this section gives its shape.
 
 The API exposes **one container context with one backing file**, and multiple in-process logical resource descriptors. *Container* and *resource* are distinct from KonaOS file handles.
 
 ```c
-/* Types and exact signatures are provisional. */
 typedef struct kres_container kres_container;
 typedef struct kres_resource  kres_resource;
 
