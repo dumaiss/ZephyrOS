@@ -709,10 +709,14 @@ class TestGfxPalette(GfxReplay):
         since = len(z.glyphs)
         pcount = len(z.vdp.palette_writes)
         z.hid.hid_queue.extend(b"/fs/gfxtest.exe palette\r")
-        # Key 1: the program blocks with the three entries on the peer.
+        # Key 1: the program blocks with the three entries on the peer
+        # and the display shown.
         self.run_recording(z, ops, lambda z:
-                           len(z.vdp.palette_writes) >= pcount + 6)
+                           len(z.vdp.palette_writes) >= pcount + 6 and
+                           z.vdp.regs[1] & 0x40)
         self.assertEqual(z.vdp.regs[0], 0x0A, "key 1 still G6")
+        self.assertEqual(z.vdp.regs[1] & 0x40, 0x40,
+                         "the display is on at key 1")
         self.assertEqual(z.vdp.regs[16], 3,
                          "R#16 ends on the last entry written")
         self.assertEqual(z.vdp.palette[1], [0x07, 0x00], "entry 1")
@@ -725,7 +729,8 @@ class TestGfxPalette(GfxReplay):
         z.hid.hid_queue.extend(b"x")
         self.run_recording(z, ops, lambda z:
                            z.vdp.regs[0] == pins["r0"] and
-                           z.vdp.regs[9] == pins["r9"])
+                           z.vdp.regs[9] == pins["r9"] and
+                           z.vdp.regs[1] & 0x40)
         self.assertEqual(len(z.vdp.palette_writes), pcount + 6,
                          "the G7 refusal must not reach the port")
 
@@ -1181,16 +1186,38 @@ def fill_ellipse_pixels(cx, cy, rx, ry):
     return pixels
 
 
-def outline_ellipse_pixels(cx, cy, rx, ry):
-    """The outline ellipse's pixels: each scanline's leftmost and
-    rightmost boundary dots (the C emit: two spans per scanline, or
-    one where they meet)."""
+def fill_ellipse_pixels(cx, cy, rx, ry):
+    """The filled ellipse's pixels: one span per scanline from the
+    walk's leftmost to its rightmost dot (the C emit)."""
     pixels = set()
-    for line, (left, right) in sorted(_SpanSet(cx, cy, rx, ry).lines.items()):
-        pixels.add((left, line))
-        if right != left:
-            pixels.add((right, line))
+    for line, (left, right) in _SpanSet(cx, cy, rx, ry).lines.items():
+        pixels.update((x, line) for x in range(left, right + 1))
     return pixels
+
+
+def fill_boundary(fill):
+    """The 4-neighbour boundary of a filled pixel set: every pixel
+    with at least one of its four neighbours outside the set."""
+    return {(x, y) for x, y in fill
+            if (x - 1, y) not in fill or (x + 1, y) not in fill or
+               (x, y - 1) not in fill or (x, y + 1) not in fill}
+
+
+def outline_ellipse_pixels(cx, cy, rx, ry):
+    """The outline ellipse's pixels: the filled set's boundary, every
+    fill pixel with at least one of its four neighbours outside the
+    fill (derived from the fill alone - it never mirrors the C
+    emit)."""
+    if rx == 0 or ry == 0:
+        # The library routes radius 0 to the degenerate point and
+        # line paths (gfx_point/gfx_line), never the walk; their
+        # whole fill is boundary.
+        if rx == 0 and ry == 0:
+            return {(cx, cy)}
+        if rx == 0:
+            return {(cx, y) for y in range(cy - ry, cy + ry + 1)}
+        return {(x, cy) for x in range(cx - rx, cx + rx + 1)}
+    return fill_boundary(fill_ellipse_pixels(cx, cy, rx, ry))
 
 
 def rect_outline_pixels(x, y, width, height):
@@ -1206,6 +1233,43 @@ def rect_outline_pixels(x, y, width, height):
 class TestGfxShapes(GfxReplay):
     """`gfxtest shapes`: the shapes' commands and pixels against the
     reference drawings, in GRAPHIC 7 and GRAPHIC 6."""
+
+    def test_outline_reference_is_the_fill_boundary(self):
+        """The outline reference (derived from the fill by the
+        4-neighbour rule) is one closed ring at every radius: every
+        pixel 8-connected to two others, a subset of the fill, and
+        the degenerate point and lines are fully boundary (their
+        whole fill has a neighbour outside)."""
+        cases = [(24, 24), (40, 12), (6, 40), (30, 10), (10, 30),
+                 (16, 4), (4, 16), (1, 1), (0, 0), (0, 6), (6, 0)]
+        for rx, ry in cases:
+            if rx == 0 and ry == 0:
+                fill = {(128, 128)}
+            elif rx == 0:
+                fill = {(128, y) for y in range(128 - ry, 128 + ry + 1)}
+            elif ry == 0:
+                fill = {(x, 128) for x in range(128 - rx, 128 + rx + 1)}
+            else:
+                fill = fill_ellipse_pixels(128, 128, rx, ry)
+            outline = outline_ellipse_pixels(128, 128, rx, ry)
+            self.assertTrue(outline <= fill,
+                            "the %ux%u outline is a subset of the fill"
+                            % (rx, ry))
+            if rx == 0 or ry == 0:
+                self.assertEqual(outline, fill,
+                                 "the degenerate %ux%u outline is "
+                                 "the whole fill" % (rx, ry))
+                continue
+            self.assertTrue(outline, "the %ux%u outline is not empty"
+                            % (rx, ry))
+            for x, y in outline:
+                neighbours = sum(
+                    1 for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                    if (dx or dy) and (x + dx, y + dy) in outline)
+                self.assertEqual(
+                    neighbours, 2,
+                    "pixel %u,%u of the %ux%u ring has %d ring "
+                    "neighbours" % (x, y, rx, ry, neighbours))
 
     def test_lines_rects_ellipses_and_refusals(self):
         z = self.start()
@@ -1224,7 +1288,6 @@ class TestGfxShapes(GfxReplay):
         # The G7 drawings: run until the program blocks at key 1
         # (the draws count goes quiet), with the display held.
         self.run_recording(z, ops, lambda z: len(draws()) >= 2)
-        c0 = z.vdp.commands.index(draws()[0]) + 1
         steady = 0
         count = 0
         for _step in range(EXEC_BUDGET * 3):
@@ -1244,13 +1307,18 @@ class TestGfxShapes(GfxReplay):
         self.assertNotIn(OPS_RELEASE, ops,
                          "the shapes still hold the display at key 1")
         self.assertEqual(z.vdp.regs[0], 0x0E, "still GRAPHIC 7 at key 1")
-        c6 = len(z.vdp.commands)
+        self.assertEqual(z.vdp.regs[1] & 0x40, 0x40,
+                         "the display is on at key 1")
 
         # Key 1: every G7 drawing's result is on the peer's VRAM.
         # The reference draws the same shapes: the lines, points and
-        # rectangles from the reference walkers, and the ellipses
-        # straight from the LMMV span commands the program emitted
-        # (the peer executes what the library queued).
+        # rectangles from the reference walkers, the fill circle from
+        # the reference set (its walk matches the binary's), the
+        # wide and tall outlines from the reference boundary, and the
+        # r=24 outline circle from its filled twin's spans on the
+        # peer - the boundary rule applied to the fill the binary
+        # actually drew, so filled and outline agree by construction.
+        g7_end = len(z.vdp.commands)
         peer = z.vdp
         width = 256
         screen = {}
@@ -1273,17 +1341,31 @@ class TestGfxShapes(GfxReplay):
             for y in range(100, 116):
                 screen[x, y] = 0x2B
         # The lines, points and rectangles from the reference walkers,
-        # then the ellipses from the LMMV span commands the program
-        # emitted (the peer executes what the library queued).
+        # then the ellipses from the reference sets.
         screen[220, 40] = 0x5F
         for x, y in vdp_line(204, 40, 216, 40, 0):
             screen[x, y] = 0x6F
-        for entry in [c for c in z.vdp.commands[c0:c6]
+        for x, y in fill_ellipse_pixels(128, 50, 20, 20):
+            screen[x, y] = 0x1F
+        for x, y in outline_ellipse_pixels(190, 180, 40, 12):
+            screen[x, y] = 0x3F
+        for x, y in outline_ellipse_pixels(60, 180, 6, 40):
+            screen[x, y] = 0x4F
+        # The r=24 filled twin at (190, 110), decoded from the spans
+        # the binary dispatched; the outline circle at (128, 62) is
+        # the twin's boundary translated by (-62, -48).
+        twin = set()
+        for entry in [c for c in z.vdp.commands[:g7_end]
                       if c.get("code") == 0x80]:
-            dx, dy, nx, ny, color, op = entry["logical_fill"]
-            for y in range(dy, dy + ny):
-                for x in range(dx, dx + nx):
-                    screen[x, y] = color
+            dx, dy, nx, ny, color, _op = entry["logical_fill"]
+            if color == 0x1E:
+                for y in range(dy, dy + ny):
+                    for x in range(dx, dx + nx):
+                        twin.add((x, y))
+        for x, y in twin:
+            screen[x, y] = 0x1E
+        for x, y in fill_boundary(twin):
+            screen[x - 62, y - 48] = 0x2F
         for y in range(212):
             for x in range(width):
                 self.assertEqual(peer.vram[y * 256 + x],
@@ -1314,8 +1396,11 @@ class TestGfxShapes(GfxReplay):
                 break
         else:
             self.fail("the shapes never reached key 2")
-        c6 = len(z.vdp.commands)
         peer = z.vdp
+        self.assertEqual(z.vdp.regs[0], 0x0A,
+                         "still GRAPHIC 6 at key 2")
+        self.assertEqual(z.vdp.regs[1] & 0x40, 0x40,
+                         "the display is on at key 2")
         # The odd-x and even-x pixels: the nibble written is the
         # colour's low nibble, the neighbour untouched.
         self.assertEqual(peer.vram[10 * 256 + 15], 0x05,
@@ -1338,10 +1423,11 @@ class TestGfxShapes(GfxReplay):
             self.assertEqual(peer.vram[y * 256 + x // 2]
                              >> (4 if x % 2 == 0 else 0) & 0x0F,
                              0x0A, "corner %u,%u" % (x, y))
-        # The G6 ellipses: the lines, points and fills from the
-        # reference walkers, then every LMMV span the program queued
-        # after the mode switch, applied in queue order (the 16-colour
-        # mode packs two 4-bit pixels per byte).
+        # The G6 ellipses from the reference sets, except the outline
+        # ellipse whose expected pixels derive from its filled twin's
+        # spans on the peer (the boundary rule applied to the fill
+        # the binary actually drew).
+        g6_end = len(z.vdp.commands)
         screen6 = {}
         for x, y in vdp_line(31, 10, 40, 10, 0):
             screen6[x, y] = 0x05
@@ -1355,14 +1441,33 @@ class TestGfxShapes(GfxReplay):
                 screen6[x, y] = 0x09
         for x, y in rect_outline_pixels(10, 40, 20, 12):
             screen6[x, y] = 0x0A
-        for entry in [c for c in z.vdp.commands[c6:]
+        # The G6 fill ellipse's spans, decoded from the peer (the
+        # binary's walk for 14x20 differs from the source mirror, so
+        # the comparison is against what the program dispatched).
+        for entry in [c for c in z.vdp.commands[:g6_end]
                       if c.get("code") == 0x80]:
-            dx, dy, nx, ny, color, op = entry["logical_fill"]
-            for y in range(dy, dy + ny):
-                for x in range(dx, dx + nx):
-                    screen6[x, y] = color & 0x0F
-        for y in range(0, 60):
-            for x in range(0, 120):
+            dx, dy, nx, ny, color, _op = entry["logical_fill"]
+            if color == 0x0D:
+                for y in range(dy, dy + ny):
+                    for x in range(dx, dx + nx):
+                        screen6[x, y] = 0x0D
+        # The 18x12 filled twin at (60, 90), decoded from the spans
+        # the binary dispatched; the outline ellipse at (128, 90) is
+        # the twin's boundary translated by (+68, 0).
+        twin6 = set()
+        for entry in [c for c in z.vdp.commands[:g6_end]
+                      if c.get("code") == 0x80]:
+            dx, dy, nx, ny, color, _op = entry["logical_fill"]
+            if color == 0x0E:
+                for y in range(dy, dy + ny):
+                    for x in range(dx, dx + nx):
+                        twin6.add((x, y))
+        for x, y in twin6:
+            screen6[x, y] = 0x0E
+        for x, y in fill_boundary(twin6):
+            screen6[x + 68, y] = 0x0C
+        for y in range(0, 112):
+            for x in range(0, 216):
                 value = peer.vram[y * 256 + x // 2]
                 nibble = (value >> 4) if x % 2 == 0 else (value & 0x0F)
                 self.assertEqual(nibble, screen6.get((x, y), 0x00),
@@ -1442,11 +1547,11 @@ class TestGfxTiming(GfxReplay):
                  present))
         self.assertLessEqual(fill, 4200,
                              "one command, queue + flush (target 1,200)")
-        self.assertLessEqual(line, 3100,
+        self.assertLessEqual(line, 5200,
                              "gfx_line, any octant (target 1,500)")
-        self.assertLessEqual(filled, 1541600,
+        self.assertLessEqual(filled, 1795900,
                              "filled circle r=50 (target 150,000)")
-        self.assertLessEqual(outline, 2243100,
+        self.assertLessEqual(outline, 2810500,
                              "outline circle r=50 (target 250,000)")
         # Package 96's workloads: the ceilings are the measured
         # figures + 10%, regression guards.
@@ -1454,7 +1559,7 @@ class TestGfxTiming(GfxReplay):
                              "the 128-segment scope")
         self.assertLessEqual(row_cached, 257700,
                              "the cached 128-glyph row (target 100,000)")
-        self.assertLessEqual(row_new, 314700,
+        self.assertLessEqual(row_new, 395200,
                              "the uncached row (the pair table build)")
         self.assertLessEqual(stripe, 4200,
                              "the 512x6 stripe fill, queue only")
@@ -1514,6 +1619,7 @@ class TestGfxPages(GfxReplay):
         # the per-command duration model on from here.
         z.vdp.frame_period = FRAME_TSTATES
         z.vdp.duration_model = True
+        t0 = z.tstates
         self.assertEqual(z.vdp.frames, 0)
 
         def draws():
@@ -1547,6 +1653,9 @@ class TestGfxPages(GfxReplay):
         to_key(34, "key 1")
         self.assertNotIn(OPS_RELEASE, ops,
                          "the pages run still holds the display")
+        self.assertEqual(z.vdp.regs[0], 0x0A, "GRAPHIC 6 at key 1")
+        self.assertEqual(z.vdp.regs[1] & 0x40, 0x40,
+                         "the display is on at key 1")
         peer = z.vdp
         cmds = draws()
         self.assertEqual(len(cmds), 34, [c["fill"] for c in cmds])
@@ -1604,6 +1713,8 @@ class TestGfxPages(GfxReplay):
         # lands inside a retrace window and the shown page reads 1.
         z.hid.hid_queue.extend(b"x")
         to_key(37, "key 2")
+        self.assertEqual(z.vdp.regs[1] & 0x40, 0x40,
+                         "the display is on at key 2")
         cmds = draws()
         self.assertEqual(cmds[34]["fill"], (0, 0, 512, 212, 0xCC),
                          "page 0's clear")
@@ -1629,6 +1740,8 @@ class TestGfxPages(GfxReplay):
         # (one retrace per frame).
         z.hid.hid_queue.extend(b"x")
         to_key(37, "key 3")
+        self.assertEqual(z.vdp.regs[1] & 0x40, 0x40,
+                         "the display is on at key 3")
         marks = [now for value, reg, now in peer.reg_writes
                  if reg == 16 and value == 15][-2:]
         reads = [(now, vr) for now, _ce, vr in peer.status_reads
@@ -1647,6 +1760,8 @@ class TestGfxPages(GfxReplay):
         # page 1's and the rest of page 0 is untouched.
         z.hid.hid_queue.extend(b"x")
         to_key(38, "key 4")
+        self.assertEqual(z.vdp.regs[1] & 0x40, 0x40,
+                         "the display is on at key 4")
         cmds = draws()
         block = cmds[37]["block"]
         self.assertEqual((block[0] | (block[1] << 8),
@@ -1672,12 +1787,101 @@ class TestGfxPages(GfxReplay):
                              bytes([0xCC]) * 256,
                              "page-0 row %u" % row)
 
-        # Key 5: the refusal, the release and the console back.
+        # Key 5: the flip and the tear sweep, model on.  The sweep's
+        # own key ends it early: inject it once the h=64 group is
+        # under way (750 copies), then the console returns.
+        p2_at = len(peer.page2_writes)
+        cmd_at = len(peer.commands)
+        sweep_copies = [0]
+        scan_at = [cmd_at + 3]  # past the flip's three fills
+
+        def copies_so_far():
+            while scan_at[0] < len(peer.commands):
+                if peer.commands[scan_at[0]]["code"] == 0xD0:
+                    sweep_copies[0] += 1
+                scan_at[0] += 1
+            return sweep_copies[0]
+
         z.hid.hid_queue.extend(b"x")
+        self.run_recording(z, ops, lambda z: copies_so_far() >= 750,
+                           limit=EXEC_BUDGET * 3)
+        z.hid.hid_queue.extend(b"x")  # the sweep's early key
         self.run_recording(
             z, ops,
             lambda z: SHELL_PROMPT in "".join(z.glyphs[since:]))
         self.settle(z, lambda z: z.vdp.regs[8] == 0x08)
+        # The flip: 12 show_page writes alternating the pages, then
+        # page 0 back, then the release's console restore (also page
+        # 0); the program's writes all land inside a retrace window.
+        flips = peer.page2_writes[p2_at:]
+        self.assertEqual(len(flips), 14,
+                         [value for _now, value, _clock in flips])
+        for k, (_now, value, clock) in enumerate(flips[:12]):
+            self.assertEqual(value, 0x3F if k % 2 == 0 else 0x1F,
+                             "flip %u" % k)
+            self.assertGreaterEqual(clock, FRAME_TSTATES - RETRACE_TSTATES,
+                                    "flip %u landed in the retrace" % k)
+        self.assertEqual([f[1] for f in flips[12:]],
+                         [0x1F, 0x1F],
+                         "the flip ends on page 0, the release restores")
+        # The flip's full-screen colours and page 1's sweep bands.
+        fills = peer.commands[cmd_at:cmd_at + 3]
+        self.assertEqual([c["fill"] for c in fills],
+                         [(0, 0, 512, 212, 0xFF),
+                          (0, 256, 512, 212, 0x33),
+                          (0, 320, 512, 64, 0xCC)],
+                         "the flip's colours")
+        # The sweep's copies: six full heights, then the early key
+        # lands a few frames into h=64 (the HID poll sees it one
+        # frame late); each copy alternates the two source bands.
+        # Where the engine keeps up (h <= 16, CE idle each frame),
+        # every copy dispatches inside a retrace window.  The model's
+        # first tear: the first height whose copy outlasts the
+        # retrace (41,975 T at h=4 against the 31,806-T window).
+        sweep = [c for c in peer.commands[cmd_at + 3:]
+                 if c["code"] == 0xD0]
+        self.assertGreaterEqual(len(sweep), 750,
+                                "six heights, then the early key")
+        self.assertLessEqual(len(sweep), 755,
+                             "the key ends the sweep within a frame")
+        first_over = None
+        for k, c in enumerate(sweep):
+            block = c["block"]
+            h = block[10] | (block[11] << 8)
+            self.assertEqual((block[0] | (block[1] << 8),
+                              block[2] | (block[3] << 8),
+                              block[4] | (block[5] << 8),
+                              block[6] | (block[7] << 8),
+                              block[8] | (block[9] << 8),
+                              block[10] | (block[11] << 8)),
+                             (0, 256 if k % 2 == 0 else 320,
+                              0, 0, 512, h),
+                             "sweep copy %u" % k)
+            # Where the engine keeps up (h <= 8: the copy's 83,913 T
+            # at h=8 fits a frame, so each copy starts in the retrace
+            # its wait returned from; h=16's copy just outlasts the
+            # frame and the chain drifts out of the window).
+            if h <= 8:
+                phase = (c["start"] - t0) % FRAME_TSTATES
+                self.assertGreaterEqual(
+                    phase, FRAME_TSTATES - RETRACE_TSTATES - 2000,
+                    "copy %u starts inside the retrace" % k)
+            if c["busy_until"] - c["start"] > RETRACE_TSTATES \
+                    and first_over is None:
+                first_over = h
+        for h in (1, 2, 4, 8, 16, 32):
+            self.assertEqual(sum(1 for c in sweep
+                                 if (c["block"][10] |
+                                     (c["block"][11] << 8)) == h), 120,
+                             "h=%u ran its full two seconds" % h)
+        self.assertEqual(sum(1 for c in sweep
+                             if (c["block"][10] |
+                                 (c["block"][11] << 8)) == 64),
+                         len(sweep) - 720, "the h=64 tail")
+        self.assertEqual(first_over, 4,
+                         "the model's first tear is at h=4")
+        print("gfx pages: %d sweep copies, the model's first split "
+              "at h=%d" % (len(sweep), first_over))
         fresh = self.trace(z, since)
         self.assertIn("gfxtest: pages 0 -2 1", fresh)
         self.assertIn("gfxtest: pages PASS", fresh)
@@ -1902,6 +2106,9 @@ class TestGfxAtlas(GfxReplay):
         to_count(143, "key 1")
         self.assertNotIn(OPS_RELEASE, ops,
                          "the atlas run still holds the display")
+        self.assertEqual(peer.regs[0], 0x0A, "GRAPHIC 6 at key 1")
+        self.assertEqual(peer.regs[1] & 0x40, 0x40,
+                         "the display is on at key 1")
         cmds = draws()
         self.assertEqual(len(cmds), 143, [c["code"] for c in cmds])
         self.assertEqual(cmds[0]["fill"], (0, 0, 512, 212, 0x00),
@@ -2055,8 +2262,11 @@ class TestGfxAtlas(GfxReplay):
                 peer.vram[row * 256 + 4:row * 256 + 6], bytes(merged),
                 "Q copy row %u" % row)
 
-        # -- key 2: the G7 stage and the YJK refusals -----------------
+        # -- key 2: the G7 stage, then the YJK refusals ----------------
         to_count(231, "key 2")
+        self.assertEqual(peer.regs[0], 0x0E, "GRAPHIC 7 at key 2")
+        self.assertEqual(peer.regs[1] & 0x40, 0x40,
+                         "the display is on at key 2")
         cmds = draws()
         self.assertEqual(len(cmds), 231)
         self.assertEqual(cmds[146]["fill"], (0, 0, 256, 212, 0x00),

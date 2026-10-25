@@ -205,9 +205,10 @@ commands with each corner plotted exactly once, `gfx_line` and
 `gfx_point` are one LINE or PSET from the endpoint coordinates (the
 command's major/minor axes and direction bits derived from them),
 `gfx_fill_ellipse` and `gfx_ellipse` expand the midpoint ellipse into
-one horizontal span (LMMV) per scanline - outline ellipses as
-non-overlapping left/right spans, so an XOR ellipse drawn twice
-restores everything - and `gfx_fill_rect` already takes the op, with
+one horizontal span (LMMV) per scanline - the outline ellipse is the
+fill's boundary: per scanline, the dots outside either neighbour
+line's span plus the span's own ends, at most two non-overlapping
+pieces, so an XOR ellipse drawn twice restores everything - and `gfx_fill_rect` already takes the op, with
 HMMV for an aligned COPY and the per-pixel LMMV otherwise.  The
 ellipse walk runs on the CPU; the spans queue like any other record
 and the batch auto-flushes as it fills.  In YJK only an aligned COPY

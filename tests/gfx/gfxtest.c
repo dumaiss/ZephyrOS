@@ -305,6 +305,7 @@ static int gfxtest_palette(void)
 		printf("gfxtest: FAIL palette %d\r\n", result);
 		return 1;
 	}
+	(void)gfx_display_enable(1u);
 	(void)getchar(); /* key 1: the palette is on the peer */
 	result = gfx_set_mode(GFX_MODE_256x212_256);
 	if (result < 0) {
@@ -313,6 +314,7 @@ static int gfxtest_palette(void)
 		return 1;
 	}
 	result = gfx_set_palette(0u, 1u, colors);
+	(void)gfx_display_enable(1u);
 	(void)getchar(); /* key 2 */
 	gfx_close();
 	printf("gfxtest: palette %d\r\n", result);
@@ -731,6 +733,11 @@ static int gfxtest_atlas(void)
 		printf("gfxtest: FAIL g7 transparent %d\r\n", result);
 		return 1;
 	}
+	/* The G7 screen is shown at the key. */
+	(void)gfx_display_enable(1u);
+
+	(void)getchar(); /* key 2: the G7 screen and the G7 band */
+
 	/* YJK: the atlas setup and the transparent draw both refuse. */
 	result = gfx_set_mode(GFX_MODE_256x212_YJK);
 	if (result < 0) {
@@ -742,7 +749,6 @@ static int gfxtest_atlas(void)
 	yjk_text = gfx_text(0u, 0u, "x", &trans);
 	yjk_atlas = gfx_text_atlas(GFX_FONT_4X6, 212u, 42u, 32u, 95u);
 
-	(void)getchar(); /* key 2: the G7 screen and the G7 band */
 	gfx_close();
 	printf("gfxtest: atlas %d %d %d %d %d %d %d %d %d\r\n",
 	       trans_no_atlas, bad_band, bad_short, bad_range, outside,
@@ -835,6 +841,11 @@ static int gfxtest_shapes(void)
 	if (result != 0) {
 		printf("gfxtest: ELL2 %d\r\n", result);
 	}
+	/* The r=24 circle's filled twin (the tests derive the outline's
+	 * expected pixels as this fill's boundary - the same walk, so
+	 * the pair agrees by construction). */
+	result |= gfx_fill_ellipse(190u, 110u, 24u, 24u, 0x1Eu,
+				   GFX_OP_COPY);
 	result |= gfx_ellipse(190u, 180u, 40u, 12u, 0x3Fu,
 			      GFX_OP_COPY);
 	if (result != 0) {
@@ -859,6 +870,10 @@ static int gfxtest_shapes(void)
 				   GFX_OP_XOR);
 	result |= gfx_fill_ellipse(32u, 32u, 10u, 6u, 0x7Fu,
 				   GFX_OP_XOR);
+	/* An outline XOR pair: the spans cover every outline dot once,
+	 * so the second XOR restores the region exactly. */
+	result |= gfx_ellipse(200u, 30u, 24u, 8u, 0x3Cu, GFX_OP_XOR);
+	result |= gfx_ellipse(200u, 30u, 24u, 8u, 0x3Cu, GFX_OP_XOR);
 	if (result != 0) {
 		gfx_close();
 		printf("gfxtest: FAIL ellipses %d\r\n", result);
@@ -874,6 +889,7 @@ static int gfxtest_shapes(void)
 		return 1;
 	}
 	(void)gfx_clear(0x00u);
+	(void)gfx_display_enable(1u);
 	if (gfx_line(31u, 10u, 40u, 10u, 0x05u, GFX_OP_COPY) < 0 ||
 	    gfx_point(31u, 12u, 0x06u, GFX_OP_COPY) < 0 ||
 	    gfx_point(32u, 12u, 0x07u, GFX_OP_COPY) < 0 ||
@@ -883,6 +899,8 @@ static int gfxtest_shapes(void)
 	    gfx_fill_rect(60u, 40u, 20u, 12u, 0x0Bu, GFX_OP_XOR) < 0 ||
 	    gfx_fill_rect(60u, 40u, 20u, 12u, 0x0Bu, GFX_OP_XOR) < 0 ||
 	    gfx_ellipse(128u, 90u, 18u, 12u, 0x0Cu, GFX_OP_COPY) < 0 ||
+	    gfx_fill_ellipse(60u, 90u, 18u, 12u, 0x0Eu,
+			     GFX_OP_COPY) < 0 ||
 	    gfx_fill_ellipse(200u, 90u, 14u, 20u, 0x0Du,
 			     GFX_OP_COPY) < 0) {
 		gfx_close();
@@ -1094,6 +1112,64 @@ static int gfxtest_pages(void)
 	result |= gfx_wait_vblank();
 	result |= gfx_copy_rect(0u, 256u, 0u, 0u, 512u, 70u);
 	(void)getchar(); /* key 4: the replay checks page 0's band */
+
+	/* The flip: the two pages in distinct full-screen colours,
+	 * alternating every 15 frames (4 Hz) for 3 s. */
+	result |= gfx_fill_rect(0u, 0u, 512u, 212u, 0x0Fu,
+				GFX_OP_COPY);
+	result |= gfx_fill_rect(0u, 256u, 512u, 212u, 0x03u,
+				GFX_OP_COPY);
+	/* Page 1's two sweep bands: the tear copies alternate them. */
+	result |= gfx_fill_rect(0u, 320u, 512u, 64u, 0x0Cu,
+				GFX_OP_COPY);
+	for (i = 0u; i < 12u; ++i) {
+		unsigned int frame;
+
+		for (frame = 0u; frame < 15u; ++frame) {
+			result |= gfx_wait_vblank();
+		}
+		result |= gfx_show_page((i & 1u) == 0u ? 1u : 0u);
+	}
+	result |= gfx_show_page(0u);
+
+	/* The tear sweep: an h-row band onto the shown page at y 0
+	 * every frame, from the alternating colour bands, h doubling
+	 * 1..64 rows, 2 s each; the 4x6 label shows h.  A key ends the
+	 * sweep early. */
+	{
+		static const uint8_t sweep_heights[7] = {
+			1u, 2u, 4u, 8u, 16u, 32u, 64u
+		};
+		static const char *const sweep_labels[7] = {
+			" 1", " 2", " 4", " 8", "16", "32", "64"
+		};
+		static const struct gfx_text_style label = {
+			0x0Fu, 0x00u, 0u, 1u
+		};
+		unsigned int h_index;
+		unsigned int stopped = 0u;
+
+		for (h_index = 0u; h_index < 7u && stopped == 0u;
+		     ++h_index) {
+			unsigned int frame;
+			unsigned int h = sweep_heights[h_index];
+
+			result |= gfx_text(480u, 80u, sweep_labels[h_index],
+					  &label);
+			for (frame = 0u; frame < 120u; ++frame) {
+				if (console_poll() != 0) {
+					(void)getchar();
+					stopped = 1u;
+					break;
+				}
+				result |= gfx_wait_vblank();
+				result |= gfx_copy_rect(
+					0u, (frame & 1u) != 0u ?
+					320u : 256u,
+					0u, 0u, 512u, (uint16_t)h);
+			}
+		}
+	}
 
 	page2_result = gfx_show_page(2u);
 	gfx_close();

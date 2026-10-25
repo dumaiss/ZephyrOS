@@ -371,14 +371,70 @@ static int gfx_ellipse_run(uint16_t cx, uint16_t cy, uint16_t rx,
 					     y, color, op);
 			continue;
 		}
-		/* The outline: the scanline's leftmost and rightmost
-		 * boundary dots - two spans per scanline, one where
-		 * they meet - drawn exactly once. */
-		gfx_shape_submit_span(set->first[y], set->first[y], y,
-				     color, op);
-		if (set->last[y] != set->first[y]) {
-			gfx_shape_submit_span(set->last[y], set->last[y], y,
-					     color, op);
+		/* The outline: the fill set's boundary - every filled dot
+		 * with at least one of its four neighbours outside.  On
+		 * scanline y, the dots left of either neighbour line's
+		 * left edge (and right of either neighbour's right edge)
+		 * have a vertical neighbour outside, and the span's own
+		 * ends have a horizontal neighbour outside; the top and
+		 * bottom scanlines have no line beyond and are one span.
+		 * At most two pieces, drawn exactly once, merged when
+		 * they touch, so the XOR redraw still restores. */
+		{
+			uint8_t has_above = (y != 0u) &&
+				(set->count[y - 1u] != 0u);
+			uint8_t has_below = (y + 1u < GFX_SPAN_LINES) &&
+				(set->count[y + 1u] != 0u);
+			uint16_t bound;
+			uint16_t left_end;
+			uint16_t right_start;
+
+			if (has_above == 0u || has_below == 0u) {
+				/* The top and bottom scanlines: no line
+				 * beyond, so every dot of the span has a
+				 * vertical neighbour outside - one span
+				 * covers the whole row. */
+				gfx_shape_submit_span(set->first[y],
+						     set->last[y], y,
+						     color, op);
+				continue;
+			}
+			bound = 0u;
+			if (has_above != 0u) {
+				bound = set->first[y - 1u];
+			}
+			if (has_below != 0u &&
+			    set->first[y + 1u] > bound) {
+				bound = set->first[y + 1u];
+			}
+			left_end = set->first[y];
+			if (bound != 0u && bound - 1u > left_end) {
+				left_end = bound - 1u;
+			}
+			bound = 0xFFFFu;
+			if (has_above != 0u) {
+				bound = set->last[y - 1u];
+			}
+			if (has_below != 0u &&
+			    set->last[y + 1u] < bound) {
+				bound = set->last[y + 1u];
+			}
+			right_start = set->last[y];
+			if (bound + 1u < right_start) {
+				right_start = bound + 1u;
+			}
+			if (left_end + 1u >= right_start) {
+				gfx_shape_submit_span(set->first[y],
+						     set->last[y], y,
+						     color, op);
+			} else {
+				gfx_shape_submit_span(set->first[y],
+						     left_end, y,
+						     color, op);
+				gfx_shape_submit_span(right_start,
+						     set->last[y], y,
+						     color, op);
+			}
 		}
 	}
 	return 0;
