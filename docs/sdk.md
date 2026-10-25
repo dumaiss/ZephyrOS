@@ -191,11 +191,15 @@ RAM copy, `gfx_font_reset_glyph` restores one glyph and
 gfx_font.c, the dispatch in gfx_font4.c, so a 6x8-only program links
 no 4x6 member and a program that never uses transparent text links
 no atlas member; the atlas build uses the same opaque emit, so it
-adds no second expansion.  Measured on the emulated 10 MHz CPU: a
-full 128-glyph 4x6 row costs ~28,000 instructions (216 per glyph), a
-6x8 glyph in a cached pair ~680, a 4x6 glyph in the 256-colour mode
-~530, a transparent glyph ~900 of CPU plus its LMMM, and one
-95-glyph atlas build ~197,000 - a once-per-colour cost.  The shapes of gfx-sdk.md section
+adds no second expansion.  Measured on the emulated 10 MHz CPU in
+T-states (the simulator's V9958 peer timestamps every register and
+status access; the figures are pinned by tests/test_gfx.py): a full
+128-glyph 4x6 row costs ~286,000 T-states with a fresh colour pair
+(~2,200 per glyph) and ~234,000 cached, an opaque 6x8 glyph in a
+cached pair ~6,900, an opaque 4x6 glyph in the 256-colour mode
+~4,200, a transparent glyph ~10,000 of CPU plus its LMMM, a 95-glyph
+atlas build ~2,330,000 - a once-per-colour cost - and the stale
+redraw of a redefined glyph into every atlas ~211,000.  The shapes of gfx-sdk.md section
 8.1 take an `enum gfx_op` (COPY or XOR) each: `gfx_rect` is four LINE
 commands with each corner plotted exactly once, `gfx_line` and
 `gfx_point` are one LINE or PSET from the endpoint coordinates (the

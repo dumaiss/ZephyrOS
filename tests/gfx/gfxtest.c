@@ -925,6 +925,9 @@ static void gfxtest_mark(void)
 static int gfxtest_timing(void)
 {
 	static const struct gfx_text_style style = {0x0Fu, 0x00u};
+	static const struct gfx_text_style style4 = {0x05u, 0x06u, 0u, 1u};
+	static char row128[129];
+	unsigned int i;
 	int result;
 
 	result = gfx_open();
@@ -966,6 +969,47 @@ static int gfxtest_timing(void)
 	result |= gfx_ellipse(160u, 110u, 50u, 50u, 0x07u, GFX_OP_COPY);
 	gfxtest_mark();
 	result |= gfx_ellipse(160u, 110u, 50u, 50u, 0x07u, GFX_OP_COPY);
+	gfxtest_mark();            /* 96's scope: 128 line segments across
+	                           * 512 x 48 */
+	for (i = 0u; i < 128u; ++i) {
+		result |= gfx_line((uint16_t)(i * 4u),
+				   (i & 1u) != 0u ? 0u : 48u,
+				   (uint16_t)(i * 4u + 4u),
+				   (i & 1u) != 0u ? 48u : 0u,
+				   0x05u, GFX_OP_COPY);
+	}
+	gfxtest_mark();
+	/* 96's stripe changes: the same 128-glyph 4x6 row, first with a
+	 * fresh pair (its 32-byte table built on this call), then with
+	 * the cached one. */
+	for (i = 0u; i < 128u; ++i) {
+		row128[i] = (i & 1u) != 0u ? 'W' : 'M';
+	}
+	row128[128] = '\0';
+	gfxtest_mark();
+	result |= gfx_text(0u, 80u, row128, &style4);
+	gfxtest_mark();
+	gfxtest_mark();
+	result |= gfx_text(0u, 88u, row128, &style4);
+	gfxtest_mark();
+	gfxtest_mark();            /* a full-width 6-row stripe fill */
+	result |= gfx_fill_rect(0u, 96u, 512u, 6u, 0x0Au, GFX_OP_COPY);
+	gfxtest_mark();
+	/* The page switch, then one retrace wait on its own (the test
+	 * subtracts it to price the switch's write). */
+	gfxtest_mark();
+	result |= gfx_show_page(1u);
+	gfxtest_mark();
+	gfxtest_mark();
+	result |= gfx_wait_vblank();
+	gfxtest_mark();
+	result |= gfx_show_page(0u);
+	/* 96's partial present: a 128 x 40 band from page 1 copied onto
+	 * the shown page (the VDP time comes from the duration model). */
+	result |= gfx_fill_rect(0u, 456u, 128u, 40u, 0x0Bu, GFX_OP_COPY);
+	gfxtest_mark();
+	result |= gfx_copy_rect(0u, 456u, 0u, 102u, 128u, 40u);
+	gfxtest_mark();
 	(void)result;
 	(void)gfx_end();
 	(void)getchar(); /* the key: the peer holds every marker */

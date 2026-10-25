@@ -60,7 +60,7 @@ int main(void)
 		return 1;
 	}
 	/* The application-defined glyph, drawn, restored and drawn again. */
-	result = gfx_font_set_glyph(0x80u, face);
+	result = gfx_font_set_glyph(GFX_FONT_6X8, 0x80u, face);
 	if (result < 0) {
 		gfx_close();
 		printf("gfxdemo: FAIL glyph %d\r\n", result);
@@ -72,7 +72,7 @@ int main(void)
 		printf("gfxdemo: FAIL text %d\r\n", result);
 		return 1;
 	}
-	result = gfx_font_reset_glyph(0x80u);
+	result = gfx_font_reset_glyph(GFX_FONT_6X8, 0x80u);
 	if (result < 0) {
 		gfx_close();
 		printf("gfxdemo: FAIL glyph %d\r\n", result);

@@ -48,6 +48,7 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 from test_hwtest_sim import KEEP_CONTENT, KEEP_NAME, HwtestReplay  # noqa: E402
 from test_ioc import struct_member_order  # noqa: E402
 from replay import SHELL_PROMPT  # noqa: E402
+import z80sim  # noqa: E402
 from z80sim import IocCommandPeer  # noqa: E402
 
 GFXTEST_EXE = os.path.join(ROOT, "build", "user", "gfxtest.exe")
@@ -355,6 +356,59 @@ class GfxHostTests(unittest.TestCase):
         self.assertTrue(lines, "the Makefile declares no gfxtest")
         self.assertTrue(any("LIBS=gfx" in line for line in lines),
                         "gfxtest does not link LIBS=gfx")
+
+
+class VdpClockUnit(unittest.TestCase):
+    """The peer's clock: `now` is the CPU's T-state count, and the
+    duration model keeps CE busy for the modeled T-states."""
+
+    def test_register_write_timestamps_are_tstates(self):
+        z = z80sim.PythonZ80(bytearray(0x10000), bytearray(0x10000))
+        z.vdp_peer = z80sim.V9958Peer()
+        z.latch = 0x08  # flat SRAM: writes and fetches hit bank 0
+        # ld a,2Eh (7) ; out (A1h),a (11) ; ld a,AEh (7) ;
+        # out (A1h),a (11) = one R#2E write, 36 T-states;
+        # three nops (12), the same write again: exactly 48 apart.
+        program = bytes((0x3E, 0x2E, 0xD3, 0xA1,
+                         0x3E, 0xAE, 0xD3, 0xA1,
+                         0x00, 0x00, 0x00,
+                         0x3E, 0x2E, 0xD3, 0xA1,
+                         0x3E, 0xAE, 0xD3, 0xA1))
+        for index, byte in enumerate(program):
+            z.wr(0x0100 + index, byte)
+        z.pc = 0x0100
+        for _ in range(len(program)):
+            z.step()
+        writes = [now for _value, reg, now in z.vdp_peer.reg_writes
+                  if reg == 0x2E]
+        self.assertEqual(len(writes), 2, writes)
+        self.assertEqual(writes[1] - writes[0], 48,
+                         "two writes 48 T-states apart")
+
+    def test_hmmm_ce_busy_window_is_the_model(self):
+        peer = z80sim.V9958Peer()
+        peer.duration_model = True
+        peer.regs[0] = 0x02  # GRAPHIC 6: two dots per byte
+        # A 128 x 40-dot HMMM: SX/SY/DX/DY, NX/NY, ARG, CMD.
+        for reg, value in zip(range(32, 47), (0, 0, 0, 0,
+                                              0, 0, 0, 0,
+                                              128, 0, 40, 0, 0, 0xD0)):
+            peer.regs[reg] = value
+        peer.now = 1000
+        peer._command_start(0xD0)
+        bytes_total = (128 // 2) * 40
+        expected = ((88 * bytes_total + 40) * z80sim.CPU_HZ //
+                    z80sim.VDP_HZ)
+        self.assertEqual(peer.commands[-1]["busy_until"] -
+                         peer.commands[-1]["start"], expected,
+                         "the HMMM's busy window is the model's T-states")
+        peer.status_read()
+        self.assertEqual(peer.status_reads[-1][1], 1,
+                         "CE set while the command runs")
+        peer.now = peer.busy_until
+        peer.status_read()
+        self.assertEqual(peer.status_reads[-1][1], 0,
+                         "CE clear once the command finished")
 
 
 class GfxReplay(HwtestReplay):
@@ -1336,7 +1390,10 @@ class TestGfxShapes(GfxReplay):
 
 class TestGfxTiming(GfxReplay):
     """`gfxtest timing`: the CPU T-state budgets between the markers,
-    counted on the peer's status-read timestamps."""
+    counted on the peer's register-write timestamps.  The first five
+    pairs run with the duration model off (the historical conditions);
+    the frame clock and the duration model switch on for package 96's
+    workloads, so their engine waits are the modeled times."""
 
     def test_timing_budgets(self):
         z = self.start()
@@ -1344,32 +1401,89 @@ class TestGfxTiming(GfxReplay):
         since = len(z.glyphs)
         z.hid.hid_queue.extend(b"/fs/gfxtest.exe timing\r")
         self.run_recording(z, ops, lambda z: OPS_ACQUIRE in ops)
+        peer = z.vdp
+
+        def markers():
+            return [now for value, reg, now in peer.reg_writes
+                    if reg == 16 and value == 15]
+        # The legacy five pairs run with the model off; the boot
+        # console and the program's own mode setup each write the G6
+        # palette through R#16 (values 0..15), so their entry-15
+        # writes lead the list.  After the fifth pair's ten markers,
+        # the frame clock and the duration model come on for 96's
+        # workloads (the scope, the stripe changes, the page switch,
+        # the partial present).
         z.hid.hid_queue.extend(b"x")
+        self.run_recording(z, ops, lambda z: len(markers()) >= 12)
+        z.vdp.frame_period = FRAME_TSTATES
+        z.vdp.duration_model = True
         self.run_recording(
             z, ops, lambda z: "gfxtest: timing" in "".join(z.glyphs[since:]))
-        # The markers are the R#16 = 15 register writes: the target
-        # regions sit between consecutive marker pairs.  The boot's
-        # console and the program's own mode setup each write the G6
-        # palette through R#16 (values 0..15), so their entry-15 writes
-        # lead the list; the markers follow.
-        marks = [now for value, reg, now in z.vdp.reg_writes
-                 if reg == 16 and value == 15][2:]
-        self.assertGreaterEqual(len(marks), 10, marks)
+        marks = markers()[2:]
+        self.assertGreaterEqual(len(marks), 24, marks)
         pairs = list(zip(marks[::2], marks[1::2]))
         glyph = pairs[0][1] - pairs[0][0]
         fill = pairs[1][1] - pairs[1][0]
         line = pairs[2][1] - pairs[2][0]
         filled = pairs[3][1] - pairs[3][0]
         outline = pairs[4][1] - pairs[4][0]
+        polyline = pairs[5][1] - pairs[5][0]
+        row_new = pairs[6][1] - pairs[6][0]
+        row_cached = pairs[7][1] - pairs[7][0]
+        stripe = pairs[8][1] - pairs[8][0]
+        page_switch = pairs[9][1] - pairs[9][0]
+        vblank = pairs[10][1] - pairs[10][0]
+        present = pairs[11][1] - pairs[11][0]
         print("gfx timing: glyph %d fill %d line %d filled %d "
-              "outline %d" % (glyph, fill, line, filled, outline))
-        self.assertLessEqual(fill, 1200,
-                             "one command, queue + flush")
-        self.assertLessEqual(line, 1500, "gfx_line, any octant")
-        self.assertLessEqual(filled, 150000,
-                             "filled circle r=50")
-        self.assertLessEqual(outline, 250000,
-                             "outline circle r=50")
+              "outline %d polyline %d row-new %d row-cached %d "
+              "stripe %d page %d vblank %d present %d"
+              % (glyph, fill, line, filled, outline, polyline,
+                 row_new, row_cached, stripe, page_switch, vblank,
+                 present))
+        self.assertLessEqual(fill, 4200,
+                             "one command, queue + flush (target 1,200)")
+        self.assertLessEqual(line, 3100,
+                             "gfx_line, any octant (target 1,500)")
+        self.assertLessEqual(filled, 1541600,
+                             "filled circle r=50 (target 150,000)")
+        self.assertLessEqual(outline, 2243100,
+                             "outline circle r=50 (target 250,000)")
+        # Package 96's workloads: the ceilings are the measured
+        # figures + 10%, regression guards.
+        self.assertLessEqual(polyline, 798100,
+                             "the 128-segment scope")
+        self.assertLessEqual(row_cached, 257700,
+                             "the cached 128-glyph row (target 100,000)")
+        self.assertLessEqual(row_new, 314700,
+                             "the uncached row (the pair table build)")
+        self.assertLessEqual(stripe, 4200,
+                             "the 512x6 stripe fill, queue only")
+        self.assertLessEqual(present, 6600,
+                             "the partial present's CPU")
+        # The page switch: its R#2 write landed inside the retrace,
+        # and the switch back put page 0 on display.
+        _write_at, value, clock = peer.page2_writes[-1]
+        self.assertEqual(value, 0x1F, "R#2 back to page zero")
+        self.assertEqual(peer.shown_page, 0)
+        self.assertGreaterEqual(clock, FRAME_TSTATES - RETRACE_TSTATES,
+                                "the switch back landed in the retrace")
+        # The partial present's VDP time (the duration model) and the
+        # CPU's overlap: the copy keeps the engine busy long after
+        # the call returns.
+        copy = [c for c in peer.commands if c["code"] == 0xD0][-1]
+        self.assertEqual((copy["block"][0] | (copy["block"][1] << 8),
+                          copy["block"][2] | (copy["block"][3] << 8),
+                          copy["block"][4] | (copy["block"][5] << 8),
+                          copy["block"][6] | (copy["block"][7] << 8)),
+                         (0, 456, 0, 102), "the copy's rectangle")
+        self.assertEqual(copy["block"][8] | (copy["block"][9] << 8), 128)
+        self.assertEqual(copy["block"][10] | (copy["block"][11] << 8),
+                         40)
+        vdp_time = copy["busy_until"] - copy["start"]
+        print("gfx timing: present VDP %d T-states, CPU overlap %d"
+              % (vdp_time, max(vdp_time - present, 0)))
+        self.assertGreater(vdp_time, present,
+                           "the copy outlasts its CPU call")
         self.run_to(z, SHELL_PROMPT, since=since)
         self.settle(z, lambda z: z.vdp.regs[8] == 0x08)
         fresh = self.trace(z, since)
@@ -1457,7 +1571,7 @@ class TestGfxPages(GfxReplay):
         mark1, mark2 = marks[-2:]
         self.assertGreater(cmds[33]["busy_until"], mark2,
                            "the batch returned with CE still set")
-        print("gfx pages: 32-fill batch CPU time %d instructions"
+        print("gfx pages: 32-fill batch CPU time %d T-states"
               % (mark2 - mark1))
         # The upload's first VRAM access waited for the fill: a CE-busy
         # status read between the fill's start and the address set.
@@ -2005,12 +2119,19 @@ class TestGfxAtlas(GfxReplay):
               "stale %d g7opaque %d g7transparent4 %d"
               % (row128, g6s, build, trans4, stale, g7opaque,
                  g7trans))
-        self.assertLessEqual(row128, 100000, "the full 4x6 row")
-        self.assertLessEqual(row128, 128 * 700, "per-glyph 4x6 G6")
-        self.assertLessEqual(g6s, 8 * 1000, "opaque 6x8 G6, cached pair")
-        self.assertLessEqual(g7opaque, 6 * 1000, "opaque 4x6 G7")
-        self.assertLessEqual(trans4, 4 * 1000, "transparent G6")
-        self.assertLessEqual(g7trans, 4 * 1000, "transparent G7")
+        self.assertLessEqual(row128, 255500,
+                             "the full 4x6 row (target 100,000)")
+        self.assertLessEqual(row128, 128 * 2000,
+                             "per-glyph 4x6 G6 (target 700)")
+        self.assertLessEqual(g6s, 61100,
+                             "opaque 6x8 G6, cached pair "
+                             "(target 1,000 per glyph)")
+        self.assertLessEqual(g7opaque, 37400,
+                             "opaque 4x6 G7 (target 1,000 per glyph)")
+        self.assertLessEqual(trans4, 47400,
+                             "transparent G6 (target 1,000 per glyph)")
+        self.assertLessEqual(g7trans, 45100,
+                             "transparent G7 (target 1,000 per glyph)")
 
         z.hid.hid_queue.extend(b"x")
         self.run_recording(z, ops, lambda z:

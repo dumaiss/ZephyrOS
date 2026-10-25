@@ -1428,6 +1428,11 @@ class SoundPeer:
 class V9958Peer:
     """Register/VRAM-level model of the LunchCrema V9958 (ports A0h-A4h).
 
+    Every timestamp the peer records (`now` on `reg_writes`,
+    `status_reads`, `addr_writes`, the command records, `busy_until`)
+    is the CPU's T-state count: the Z80 runs at `CPU_HZ` and the
+    V9958 at `VDP_HZ`, so one VDP tick is VDP_HZ/CPU_HZ T-states.
+
     Models exactly what the KonaOS v9958 driver can observe:
 
       - the command-port two-byte protocol: a first byte is latched, the
@@ -1514,12 +1519,13 @@ class V9958Peer:
     OP_LINE = 0x70
     OP_PSET = 0x50
 
-    def __init__(self, command_busy=400):
+    def __init__(self, command_busy=4000):
         self.now = 0
         self.command_busy = command_busy
         # With `duration_model` off (the default) every command's busy
-        # window is a fixed `command_busy` clock units; with it on,
-        # each command stays busy for its modeled execution time
+        # window is a fixed `command_busy` T-states (about 400
+        # instructions in the CE poll loop); with it on, each command
+        # stays busy for its modeled execution time in T-states
         # (_command_duration).
         self.duration_model = False
         # The frame interrupt, off unless a test sets `frame_period`
@@ -1673,35 +1679,34 @@ class V9958Peer:
 
     # -- internal ------------------------------------------------------
     def _command_duration(self, code, block):
-        """The command's execution time, in the peer's clock unit (one
-        per CPU instruction).  The VDP times come from openMSX's
-        VDPCmdEngine per-unit deltas (which reproduce the chip;
-        display on, sprites off): per byte 48 VDP ticks for HMMV, 88
-        for HMMM, per dot 96 for LMMV, 84 for LINE plus the 24-tick
-        first pixel, 112 for one PSET - three VDP ticks to a T-state.
-        Converted at the CE poll loop's rate: its three instructions
-        take about 30 T-states, ten each, so a real command's T-states
-        divide by ten.  The display's access-slot contention is
-        omitted (a lower bound, about 20% under the chip)."""
+        """The command's execution time in CPU T-states.  The VDP
+        times come from openMSX's VDPCmdEngine per-unit deltas (which
+        reproduce the chip; display on, sprites off): per byte 48 VDP
+        ticks for HMMV, 88 for HMMM, per dot 96 for LMMV, 120 for
+        LMMM, 84 for LINE plus the 24-tick first pixel, 112 for one
+        PSET, and 40 ticks of issue overhead.  The V9958 runs at
+        VDP_HZ (its 21.477272 MHz crystal), so one VDP tick is
+        VDP_HZ/CPU_HZ T-states.  The display's access-slot contention
+        is omitted (a lower bound, about 20% under the chip)."""
         kind = code & 0xF0
         nx = block[8] | (block[9] << 8)
         ny = block[10] | (block[11] << 8)
         if kind == self.OP_HMMV:
             dots = self._dots_per_byte()
             bytes_per_row = (nx + dots - 1) // dots
-            return (16 * bytes_per_row * ny + 40) // 10
+            return (48 * bytes_per_row * ny + 40) * CPU_HZ // VDP_HZ
         if kind == self.OP_HMMM:
             dots = self._dots_per_byte()
             bytes_per_row = (nx + dots - 1) // dots
-            return ((88 * bytes_per_row * ny) // 3 + 40) // 10
+            return (88 * bytes_per_row * ny + 40) * CPU_HZ // VDP_HZ
         if kind == self.OP_LMMV:
-            return (32 * nx * ny + 40) // 10
+            return (96 * nx * ny + 40) * CPU_HZ // VDP_HZ
         if kind == self.OP_LMMM:
-            return (40 * nx * ny + 40) // 10
+            return (120 * nx * ny + 40) * CPU_HZ // VDP_HZ
         if kind == self.OP_LINE:
-            return (28 * nx + 36) // 10
+            return (84 * nx + 64) * CPU_HZ // VDP_HZ
         if kind == self.OP_PSET:
-            return 4
+            return 112 * CPU_HZ // VDP_HZ
         return 0
 
     def _write_reg(self, reg, value):
@@ -2718,6 +2723,13 @@ DD_T = {9: 15,
 # An IM2 interrupt acceptance: the acknowledge cycle and vector fetch.
 INTERRUPT_TSTATES = 19
 
+# The board's clocks: the Z80 at 10 MHz (docs/architecture.md), the
+# V9958 on its 21.477272 MHz crystal (the MSX V9958 clock; the
+# Zephyr-80 schematic's X2).  One VDP tick is VDP_HZ/CPU_HZ CPU
+# T-states.
+CPU_HZ = 10000000
+VDP_HZ = 21477272
+
 
 def opcode_cost(z):
     """T-states of the instruction at PC (the four-T-state floor when the
@@ -2776,9 +2788,9 @@ class Z80:
         self.alt_d = self.alt_e = 0
         self.alt_h = self.alt_l = 0
         self.cycles = 0
-        # Instruction-level T-states: the real-time base an attached CTC
-        # counts.  `cycles` stays the instruction count the peripheral
-        # peers timestamp with.
+        # Instruction-level T-states: the real-time base the CTC and
+        # every peripheral peer timestamp with.  `cycles` stays the
+        # instruction count.
         self.tstates = 0
         # An attached CTC model (None until a replay installs one).
         self.ctc = None
@@ -2839,7 +2851,7 @@ class Z80:
         if port == 0x00:
             return self.latch
         if self.vdp_peer is not None and 0xA0 <= port <= 0xA4:
-            self.vdp_peer.now = self.cycles
+            self.vdp_peer.now = self.tstates
             if port == V9958Peer.PORT_DATA:
                 return self.vdp_peer.data_read()
             if port == V9958Peer.PORT_CMD:
@@ -2875,7 +2887,7 @@ class Z80:
         if port == 0x00:
             self.latch = value
         elif self.vdp_peer is not None and 0xA0 <= port <= 0xA4:
-            self.vdp_peer.now = self.cycles
+            self.vdp_peer.now = self.tstates
             if port == V9958Peer.PORT_DATA:
                 self.vdp_peer.data_write(value)
             elif port == V9958Peer.PORT_CMD:
