@@ -989,3 +989,54 @@ is run (`run` returns `-KOS_ENOSPC`) and nothing is allocated.
 costs nothing extra. `xread` costs about 21 T-states per byte in the fast
 slots and 287 in the slow ones. Walk a large table by mapping it; read a
 few bytes from many places by copying.
+
+## 13. KRES (the resource container)
+
+KRES is a small WAD-style named-resource container in one file
+(`docs/kres-sdk-design.md` is the specification): up to 32 named byte
+resources, each one contiguous run of 512-byte records, with a
+crash-safe catalog commit and an explicit rebuild compaction. Sealed
+containers are built once and only read. The format is v1.
+
+The portable core lives in `user/sdk/kres/src/` with the public header
+`kos/kres.h`. The core reaches storage only through a small adapter,
+`struct kres_io` (open/close/size/read/write/seek/sync/truncate/rename/
+unlink); the host edition ships a stdio adapter, the KonaOS edition the
+SDK file API. A program that does not link libkres pays nothing for it.
+
+The API in one paragraph:
+
+- `kres_install(io, cache, ctx)` installs the adapter, the catalog
+  cache and the per-process context once.
+- `kres_open(c, path, flags)` binds a container (KRES_OPEN_READ/WRITE/
+  CREATE), `kres_close` flushes and closes, `kres_flush` commits.
+- `kres_get`, `kres_create`, `kres_read`, `kres_write`, `kres_seek`,
+  `kres_resize`, `kres_reserve`, `kres_read_records`,
+  `kres_write_records` work one resource; `kres_rclose` closes a
+  descriptor. Record operations do not touch the cursor; a write past
+  the logical EOF is refused, a write at it extends.
+- `kres_stat`, `kres_delete`, `kres_rename`, `kres_iter_begin`,
+  `kres_iter_next` walk the catalog.
+- `kres_compact(path, flags)` rebuilds in a temporary file and swaps
+  names: by default preserving reservations, KRES_TIGHT dropping slack,
+  KRES_SEAL producing a sealed container.
+- `kres_extract` copies one resource's bytes into a new file.
+- `kres_verify` is the validation pass: it fails closed on a malformed
+  file and never follows an unchecked offset.
+- `kres_build_begin/add/write/end` build a sealed container; an
+  interrupted build is an invalid file (`kres_build_abort` closes it).
+
+Errors are negated KOS codes; KRES_E_FULL (catalog full), KRES_E_RECLIM
+(the 65,535-record limit), KRES_E_BAD (not a KRES v1 file) and
+KRES_E_GROW are the format's own.
+
+The host tool `build/host/kres` (`make kres-host`) implements create,
+list, show, import, extract, unpack, pack, verify, compact and seal.
+Names are CP850 bytes converted at the host boundary only; payloads are
+byte for byte. Export refuses unsafe paths and case-insensitive
+collisions.
+
+The archive member rule applies: the read path, the mutation and flush
+machinery, the builder and the compactor are separate members, so a
+program that only reads sealed containers links none of the
+catalog-commit or compaction code.

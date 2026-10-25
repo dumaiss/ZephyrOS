@@ -88,6 +88,7 @@ SDK_FILES = {
     "include/kos/sound.h",
     "include/kos/gfx.h",
     "include/kos/kimg.h",
+    "include/kos/kres.h",
     "include/kos/timer.h",
     "include/kos/xmem.h",
     "include/klibc/fmt.h",

@@ -2,7 +2,7 @@
 
 **Status:** Accepted design  
 **Target:** KonaOS / Zephyr-80 / V9958  
-**Scope:** first native graphics SDK sufficient for a picture viewer and simple bitmap text  
+**Scope:** native graphics SDK: a picture viewer and bitmap text (v1), then lines, transparent text and page flipping for quasi-real-time applications such as a tracker (v1.1)
 **Library:** `libgfx`
 
 ---
@@ -407,19 +407,13 @@ The SDK does not depend on console register state.
 
 # 8. Basic drawing operations
 
-GFX v1 provides a deliberately small primitive set:
+The primitive set is small: a clear, a block copy, and the shapes of §8.1
+(rectangles, lines, points, ellipses).
 
 ```c
 typedef uint8_t gfx_color_t;
 
 int gfx_clear(gfx_color_t color);
-
-int gfx_fill_rect(
-    uint16_t x,
-    uint16_t y,
-    uint16_t width,
-    uint16_t height,
-    gfx_color_t color);
 
 int gfx_copy_rect(
     uint16_t src_x,
@@ -430,14 +424,13 @@ int gfx_copy_rect(
     uint16_t height);
 ```
 
-The initial semantics are **COPY only**.
-
-No public raster-operation parameter is necessary in GFX v1.
+The copy and the clear always overwrite; the shapes take an operation
+(§8.1).
 
 On the V9958:
 
 ```text
-gfx_clear/fill_rect
+gfx_clear
     -> HMMV
 
 gfx_copy_rect
@@ -456,7 +449,58 @@ Any operation may use the off-screen page (y 256-511) as its source or
 destination, so a program keeps its tiles, sprites and icons in VRAM and
 places them with `gfx_copy_rect()`.
 
-Logical and transparent operations may be added later when an application demonstrates the need for them.
+## 8.1 Shapes (v1.1)
+
+```c
+enum gfx_op { GFX_OP_COPY, GFX_OP_XOR };
+
+int gfx_fill_rect(uint16_t x, uint16_t y, uint16_t width, uint16_t height,
+                  gfx_color_t color, enum gfx_op op);
+int gfx_rect(uint16_t x, uint16_t y, uint16_t width, uint16_t height,
+             gfx_color_t color, enum gfx_op op);
+int gfx_line(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1,
+             gfx_color_t color, enum gfx_op op);
+int gfx_point(uint16_t x, uint16_t y, gfx_color_t color, enum gfx_op op);
+int gfx_ellipse(uint16_t cx, uint16_t cy, uint16_t rx, uint16_t ry,
+                gfx_color_t color, enum gfx_op op);
+int gfx_fill_ellipse(uint16_t cx, uint16_t cy, uint16_t rx, uint16_t ry,
+                     gfx_color_t color, enum gfx_op op);
+```
+
+**Operations:** `GFX_OP_COPY` writes the colour. `GFX_OP_XOR` combines it
+with what is there, so a shape drawn twice disappears (a cursor, a play
+marker, a selection).
+
+**How each shape is drawn on the V9958:**
+
+| Shape | Commands |
+|---|---|
+| `gfx_fill_rect` | HMMV (byte fill) for COPY with byte-aligned x and width; LMMV (logical, per pixel) otherwise: any x in GRAPHIC 6, and XOR |
+| `gfx_rect` | four LINE commands; the corners are plotted once |
+| `gfx_line`, `gfx_point` | LINE and PSET |
+| `gfx_fill_ellipse` | one horizontal LMMV span per scanline |
+| `gfx_ellipse` | per scanline, the left and right outline spans as LMMV/LINE pieces |
+
+**Ellipses** are computed on the CPU and drawn by the VDP.
+- **The algorithm:** the midpoint algorithm walks one quadrant and mirrors
+  it. The radii's squares are 32-bit (511² does not fit 16 bits), but only
+  in the error terms; the per-scanline output is 16-bit.
+- **No double plotting:** the outline's pieces never overlap, so an XOR
+  ellipse drawn twice restores every pixel.
+- **Circles:** `rx == ry`. A zero radius draws the degenerate line or
+  point.
+
+**Bounds and modes:**
+- every shape lies inside the mode's width and the 512-line space (an
+  ellipse's bounding box included); outside is `-KOS_EINVAL`, queueing
+  nothing;
+- in YJK only `gfx_fill_rect` with COPY and the four-pixel alignment is
+  accepted, since a uniform fill keeps the J/K runs. The other shapes are
+  `-KOS_ENOTSUP`.
+
+All shapes are batched in order, like the fills and copies. A record's
+`sx, sy, dx, dy` carry the geometry (an ellipse is expanded into its span
+records when it is queued), and `flags` the operation.
 
 ---
 
@@ -520,9 +564,21 @@ COPY -> wait as required -> program command registers -> HMMM
 ...
 ```
 
-GFX v1 does not reorder commands.
+GFX does not reorder commands.
 
 Ordering is part of the API contract.
+
+**Asynchronous execution (v1.1).** The backend waits for the command
+engine before it *starts* a command, not after. A batch returns as soon as
+its last command is issued, so the CPU works (sound, the next frame's
+data) while the VDP fills, copies and draws lines.
+
+- **CPU VRAM access waits:** every call that touches VRAM through the CPU
+  (an upload, opaque text, the palette, a page switch) first waits for the
+  command engine, so it can never race a command still writing the same
+  pixels.
+- **`gfx_wait()`:** waits for the last command to finish, for a program
+  that reads VRAM or times its frame.
 
 ## 9.3 Calls outside a batch
 
@@ -667,6 +723,29 @@ same pinned `font_cp850_6x8.inc`); there is no runtime dependency between
 them. `gfx_open()` copies the built-in font into a 2,048-byte RAM font
 that the glyph calls below change.
 
+**The 4×6 font (v1.1).** A second built-in font for dense screens: 128
+columns by 35 rows in GRAPHIC 6, as a tracker's pattern view needs.
+
+```text
+4 × 6 pixels
+256 glyphs, CP850 layout
+6 bytes per glyph, the pixels in bits 7..4
+1,536 bytes
+```
+
+- **Source:** `font_cp850_4x6.inc`, generated from the X11 misc-fixed
+  4x6 font (public domain), pinned by SHA-256 like the 6×8 asset and
+  imported from the same Zephyr-80 reference.
+- **Fit:** in GRAPHIC 6 a 4-pixel glyph row is exactly 2 bytes, so every
+  character column is byte-aligned.
+- **RAM copy:** made at the font's first use. The 4×6 font is its own
+  archive member, so a program that never selects it links neither its
+  table nor its copy.
+
+```c
+enum gfx_font { GFX_FONT_6X8, GFX_FONT_4X6 };
+```
+
 ## 12.3 Mutable characters
 
 Applications may redefine glyphs, in the same spirit as programmable character sets on machines such as the C64.
@@ -675,15 +754,18 @@ The API is:
 
 ```c
 int gfx_font_set_glyph(
+    enum gfx_font font,
     uint8_t code,
-    const uint8_t rows[8]);
+    const uint8_t *rows);         /* 8 rows (6x8) or 6 rows (4x6) */
 
-int gfx_font_reset_glyph(uint8_t code);
+int gfx_font_reset_glyph(enum gfx_font font, uint8_t code);
 
-void gfx_font_reset(void);
+void gfx_font_reset(enum gfx_font font);
 ```
 
-Only the low six bits of each row are significant in the default 6×8 font.
+Rows are right-aligned: a 6×8 row's six pixels are its low six bits, a
+4×6 row's four pixels its low four bits, the leftmost pixel in the
+highest of them. libgfx shifts them into the font's internal layout.
 
 This allows applications to reserve character codes for application-specific symbols:
 
@@ -702,14 +784,19 @@ No separate icon subsystem is required for the first applications.
 
 # 13. Text styles and rendering
 
-GFX v1 text is intentionally **opaque**.
+Text is **opaque** by default; transparent text comes from the glyph atlas
+(§14.1).
 
 ```c
 struct gfx_text_style {
     gfx_color_t fg;
     gfx_color_t bg;
+    uint8_t flags;              /* GFX_TEXT_TRANSPARENT (§14.1) */
+    uint8_t font;               /* enum gfx_font; 0 is the 6x8 font */
 };
 ```
+
+A zeroed style's last two fields keep the v1 behaviour: opaque, 6×8.
 
 The basic API is:
 
@@ -727,15 +814,11 @@ int gfx_text_n(
     uint16_t length,
     const struct gfx_text_style *style);
 
-uint16_t gfx_text_width(const char *text);
+uint16_t gfx_text_width(const char *text, enum gfx_font font);
 ```
 
-For the default font:
-
-```text
-width  = character_count × 6
-height = 8
-```
+The cell is 6 × 8 in the default font and 4 × 6 in the 4×6 font, so the
+width is `character_count × 6` or `× 4`.
 
 `gfx_text()` is single-line and byte-oriented.
 
@@ -765,24 +848,57 @@ expansion   font row bits -> pixels in the style's colours
 pixel sink  places the pixels on the screen
 ```
 
-**Expansion** turns a glyph's 8 rows into pixels for the requested
-foreground/background pair: in GRAPHIC 6 three bytes per row (two pixels
-each), through three 256-entry tables built for the pair and kept for the
-most recent pairs; in GRAPHIC 7 six bytes per row, one per pixel.
+**Expansion** turns a glyph's rows into pixels for the requested
+foreground/background pair:
+
+| Font | GRAPHIC 6 | GRAPHIC 7 |
+|---|---|---|
+| 6×8 | 3 bytes per row (two pixels each), through three 256-entry tables built for the pair and kept for the most recent pairs | 6 bytes per row, one per pixel |
+| 4×6 | 2 bytes per row, through one 16-entry table of byte pairs for the pair (the row's pixel nibble indexes it); at 32 bytes a pair, the tables are cheap to keep for eight pairs or to rebuild per call | 4 bytes per row |
 
 **The opaque sink** (GFX v1) writes those bytes through the data port, one
 VRAM address per glyph row, with the hardware WAIT pacing the writes. A
 string is one run: no command engine, no per-glyph setup beyond the row
 addresses.
 
-**The transparent sink** (a later addition) feeds the same expanded pixels
-to the V9958's logical CPU-to-VRAM transfer (LMMC) with the transparency
-flag set, so background pixels (colour 0) are skipped by the VDP. Only the
-sink changes; the font, the expansion and the text calls stay as they are.
-Its R#44 stream is written with R#17's auto-increment off.
+Opaque text keeps no VRAM cache: redefining a glyph changes its 8 bytes in
+the RAM font, and the next draw uses them.
 
-There is no glyph atlas and no VRAM cache: redefining a glyph changes its
-8 bytes in the RAM font and the next draw uses them.
+## 14.1 Transparent text: the glyph atlas (v1.1)
+
+Transparent text draws only the foreground pixels, leaving whatever is
+under the background pixels. It comes from a **glyph atlas** in off-screen
+VRAM, copied by the VDP.
+
+- **The atlas area:** `gfx_text_atlas(font, y, lines, first, count)` gives
+  libgfx an off-screen band (y and line count) and a glyph range (`first`,
+  `count`). libgfx builds one atlas per text colour in that band:
+  - each atlas is the range's glyphs in that colour on colour 0, drawn
+    with the opaque sink (expansion, then data-port writes);
+  - glyphs are packed in rows one cell high: for the 6×8 font, 85 per
+    8-line row in GRAPHIC 6 and 42 in GRAPHIC 7; for the 4×6 font, 128
+    per 6-line row in GRAPHIC 6 and 64 in GRAPHIC 7;
+  - printable ASCII (32-127, 96 glyphs) therefore takes 16 lines per
+    colour (6×8) or 6 lines (4×6) in GRAPHIC 6, and 24 or 12 in
+    GRAPHIC 7;
+  - an atlas belongs to one font; `gfx_text_atlas` takes the font with
+    the band.
+  - **Colours:** an atlas is built the first time its colour is used. When
+    the band is full, the least recently used colour's atlas is rebuilt in
+    its place.
+- **Drawing:** `gfx_text_style` gains `flags`; `GFX_TEXT_TRANSPARENT` draws
+  each glyph as one VDP logical copy (LMMM) from its atlas, with the
+  transparency flag (TIMP), so colour-0 pixels leave the screen untouched.
+  - **CPU cost:** about 15 register writes per glyph; the VDP moves the
+    pixels.
+  - **Batching:** the copies join the batch.
+- **Limits:**
+  - a glyph outside the atlas range draws nothing and is counted in the
+    call's result;
+  - transparent text without an atlas is `-KOS_EINVAL`;
+  - YJK is `-KOS_ENOTSUP`, as for opaque text.
+- **Redefined glyphs:** redefining a glyph marks it stale in every atlas,
+  and it is redrawn into each at its next use.
 
 Measured on the board (6x8 glyph): direct writes about 1,620 T-states, an
 HMMM copy from a VRAM atlas about 3,380.
@@ -792,10 +908,38 @@ HMMM copy from a VRAM atlas about 3,380.
 # 15. VRAM ownership
 
 While `libgfx` holds the display, the application owns the graphics-mode
-VRAM through coordinates: the visible page (y 0-211) and the off-screen
-page (y 256-511). libgfx keeps no private VRAM resources in GFX v1, so it
-needs no allocator, and the application addresses its off-screen assets
-by coordinate.
+VRAM through coordinates: page 0 (y 0-255) and page 1 (y 256-511), each
+with 212 visible lines and 44 spare ones. The only band libgfx uses is the
+one the application hands it for the glyph atlas (§14.1), so it needs no
+allocator, and the application addresses its off-screen assets by
+coordinate.
+
+## 15.1 Page flipping (v1.1)
+
+Both drawing modes hold two complete pages, so a program can draw one
+while the other is shown.
+
+```c
+int gfx_show_page(uint8_t page);   /* 0 or 1, switched at vertical blank */
+int gfx_wait_vblank(void);
+```
+
+- **`gfx_show_page`:** waits for the command engine and the next vertical
+  blank, then switches the displayed page (R#2). The switch is atomic, so
+  there is no tearing. The program draws the hidden page by its absolute
+  coordinates (y + 256 for page 1).
+- **Partial present:** to update only a band of the screen (a third, a
+  quarter, any rectangle), draw it on the hidden page, then
+  `gfx_wait_vblank()` and `gfx_copy_rect()` it onto the shown page.
+  - **Speed:** the VDP's copy speed decides how much fits in the vertical
+    blank (about 3.2 ms). A larger band still works, with a short tear.
+  - **No OS support:** neither technique needs interrupts or OS support.
+- **Vertical blank:** detected by polling the VDP's retrace flag (status
+  register 2, VR), already selected for the command-engine polls. IE0
+  stays off while libgfx holds the display.
+- **Not provided:** independent per-band page switching, by changing R#2
+  from a line interrupt mid-frame. It would need interrupt handling in the
+  resident V9958 driver.
 
 There is no kernel VRAM allocator. There is no cross-process VRAM
 ownership problem, because the machine is single-tasking and VIDEO is held
@@ -964,10 +1108,11 @@ The first implementation follows these rules:
 3. **No per-pixel syscall or IPC path.**
 4. Repeated drawing operations use a local batch.
 5. Large images use one continuous streaming upload, fed from file-sized chunks.
-6. Opaque text uses cached precolored glyphs and high-speed copies.
-7. Logical VDP commands are not used unless their semantics are actually required.
+6. Opaque text writes expanded glyph pixels straight to VRAM; transparent text copies from a VRAM glyph atlas.
+7. Logical VDP commands are used only where their semantics are required: shapes with XOR or unaligned edges, lines, points and transparent text.
 8. The SDK does not clear, copy or rebuild resources unnecessarily.
 9. Mode changes establish complete known state rather than depending on what the console previously programmed.
+10. Commands run asynchronously: the CPU waits for the command engine only before the next command or a CPU VRAM access.
 
 ---
 
@@ -985,15 +1130,14 @@ proportional fonts
 UTF-8
 font files
 anti-aliased text
-transparent text
 alpha blending
-general raster operations
+general raster operations (beyond COPY and XOR for shapes)
 application-visible VRAM allocation
 arbitrary surfaces
 image scaling on the Z80
 PNG/JPEG decoding on the Z80
 interlaced modes
-double buffering
+per-band page switching from a line interrupt
 compositing
 a retained scene graph
 ```
@@ -1152,8 +1296,36 @@ draw it again
 exit and recover the console
 ```
 
-The renderer writes glyphs directly; the expansion and the sink are separate
-so that the transparent sink can be added without changing them.
+The renderer writes glyphs directly; the expansion and the sink are separate,
+and the glyph atlas (§14.1) is built with them.
+
+## GFX-5 — shapes (v1.1)
+
+```text
+enum gfx_op (COPY, XOR) on every shape
+gfx_fill_rect (HMMV, or LMMV for unaligned and XOR)
+gfx_rect (four LINEs)
+gfx_line, gfx_point (LINE, PSET)
+gfx_ellipse, gfx_fill_ellipse (CPU midpoint, VDP spans)
+```
+
+## GFX-6 — asynchronous execution and page flipping (v1.1)
+
+```text
+asynchronous batches (wait before a command, not after), gfx_wait
+gfx_show_page (R#2 at vertical blank)
+gfx_wait_vblank (status 2 VR polling)
+partial present by copy, demonstrated
+```
+
+## GFX-7 — the 4×6 font and transparent text (v1.1)
+
+```text
+the 4x6 font (its own member), font selection in the text style
+gfx_text_atlas (per font)
+GFX_TEXT_TRANSPARENT (LMMM + TIMP from per-colour atlases)
+stale-glyph rebuild after a redefinition
+```
 
 ---
 
@@ -1182,3 +1354,15 @@ shell
 Both must leave the display and console in their normal KonaOS state when they exit.
 
 At that point the platform has enough graphics infrastructure to begin the first real graphical application without adding further resident OS machinery.
+
+**GFX v1.1** is complete when a demo shaped like a tracker runs on
+physical hardware, alongside music played through the sound driver:
+- the 16-colour mode at 128 columns in the 4×6 font: a pattern view of
+  all 16 voices with per-row backgrounds, line separators, and a top band
+  with a scope, an envelope graph and meters drawn with the shapes;
+- the view is paged: the cursor row moves down one row per music step
+  (two rows redrawn), and at a page's last row the next page, already
+  drawn on the hidden page, is shown with `gfx_show_page`, with the
+  cursor back at the top;
+- the top band updated by partial present;
+- no audible glitch, and the display and console restored on exit.

@@ -1527,6 +1527,21 @@ $(SIM_CORE_LIB): tests/simcore/z80core.c tests/simcore/z80core.h
 	@mkdir -p $(dir $@)
 	cc -O2 -Wall -Wextra -shared -fPIC -o $@ tests/simcore/z80core.c
 
+# --- KRES host tool ----------------------------------------------------------
+# The portable core plus the stdio tool, for development and export.
+
+KRES_CORE_SRC := $(wildcard user/sdk/kres/src/*.c)
+
+kres-host: $(BUILD)/host/kres
+
+$(BUILD)/host/kres: $(KRES_CORE_SRC) tools/kres/main.c \
+		    user/sdk/include/kos/kres.h \
+		    user/sdk/kres/host/kos/types.h
+	@mkdir -p $(dir $@)
+	cc -std=c99 -Wall -Wextra -Werror -Iuser/sdk/kres/host -Iabi \
+	   -Iuser/sdk/include -Iuser/sdk/kres/src \
+	   -o $@ $(KRES_CORE_SRC) tools/kres/main.c
+
 # --- test --------------------------------------------------------------------
 
 test: all $(SIM_CORE_LIB)
