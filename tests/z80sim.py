@@ -1447,7 +1447,18 @@ class V9958Peer:
         divide by the mode's dots per byte (R#0's M5-M3): two in
         GRAPHIC 6, one in GRAPHIC 7 (V9958 Technical Data Book, the
         high-speed move commands); both modes use a 256-byte row;
-      - LMMV with the EOR operation executes into the modeled VRAM;
+      - LMMV with the IMP and EOR operations executes into the modeled
+        VRAM, dot by dot in the block's DIX/DIY directions;
+      - LINE draws with the VDP's Major/Minor error stepping and PSET
+        one dot, both under the IMP and EOR operations (the stepping
+        mirrors openMSX's VDPCmdEngine, which reproduces the chip;
+        V9958 Technical Data Book, the drawing commands);
+      - not modelled: the display's scan position inside a line and
+        the per-command execution timing (every command completes at
+        once, a busy window of `command_busy` T-states apart), the
+        display's VRAM access slots, the other logical operations,
+        the SRCH/POINT/ABRT/STOP commands, border colour detection,
+        and the display's clipping at the screen edges;
       - LMMC/HMMC transfer commands stream one pixel per byte (LMMC
         through R#44 with the first pixel preloaded in the block's CLR
         byte, HMMC through the data port) and stay busy until the
@@ -1483,6 +1494,8 @@ class V9958Peer:
     OP_LMMV = 0x80
     OP_LMMC = 0xB0
     OP_HMMC = 0xF0
+    OP_LINE = 0x70
+    OP_PSET = 0x50
 
     def __init__(self, command_busy=400):
         self.now = 0
@@ -1663,10 +1676,26 @@ class V9958Peer:
             dy = block[6] | (block[7] << 8)
             nx = block[8] | (block[9] << 8)
             ny = block[10] | (block[11] << 8)
-            color = block[12] & 0x0F
+            color = block[12]
             entry["logical_fill"] = (dx, dy, nx, ny, color, code & 0x0F)
-            if (code & 0x0F) == 0x03:  # EOR
-                self._xor_fill(dx, dy, nx, ny, color)
+            self._logical_fill(dx, dy, nx, ny, color, code & 0x0F,
+                               block[13])
+            entry["busy_until"] = self.now + self.command_busy
+            self.busy_until = entry["busy_until"]
+        elif (code & 0xF0) == self.OP_LINE:
+            self._line(block, code & 0x0F)
+            entry["line"] = (block[4] | (block[5] << 8),
+                             block[6] | (block[7] << 8),
+                             block[8] | (block[9] << 8),
+                             block[10] | (block[11] << 8),
+                             block[12], code & 0x0F, block[13])
+            entry["busy_until"] = self.now + self.command_busy
+            self.busy_until = entry["busy_until"]
+        elif (code & 0xF0) == self.OP_PSET:
+            self._pset(block, code & 0x0F)
+            entry["pset"] = (block[4] | (block[5] << 8),
+                             block[6] | (block[7] << 8),
+                             block[12], code & 0x0F)
             entry["busy_until"] = self.now + self.command_busy
             self.busy_until = entry["busy_until"]
         elif (code & 0xF0) == self.OP_LMMC or \
@@ -1758,19 +1787,107 @@ class V9958Peer:
                 self.vram[(dst + dst_x) & 0x1FFFF] = \
                     self.vram[(src + src_x) & 0x1FFFF]
 
-    def _xor_fill(self, dx, dy, nx, ny, color):
+    def _dot_write(self, x, address, color, op):
+        """One dot at `x` under the logical operation `op` (0 IMP, 3
+        EOR): the four-bit pixel's nibble (the dot's x parity picks
+        it), in GRAPHIC 6; the whole byte in GRAPHIC 7."""
+        value = self.vram[address]
+        if self._dots_per_byte() == 2:
+            if x & 1:
+                if op == 0x03:  # EOR
+                    value ^= color & 0x0F
+                else:           # IMP, the low nibble
+                    value = (value & 0xF0) | (color & 0x0F)
+            else:
+                if op == 0x03:  # EOR, the high nibble
+                    value ^= (color & 0x0F) << 4
+                else:           # IMP, the high nibble
+                    value = (value & 0x0F) | ((color & 0x0F) << 4)
+        else:
+            if op == 0x03:
+                value ^= color
+            else:
+                value = color
+        self.vram[address] = value
+
+    def _logical_fill(self, dx, dy, nx, ny, color, op, arg):
+        """LMMV: nx by ny dots, per dot, in the ARG's DIX/DIY
+        directions, under IMP or EOR.  GRAPHIC 6's two dots per byte
+        are addressed through the dot's x/2 and written through the
+        dot's nibble, GRAPHIC 7's byte as is (the VDP's logical
+        commands are dot operations, V9958 Technical Data Book)."""
         if nx == 0 or ny == 0:
             return
-        for y in range(dy, dy + ny):
-            base = (y * 256) & 0x1FFFF
-            for x in range(dx, dx + nx):
-                address = (base + x // 2) & 0x1FFFF
-                value = self.vram[address]
-                if (x & 1) == 0:
-                    value ^= (color & 0x0F) << 4
-                else:
-                    value ^= color & 0x0F
-                self.vram[address] = value
+        step_x = -1 if arg & 0x04 else 1
+        step_y = -1 if arg & 0x08 else 1
+        dots = self._dots_per_byte()
+        for line in range(ny):
+            base = (((dy + line * step_y) & 0x1FF) * 256) & 0x1FFFF
+            for index in range(nx):
+                x = dx + index * step_x
+                address = (base + x // dots) & 0x1FFFF
+                self._dot_write(x, address, color, op)
+
+    def _line(self, block, op):
+        """LINE: the VDP's Major/Minor error stepping, from openMSX's
+        VDPCmdEngine (confirmed against the chip): the major axis
+        steps once per pixel, the minor when the accumulated error
+        `asx` underflows NY, and the command stops after Maj major
+        steps (V9958 Technical Data Book, the LINE command)."""
+        dx = block[4] | (block[5] << 8)
+        dy = block[6] | (block[7] << 8)
+        maj = block[8] | (block[9] << 8)
+        mnr = block[10] | (block[11] << 8)
+        color = block[12]
+        arg = block[13]
+        step_x = -1 if arg & 0x04 else 1
+        step_y = -1 if arg & 0x08 else 1
+        dots = self._dots_per_byte()
+        # The end test runs before the minor step, after the first
+        # pixel; the minor steps Maj - 1 times at most.
+        if arg & 0x01:  # MAJ: the major axis is Y
+            x = dx
+            y = dy
+            asx = (maj - 1) >> 1
+            steps = 0
+            while True:
+                address = ((y & 0x1FF) * 256 + x // dots) & 0x1FFFF
+                self._dot_write(x, address, color, op)
+                y = (y + step_y) & 0xFFFF
+                steps += 1
+                if steps > maj:
+                    break
+                if asx < mnr:
+                    asx += maj
+                    x = (x + step_x) & 0xFFFF
+                asx -= mnr
+                asx &= 1023
+        else:          # the major axis is X
+            x = dx
+            y = dy
+            asx = (maj - 1) >> 1
+            steps = 0
+            while True:
+                address = ((y & 0x1FF) * 256 + x // dots) & 0x1FFFF
+                self._dot_write(x, address, color, op)
+                x = (x + step_x) & 0xFFFF
+                steps += 1
+                if steps > maj:
+                    break
+                if asx < mnr:
+                    asx += maj
+                    y = (y + step_y) & 0xFFFF
+                asx -= mnr
+                asx &= 1023
+
+    def _pset(self, block, op):
+        """PSET: one dot at DX/DY under IMP or EOR."""
+        dx = block[4] | (block[5] << 8)
+        dy = block[6] | (block[7] << 8)
+        color = block[12]
+        dots = self._dots_per_byte()
+        address = ((dy & 0x1FF) * 256 + dx // dots) & 0x1FFFF
+        self._dot_write(dx, address, color, op)
 
     def busy(self):
         return self.now < self.busy_until or self.transfer is not None

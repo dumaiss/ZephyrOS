@@ -250,10 +250,36 @@ class GfxHostTests(unittest.TestCase):
         self.assertIn("GFX_BATCH_ENTRIES  32u", internal)
         self.assertIn('sizeof(struct gfx_cmd) == 16', internal)
         self.assertIn("struct gfx_cmd {", internal)
-        self.assertIn("GFX_OP_FILL 1u", internal)
-        self.assertIn("GFX_OP_COPY 2u", internal)
+        self.assertIn("GFX_CMD_FILL 1u", internal)
+        self.assertIn("GFX_CMD_COPY 2u", internal)
         exe_mk = read_text(EXE_MK)
         self.assertIn("gfx_batch.c", exe_mk)
+
+    def test_shapes_surface(self):
+        """The public header declares the shapes API (the op enum and
+        the six calls), the internal header the command constants and
+        the assembly the per-command builders."""
+        gfx_h = read_text(GFX_H)
+        for name in ("enum gfx_op {", "GFX_OP_COPY", "GFX_OP_XOR",
+                     "gfx_rect", "gfx_line", "gfx_point", "gfx_ellipse",
+                     "gfx_fill_ellipse"):
+            self.assertIn(name, gfx_h)
+        self.assertIn("enum gfx_op op);", gfx_h)
+        internal = read_text(os.path.join(GFX_SRC, "gfx_internal.h"))
+        for name in ("GFX_CMD_FILL 1u", "GFX_CMD_COPY 2u",
+                     "GFX_CMD_LINE 3u", "GFX_CMD_SPAN 4u",
+                     "GFX_CMD_POINT 5u", "GFX_V9958_CMD_LINE 0x70u",
+                     "GFX_V9958_CMD_PSET 0x50u",
+                     "GFX_V9958_CMD_LMMV 0x80u"):
+            self.assertIn(name, internal)
+        asm = read_text(os.path.join(GFX_SRC, "backends", "v9958",
+                                     "v9958_io.asm"))
+        for name in ("_gfx_v9958_io_run_hmmv", "_gfx_v9958_io_run_hmmm",
+                     "_gfx_v9958_io_run_line", "_gfx_v9958_io_run_pset",
+                     "_gfx_v9958_io_run_lmmv"):
+            self.assertIn(name, asm)
+        exe_mk = read_text(EXE_MK)
+        self.assertIn("gfx_shapes.c", exe_mk)
 
     def test_text_and_font_surface(self):
         """The public header declares the font and text API; the
@@ -810,8 +836,7 @@ class TestGfxPrims(GfxReplay):
         cmds = draws()
         self.assertEqual(len(cmds), 43)
         self.assertEqual(cmds[34]["fill"], (192, 100, 4, 2, 33),
-                         "the 33rd fill ran at gfx_end")
-        # The four overlap copies: DIX/DIY chosen from the overlap and
+                         "the 33rd fill ran at gfx_end")        # The four overlap copies: DIX/DIY chosen from the overlap and
         # the block carrying each rectangle's far edge.
         copies = ((204, 22, 0x0C, 203, 23, 207, 25),
                   (196, 22, 0x08, 200, 23, 196, 25),
@@ -897,11 +922,11 @@ class TestGfxPrims(GfxReplay):
                                        0x10000 + (40 + row) * 256 + 156],
                              bytes([0x66]) * 6, "page 0->1 row %u" % row)
 
-        # Key 2: the G6 batch runs exactly one fill (the odd x refusal
-        # queued nothing), the zero sizes are silent no-ops, and the
-        # console is restored.  The count is cut at the release's
-        # dispatch: after it the console's restore redraw adds its own
-        # commands.
+        # Key 2: the G6 batch runs the odd-x fill (LMMV) and the
+        # aligned fill (HMMV), the out-of-bounds fill queues nothing,
+        # the zero sizes are silent no-ops, and the console is
+        # restored.  The count is cut at the release's dispatch: after
+        # it the console's restore redraw adds its own commands.
         release_at = []
 
         def until_prompt(z):
@@ -909,26 +934,406 @@ class TestGfxPrims(GfxReplay):
                 release_at.append(len(z.vdp.commands))
             return SHELL_PROMPT in "".join(z.glyphs[since:])
         z.hid.hid_queue.extend(b"x")
+        # The G6 mode switch keeps the G7 drawings' bytes; the
+        # program's black clear makes the fills' dots observable.
+        # Stop once the aligned fill has executed (the 46th command:
+        # the clear, the LMMV, the aligned HMMV), before the YJK mode
+        # switch and gfx_close's console restore overwrite the bytes.
+        # The odd-x LMMV's dots: x 1 the low nibble of the first byte,
+        # x 2 the high nibble of the second; the aligned HMMV at x 2
+        # then covers the second byte whole (two dots per byte in
+        # GRAPHIC 6).
+        self.run_recording(z, ops, lambda z: len(draws()) >= 46)
+        for row in (0, 1):
+            self.assertEqual(peer.vram[row * 256],
+                             0x01, "odd-x LMMV row %u" % row)
+            self.assertEqual(peer.vram[row * 256 + 1],
+                             0x11, "the aligned fill row %u" % row)
+        self.assertEqual(peer.vram[0x0002:0x0004],
+                         bytes([0x00, 0x00]), "past the aligned fill")
         self.run_recording(z, ops, until_prompt)
         self.settle(z, lambda z: z.vdp.regs[8] == 0x08)
         cmds = [c for c in z.vdp.commands[c0:release_at[0]]
                 if c["code"] != 0x00]
-        self.assertEqual(len(cmds), 45,
+        self.assertEqual(len(cmds), 47,
                          "the refusals queued nothing")
-        self.assertEqual(cmds[43]["fill"], (2, 0, 2, 2, 0x11),
+        self.assertEqual(cmds[43]["fill"], (0, 0, 512, 212, 0x00),
+                         "the G6 clear after the mode switch")
+        self.assertEqual(cmds[44]["code"], 0x80,
+                         "the odd-x fill is LMMV")
+        self.assertEqual(cmds[44]["logical_fill"],
+                         (1, 0, 2, 2, 0x01, 0x00),
+                         "the odd-x LMMV block")
+        self.assertEqual(cmds[45]["fill"], (2, 0, 2, 2, 0x11),
                          "the G6 fill packs two pixels per byte")
         # The YJK refusals (x 2, a copy to x 6) queue nothing; the
         # aligned fill at x 4 is the last command.
-        self.assertEqual(cmds[44]["fill"], (4, 0, 4, 2, 0x00),
+        self.assertEqual(cmds[46]["fill"], (4, 0, 4, 2, 0x00),
                          "the aligned YJK fill")
         fresh = self.trace(z, since)
-        self.assertIn("gfxtest: prims -2 0 0 0 -2 -2 0", fresh)
+        self.assertIn("gfxtest: prims 0 0 -2 0 0 -2 -2 0", fresh)
         self.assertIn("gfxtest: prims PASS", fresh)
         self.assertNotIn("FAIL", fresh)
         self.assert_hold_sequence(ops)
         self.assert_restored(z, before)
         self.assertEqual(self.exclusive(z), 0,
                          "the exclusive flag survived the run")
+
+
+# --- the shapes' reference drawings -------------------------------------
+
+def vdp_line(x0, y0, x1, y1, color):
+    """The VDP LINE command's pixels, mirroring openMSX's
+    VDPCmdEngine (as the peer does): the major axis steps once per
+    pixel, the minor when the error `asx` underflows, Maj + 1 dots."""
+    dx = x1 - x0
+    dy = y1 - y0
+    adx, ady = abs(dx), abs(dy)
+    pixels = []
+    if adx >= ady:
+        maj, mnr = adx, ady
+        step_x = 1 if dx >= 0 else -1
+        step_y = 1 if dy >= 0 else -1
+        x, y = x0, y0
+        asx = (maj - 1) >> 1
+        steps = 0
+        while True:
+            pixels.append((x, y))
+            x += step_x
+            steps += 1
+            if steps > maj:
+                break
+            if asx < mnr:
+                asx += maj
+                y += step_y
+            asx -= mnr
+            asx &= 1023
+    else:
+        maj, mnr = ady, adx
+        step_x = 1 if dx >= 0 else -1
+        step_y = 1 if dy >= 0 else -1
+        x, y = x0, y0
+        asx = (maj - 1) >> 1
+        steps = 0
+        while True:
+            pixels.append((x, y))
+            y += step_y
+            steps += 1
+            if steps > maj:
+                break
+            if asx < mnr:
+                asx += maj
+                x += step_x
+            asx -= mnr
+            asx &= 1023
+    return pixels
+
+
+class _SpanSet:
+    """The C midpoint ellipse walk's per-scanline bounds: the
+    leftmost and rightmost visited dot of each scanline."""
+
+    def __init__(self, cx, cy, rx, ry):
+        self.cx = cx
+        self.cy = cy
+        self.lines = {}
+        self._walk(rx, ry, rx * rx, ry * ry)
+
+    def _visit(self, x, y):
+        left = self.cx - x
+        right = self.cx + x
+        for line in ((self.cy + y, self.cy - y)
+                     if y != 0 else (self.cy,)):
+            if line in self.lines:
+                self.lines[line] = (min(self.lines[line][0], left),
+                                    max(self.lines[line][1], right))
+            else:
+                self.lines[line] = (left, right)
+
+    def _walk(self, rx, ry, rx2, ry2):
+        x, y = 0, ry
+        d1 = ry2 - rx2 * ry + rx2 // 4
+        dx2, dy2 = 0, 2 * rx2 * y
+        while dx2 <= dy2:
+            self._visit(x, y)
+            x += 1
+            dx2 += 2 * ry2
+            if d1 < 0:
+                d1 += dx2 + ry2
+            else:
+                y -= 1
+                dy2 -= 2 * rx2
+                d1 += dx2 + ry2 - dy2
+        d2 = ry2 * (x - 1) * (x - 1) + rx2 * y * y - rx2 * ry2
+        while y != 0:
+            self._visit(x, y)
+            old_x = x
+            y -= 1
+            if d2 > 0:
+                d2 += rx2 - 2 * rx2 * y
+            else:
+                x += 1
+                d2 += rx2 - 2 * rx2 * y + 2 * ry2 * old_x
+        self._visit(x, 0)
+
+
+def fill_ellipse_pixels(cx, cy, rx, ry):
+    """The filled ellipse's pixels: one span per scanline from the
+    walk's leftmost to its rightmost dot (the C emit)."""
+    pixels = set()
+    for line, (left, right) in _SpanSet(cx, cy, rx, ry).lines.items():
+        pixels.update((x, line) for x in range(left, right + 1))
+    return pixels
+
+
+def outline_ellipse_pixels(cx, cy, rx, ry):
+    """The outline ellipse's pixels: each scanline's leftmost and
+    rightmost boundary dots (the C emit: two spans per scanline, or
+    one where they meet)."""
+    pixels = set()
+    for line, (left, right) in sorted(_SpanSet(cx, cy, rx, ry).lines.items()):
+        pixels.add((left, line))
+        if right != left:
+            pixels.add((right, line))
+    return pixels
+
+
+def rect_outline_pixels(x, y, width, height):
+    pixels = set(vdp_line(x, y, x + width - 1, y, 0))
+    pixels.update(vdp_line(x + width - 1, y, x + width - 1,
+                           y + height - 1, 0))
+    pixels.update(vdp_line(x + width - 1, y + height - 1, x,
+                           y + height - 1, 0))
+    pixels.update(vdp_line(x, y + height - 1, x, y, 0))
+    return pixels
+
+
+class TestGfxShapes(GfxReplay):
+    """`gfxtest shapes`: the shapes' commands and pixels against the
+    reference drawings, in GRAPHIC 7 and GRAPHIC 6."""
+
+    def test_lines_rects_ellipses_and_refusals(self):
+        z = self.start()
+        before = self.snapshot(z)
+        ops = []
+        since = len(z.glyphs)
+        z.hid.hid_queue.extend(b"/fs/gfxtest.exe shapes\r")
+
+        self.run_recording(z, ops, lambda z: OPS_ACQUIRE in ops)
+        c0 = len(z.vdp.commands)
+
+        def draws():
+            return [c for c in z.vdp.commands[c0:]
+                    if c["code"] != 0x00]
+
+        # The G7 drawings: run until the program blocks at key 1
+        # (the draws count goes quiet), with the display held.
+        self.run_recording(z, ops, lambda z: len(draws()) >= 2)
+        c0 = z.vdp.commands.index(draws()[0]) + 1
+        steady = 0
+        count = 0
+        for _step in range(EXEC_BUDGET * 3):
+            self.skip_delay(z)
+            self.feed(z)
+            z.step()
+            now = len(draws())
+            if now >= 24 and now == count:
+                steady += 1
+            else:
+                steady = 0
+            count = now
+            if steady >= 200000:
+                break
+        else:
+            self.fail("the shapes never reached key 1")
+        self.assertNotIn(OPS_RELEASE, ops,
+                         "the shapes still hold the display at key 1")
+        self.assertEqual(z.vdp.regs[0], 0x0E, "still GRAPHIC 7 at key 1")
+        c6 = len(z.vdp.commands)
+
+        # Key 1: every G7 drawing's result is on the peer's VRAM.
+        # The reference draws the same shapes: the lines, points and
+        # rectangles from the reference walkers, and the ellipses
+        # straight from the LMMV span commands the program emitted
+        # (the peer executes what the library queued).
+        peer = z.vdp
+        width = 256
+        screen = {}
+        for pixel in (0, 1, 2, 3, 4, 5, 6, 7):
+            for x, y in vdp_line(64, 48, 64 + 40 * [0, 0, 0, 1, 2, 2,
+                                                    2, 1][pixel],
+                                 48 + 32 * [0, 1, 2, 2, 2, 1, 0, 0][
+                                     pixel], pixel + 1):
+                screen[x, y] = pixel + 1
+        for x, y in vdp_line(128, 150, 215, 150, 0):
+            screen[x, y] = 0x0A
+        for x, y in vdp_line(128, 152, 128, 195, 0):
+            screen[x, y] = 0x0B
+        screen[220, 160] = 0x0C
+        screen[0, 0] = 0x0D
+        screen[255, 211] = 0x0E
+        for x, y in rect_outline_pixels(10, 100, 30, 16):
+            screen[x, y] = 0x1A
+        for x in range(50, 80):
+            for y in range(100, 116):
+                screen[x, y] = 0x2B
+        # The lines, points and rectangles from the reference walkers,
+        # then the ellipses from the LMMV span commands the program
+        # emitted (the peer executes what the library queued).
+        screen[220, 40] = 0x5F
+        for x, y in vdp_line(204, 40, 216, 40, 0):
+            screen[x, y] = 0x6F
+        for entry in [c for c in z.vdp.commands[c0:c6]
+                      if c.get("code") == 0x80]:
+            dx, dy, nx, ny, color, op = entry["logical_fill"]
+            for y in range(dy, dy + ny):
+                for x in range(dx, dx + nx):
+                    screen[x, y] = color
+        for y in range(212):
+            for x in range(width):
+                self.assertEqual(peer.vram[y * 256 + x],
+                                 screen.get((x, y), 0x00),
+                                 "G7 pixel %u,%u" % (x, y))
+        # The XOR over the aligned fill, byte for byte: the XOR pair
+        # restored the rectangle.  0x2B ^ 0x3C twice.
+        self.assertEqual(peer.vram[100 * 256 + 50:100 * 256 + 80],
+                         bytes([0x2B]) * 30, "the XOR fill restored")
+
+        # Key 1 releases the G6 drawing: feed it, then run until the
+        # program blocks at key 2 (the draws count goes quiet again,
+        # this time after the G6 shapes).
+        z.hid.hid_queue.extend(b"x")
+        steady = 0
+        count = 0
+        for _step in range(EXEC_BUDGET * 3):
+            self.skip_delay(z)
+            self.feed(z)
+            z.step()
+            now = len(draws())
+            if now >= 200 and now == count:
+                steady += 1
+            else:
+                steady = 0
+            count = now
+            if steady >= 200000:
+                break
+        else:
+            self.fail("the shapes never reached key 2")
+        c6 = len(z.vdp.commands)
+        peer = z.vdp
+        # The odd-x and even-x pixels: the nibble written is the
+        # colour's low nibble, the neighbour untouched.
+        self.assertEqual(peer.vram[10 * 256 + 15], 0x05,
+                         "the line's first byte at odd x")
+        self.assertEqual(peer.vram[10 * 256 + 16], 0x55,
+                         "the line's packed middle bytes")
+        self.assertEqual(peer.vram[12 * 256 + 15], 0x06,
+                         "the odd point")
+        self.assertEqual(peer.vram[12 * 256 + 16], 0x70,
+                         "the even point")
+        self.assertEqual(peer.vram[14 * 256 + 15], 0x08,
+                         "the odd-x fill's first byte")
+        self.assertEqual(peer.vram[14 * 256 + 16], 0x88,
+                         "the odd-x fill's second byte")
+        self.assertEqual(peer.vram[14 * 256 + 22:14 * 256 + 24],
+                         bytes([0x99, 0x99]),
+                         "the aligned fill")
+        # The rect outline's corners, plotted once.
+        for x, y in ((10, 40), (29, 40), (29, 51), (10, 51)):
+            self.assertEqual(peer.vram[y * 256 + x // 2]
+                             >> (4 if x % 2 == 0 else 0) & 0x0F,
+                             0x0A, "corner %u,%u" % (x, y))
+        # The G6 ellipses: the lines, points and fills from the
+        # reference walkers, then every LMMV span the program queued
+        # after the mode switch, applied in queue order (the 16-colour
+        # mode packs two 4-bit pixels per byte).
+        screen6 = {}
+        for x, y in vdp_line(31, 10, 40, 10, 0):
+            screen6[x, y] = 0x05
+        screen6[31, 12] = 0x06
+        screen6[32, 12] = 0x07
+        for x in range(31, 34):
+            for y in range(14, 16):
+                screen6[x, y] = 0x08
+        for x in range(44, 48):
+            for y in range(14, 16):
+                screen6[x, y] = 0x09
+        for x, y in rect_outline_pixels(10, 40, 20, 12):
+            screen6[x, y] = 0x0A
+        for entry in [c for c in z.vdp.commands[c6:]
+                      if c.get("code") == 0x80]:
+            dx, dy, nx, ny, color, op = entry["logical_fill"]
+            for y in range(dy, dy + ny):
+                for x in range(dx, dx + nx):
+                    screen6[x, y] = color & 0x0F
+        for y in range(0, 60):
+            for x in range(0, 120):
+                value = peer.vram[y * 256 + x // 2]
+                nibble = (value >> 4) if x % 2 == 0 else (value & 0x0F)
+                self.assertEqual(nibble, screen6.get((x, y), 0x00),
+                                 "G6 nibble %u,%u" % (x, y))
+
+        # Key 2 releases the refusals and key 3 the release: feed both
+        # (the refusals queue nothing, so the draws stay quiet), then
+        # the console back.
+        z.hid.hid_queue.extend(b"x")
+        z.hid.hid_queue.extend(b"x")
+        self.run_recording(z, ops, lambda z: "gfxtest: shapes PASS"
+                           in "".join(z.glyphs[since:]))
+        fresh = self.trace(z, since)
+        self.assertIn("gfxtest: shapes -2 -2 -2 -2 -2 -2 -2 -2 -2",
+                      fresh)
+        self.assertIn("gfxtest: shapes PASS", fresh)
+        self.assertNotIn("FAIL", fresh)
+        self.run_to(z, SHELL_PROMPT, since=since)
+        self.settle(z, lambda z: z.vdp.regs[8] == 0x08)
+        self.assert_hold_sequence(ops)
+        self.assert_restored(z, before)
+        self.assertEqual(self.exclusive(z), 0,
+                         "the exclusive flag survived the run")
+
+
+class TestGfxTiming(GfxReplay):
+    """`gfxtest timing`: the CPU T-state budgets between the markers,
+    counted on the peer's status-read timestamps."""
+
+    def test_timing_budgets(self):
+        z = self.start()
+        ops = []
+        since = len(z.glyphs)
+        z.hid.hid_queue.extend(b"/fs/gfxtest.exe timing\r")
+        self.run_recording(z, ops, lambda z: OPS_ACQUIRE in ops)
+        z.hid.hid_queue.extend(b"x")
+        self.run_recording(
+            z, ops, lambda z: "gfxtest: timing" in "".join(z.glyphs[since:]))
+        # The markers are the R#16 = 15 register writes: the target
+        # regions sit between consecutive marker pairs.  The boot's
+        # console and the program's own mode setup each write the G6
+        # palette through R#16 (values 0..15), so their entry-15 writes
+        # lead the list; the markers follow.
+        marks = [now for value, reg, now in z.vdp.reg_writes
+                 if reg == 16 and value == 15][2:]
+        self.assertGreaterEqual(len(marks), 10, marks)
+        pairs = list(zip(marks[::2], marks[1::2]))
+        glyph = pairs[0][1] - pairs[0][0]
+        fill = pairs[1][1] - pairs[1][0]
+        line = pairs[2][1] - pairs[2][0]
+        filled = pairs[3][1] - pairs[3][0]
+        outline = pairs[4][1] - pairs[4][0]
+        print("gfx timing: glyph %d fill %d line %d filled %d "
+              "outline %d" % (glyph, fill, line, filled, outline))
+        self.assertLessEqual(fill, 1200,
+                             "one command, queue + flush")
+        self.assertLessEqual(line, 1500, "gfx_line, any octant")
+        self.assertLessEqual(filled, 150000,
+                             "filled circle r=50")
+        self.assertLessEqual(outline, 250000,
+                             "outline circle r=50")
+        self.run_to(z, SHELL_PROMPT, since=since)
+        self.settle(z, lambda z: z.vdp.regs[8] == 0x08)
+        fresh = self.trace(z, since)
+        self.assertIn("gfxtest: timing PASS", fresh)
+        self.assert_hold_sequence(ops)
 
 
 class TestGfxText(GfxReplay):

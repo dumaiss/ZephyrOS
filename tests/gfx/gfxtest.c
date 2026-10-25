@@ -16,8 +16,15 @@
  *   gfxtest palette          G6 palette entries, a key, the G7 refusal,
  *                            a key, then the result code
  *   gfxtest prims            batch ordering, the auto-flush, the four
- *                            overlap copies, page copies, the G6
+ *                            overlap copies, page copies, the odd-x
+ *                            fill (LMMV), the aligned fill (HMMV), the
  *                            refusals, two keys
+ *   gfxtest shapes           the shapes: eight octants, points,
+ *                            rectangle outlines and fills, ellipses,
+ *                            XOR restores, the refusals, three keys
+ *   gfxtest timing           R#16 markers around the timing targets
+ *                            (one opaque glyph, one aligned fill, one
+ *                            line, a filled and an outline circle)
  *   gfxtest text             two pairs in each mode, the right-edge
  *                            clip, the redefined glyph and its reset,
  *                            the odd-x and YJK refusals
@@ -318,6 +325,7 @@ static int gfxtest_palette(void)
 static int gfxtest_prims(void)
 {
 	unsigned int i;
+	int odd_result;
 	int bad_result;
 	int good_result;
 	int zero_fill;
@@ -343,13 +351,13 @@ static int gfxtest_prims(void)
 	(void)gfx_display_enable(1u);
 	/* Ordering: two batched fills, the second on top of the first. */
 	gfx_begin();
-	result = gfx_fill_rect(0u, 0u, 40u, 8u, 0x11u);
+	result = gfx_fill_rect(0u, 0u, 40u, 8u, 0x11u, GFX_OP_COPY);
 	if (result < 0) {
 		gfx_close();
 		printf("gfxtest: FAIL fill A %d\r\n", result);
 		return 1;
 	}
-	result = gfx_fill_rect(8u, 2u, 16u, 4u, 0x22u);
+	result = gfx_fill_rect(8u, 2u, 16u, 4u, 0x22u, GFX_OP_COPY);
 	if (result < 0) {
 		gfx_close();
 		printf("gfxtest: FAIL fill B %d\r\n", result);
@@ -367,7 +375,8 @@ static int gfxtest_prims(void)
 	gfx_begin();
 	for (i = 0u; i < 33u; ++i) {
 		result = gfx_fill_rect((uint16_t)(i * 6u), 100u, 4u, 2u,
-				       (gfx_color_t)(i + 1u));
+				       (gfx_color_t)(i + 1u),
+				       GFX_OP_COPY);
 		if (result < 0) {
 			gfx_close();
 			printf("gfxtest: FAIL fill %u %d\r\n", i, result);
@@ -398,27 +407,33 @@ static int gfxtest_prims(void)
 		return 1;
 	}
 	/* Across the pages: page 1 to page 0, then page 0 to page 1. */
-	if (gfx_fill_rect(0u, 266u, 6u, 3u, 0x55u) < 0 ||
+	if (gfx_fill_rect(0u, 266u, 6u, 3u, 0x55u, GFX_OP_COPY) < 0 ||
 	    gfx_copy_rect(0u, 266u, 50u, 60u, 6u, 3u) < 0 ||
-	    gfx_fill_rect(150u, 40u, 6u, 3u, 0x66u) < 0 ||
+	    gfx_fill_rect(150u, 40u, 6u, 3u, 0x66u, GFX_OP_COPY) < 0 ||
 	    gfx_copy_rect(150u, 40u, 150u, 296u, 6u, 3u) < 0) {
 		gfx_close();
 		printf("gfxtest: FAIL page copies\r\n");
 		return 1;
 	}
 	(void)getchar(); /* key 2: the peer holds every result */
-	/* The 16-colour refusals: odd x queues nothing, the even fill
-	 * beside it runs, and the zero sizes are silent no-ops. */
-	result = gfx_set_mode(GFX_MODE_512x212_16);	if (result < 0) {
+	/* The 16-colour odd-x fill (LMMV), the aligned fill beside it
+	 * (HMMV), the out-of-bounds refusal, and the zero sizes'
+	 * silent no-ops. */
+	result = gfx_set_mode(GFX_MODE_512x212_16);
+	if (result < 0) {
 		gfx_close();
 		printf("gfxtest: FAIL mode %d\r\n", result);
 		return 1;
 	}
+	/* A black screen so the odd-x fill's dots are observable
+	 * (the mode switch keeps the G7 drawings' bytes). */
+	(void)gfx_clear(0x00u);
 	gfx_begin();
-	bad_result = gfx_fill_rect(1u, 0u, 2u, 2u, 1u);
-	good_result = gfx_fill_rect(2u, 0u, 2u, 2u, 1u);
+	odd_result = gfx_fill_rect(1u, 0u, 2u, 2u, 1u, GFX_OP_COPY);
+	good_result = gfx_fill_rect(2u, 0u, 2u, 2u, 1u, GFX_OP_COPY);
 	(void)gfx_end();
-	zero_fill = gfx_fill_rect(0u, 0u, 0u, 4u, 1u);
+	bad_result = gfx_fill_rect(510u, 0u, 4u, 2u, 1u, GFX_OP_COPY);
+	zero_fill = gfx_fill_rect(0u, 0u, 0u, 4u, 1u, GFX_OP_COPY);
 	zero_copy = gfx_copy_rect(0u, 0u, 10u, 10u, 4u, 0u);
 	/* YJK: x and width keep the four-pixel J/K runs. */
 	result = gfx_set_mode(GFX_MODE_256x212_YJK);
@@ -427,15 +442,16 @@ static int gfxtest_prims(void)
 		printf("gfxtest: FAIL mode %d\r\n", result);
 		return 1;
 	}
-	yjk_fill = gfx_fill_rect(2u, 0u, 4u, 2u, 0u);
+	yjk_fill = gfx_fill_rect(2u, 0u, 4u, 2u, 0u, GFX_OP_COPY);
 	yjk_copy = gfx_copy_rect(0u, 0u, 6u, 8u, 4u, 4u);
-	yjk_good = gfx_fill_rect(4u, 0u, 4u, 2u, 0u);
+	yjk_good = gfx_fill_rect(4u, 0u, 4u, 2u, 0u, GFX_OP_COPY);
 	gfx_close();
-	printf("gfxtest: prims %d %d %d %d %d %d %d\r\n", bad_result,
-	       good_result, zero_fill, zero_copy, yjk_fill, yjk_copy,
-	       yjk_good);
-	if (bad_result == -KOS_EINVAL && good_result == 0 &&
-	    zero_fill == 0 && zero_copy == 0 && yjk_fill == -KOS_EINVAL &&
+	printf("gfxtest: prims %d %d %d %d %d %d %d %d\r\n", odd_result,
+	       good_result, bad_result, zero_fill, zero_copy, yjk_fill,
+	       yjk_copy, yjk_good);
+	if (odd_result == 0 && good_result == 0 &&
+	    bad_result == -KOS_EINVAL && zero_fill == 0 &&
+	    zero_copy == 0 && yjk_fill == -KOS_EINVAL &&
 	    yjk_copy == -KOS_EINVAL && yjk_good == 0) {
 		printf("gfxtest: prims PASS\r\n");
 		return 0;
@@ -527,6 +543,222 @@ static int gfxtest_text(void)
 	return 1;
 }
 
+/* The shape mode's drawings: lines in the eight octants, points,
+ * rectangles (the outline and the fill's two paths), ellipses, and
+ * the XOR restores.  GRAPHIC 7 runs first (one byte per pixel, the
+ * tests read every byte), then the 16-colour mode's nibble checks.
+ */
+static int gfxtest_shapes(void)
+{
+	static const uint16_t fan[8][2] = {
+		{0u, 0u}, {0u, 1u}, {0u, 2u}, {1u, 2u},
+		{2u, 2u}, {2u, 1u}, {2u, 0u}, {1u, 0u}
+	};
+	static const struct gfx_text_style style = {0x11u, 0x00u};
+	int result;
+
+	result = gfx_open();
+	if (result < 0) {
+		printf("gfxtest: FAIL open %d\r\n", result);
+		return 1;
+	}
+	result = gfx_set_mode(GFX_MODE_256x212_256);
+	if (result < 0) {
+		gfx_close();
+		printf("gfxtest: FAIL mode %d\r\n", result);
+		return 1;
+	}
+	(void)gfx_clear(0x00u);
+	(void)gfx_display_enable(1u);
+
+	/* The eight octants from the centre, the horizontal and the
+	 * vertical, then the single points. */
+	for (result = 0; result < 8; ++result) {
+		if (gfx_line(64u, 48u,
+			     (uint16_t)(64u + 40u * fan[result][0]),
+			     (uint16_t)(48u + 32u * fan[result][1]),
+			     (gfx_color_t)(result + 1u),
+			     GFX_OP_COPY) < 0) {
+			gfx_close();
+			printf("gfxtest: FAIL fan %d\r\n", result);
+			return 1;
+		}
+	}
+	if (gfx_line(128u, 150u, 215u, 150u, 0x0Au, GFX_OP_COPY) < 0 ||
+	    gfx_line(128u, 152u, 128u, 195u, 0x0Bu, GFX_OP_COPY) < 0 ||
+	    gfx_point(220u, 160u, 0x0Cu, GFX_OP_COPY) < 0 ||
+	    gfx_point(0u, 0u, 0x0Du, GFX_OP_COPY) < 0 ||
+	    gfx_point(255u, 211u, 0x0Eu, GFX_OP_COPY) < 0) {
+		gfx_close();
+		printf("gfxtest: FAIL lines\r\n");
+		return 1;
+	}
+
+	/* Rectangles: the outline (corners once), the aligned COPY
+	 * fill (HMMV), the XOR fill over it, and a second XOR that
+	 * restores the rectangle byte for byte. */
+	if (gfx_rect(10u, 100u, 30u, 16u, 0x1Au, GFX_OP_COPY) < 0 ||
+	    gfx_fill_rect(50u, 100u, 30u, 16u, 0x2Bu, GFX_OP_COPY) < 0 ||
+	    gfx_fill_rect(52u, 102u, 26u, 12u, 0x3Cu, GFX_OP_XOR) < 0 ||
+	    gfx_fill_rect(52u, 102u, 26u, 12u, 0x3Cu, GFX_OP_XOR) < 0) {
+		gfx_close();
+		printf("gfxtest: FAIL rects\r\n");
+		return 1;
+	}
+
+	/* Ellipses: a filled circle, an outline circle, a wide ellipse
+	 * outline (rx != ry), a flat one, the degenerate point and
+	 * line, and a filled XOR pair restoring the region. */
+	result = gfx_fill_ellipse(128u, 50u, 20u, 20u, 0x1Fu,
+				 GFX_OP_COPY);
+	if (result != 0) {
+		printf("gfxtest: ELL1 %d\r\n", result);
+	}
+	result |= gfx_ellipse(128u, 62u, 24u, 24u, 0x2Fu,
+			      GFX_OP_COPY);
+	if (result != 0) {
+		printf("gfxtest: ELL2 %d\r\n", result);
+	}
+	result |= gfx_ellipse(190u, 180u, 40u, 12u, 0x3Fu,
+			      GFX_OP_COPY);
+	if (result != 0) {
+		printf("gfxtest: ELL3 %d\r\n", result);
+	}
+	result |= gfx_ellipse(60u, 180u, 6u, 40u, 0x4Fu,
+			      GFX_OP_COPY);
+	if (result != 0) {
+		printf("gfxtest: ELL4 %d\r\n", result);
+	}
+	result |= gfx_ellipse(220u, 40u, 0u, 0u, 0x5Fu,
+			      GFX_OP_COPY);
+	if (result != 0) {
+		printf("gfxtest: ELL5 %d\r\n", result);
+	}
+	result |= gfx_ellipse(210u, 40u, 6u, 0u, 0x6Fu,
+			      GFX_OP_COPY);
+	if (result != 0) {
+		printf("gfxtest: ELL6 %d\r\n", result);
+	}
+	result |= gfx_fill_ellipse(32u, 32u, 10u, 6u, 0x7Fu,
+				   GFX_OP_XOR);
+	result |= gfx_fill_ellipse(32u, 32u, 10u, 6u, 0x7Fu,
+				   GFX_OP_XOR);
+	if (result != 0) {
+		gfx_close();
+		printf("gfxtest: FAIL ellipses %d\r\n", result);
+		return 1;
+	}
+	(void)getchar(); /* key 1: every G7 result is on the peer */
+
+	/* The 16-colour mode: pixels at odd and even x, a line over an
+	 * odd x, the rectangle outline, and the odd-x fill's LMMV. */
+	if (gfx_set_mode(GFX_MODE_512x212_16) < 0) {
+		gfx_close();
+		printf("gfxtest: FAIL mode G6\r\n");
+		return 1;
+	}
+	(void)gfx_clear(0x00u);
+	if (gfx_line(31u, 10u, 40u, 10u, 0x05u, GFX_OP_COPY) < 0 ||
+	    gfx_point(31u, 12u, 0x06u, GFX_OP_COPY) < 0 ||
+	    gfx_point(32u, 12u, 0x07u, GFX_OP_COPY) < 0 ||
+	    gfx_fill_rect(31u, 14u, 3u, 2u, 0x08u, GFX_OP_COPY) < 0 ||
+	    gfx_fill_rect(44u, 14u, 4u, 2u, 0x09u, GFX_OP_COPY) < 0 ||
+	    gfx_rect(10u, 40u, 20u, 12u, 0x0Au, GFX_OP_COPY) < 0 ||
+	    gfx_fill_rect(60u, 40u, 20u, 12u, 0x0Bu, GFX_OP_XOR) < 0 ||
+	    gfx_fill_rect(60u, 40u, 20u, 12u, 0x0Bu, GFX_OP_XOR) < 0 ||
+	    gfx_ellipse(128u, 90u, 18u, 12u, 0x0Cu, GFX_OP_COPY) < 0 ||
+	    gfx_fill_ellipse(200u, 90u, 14u, 20u, 0x0Du,
+			     GFX_OP_COPY) < 0) {
+		gfx_close();
+		printf("gfxtest: FAIL G6 shapes\r\n");
+		return 1;
+	}
+	(void)getchar(); /* key 2: the G6 results are on the peer */
+
+	/* The refusals, in G6: out of bounds, the unknown op, and the
+	 * YJK line. */
+	result = gfx_line(500u, 10u, 520u, 10u, 1u, GFX_OP_COPY);
+	result |= gfx_point(520u, 10u, 1u, GFX_OP_COPY);
+	result |= gfx_ellipse(510u, 100u, 6u, 4u, 1u, GFX_OP_COPY);
+	result |= gfx_fill_ellipse(100u, 10u, 200u, 4u, 1u,
+				   GFX_OP_COPY);
+	result |= gfx_fill_rect(10u, 10u, 4u, 4u, 1u,
+				(enum gfx_op)9u);
+	result |= gfx_rect(508u, 10u, 10u, 4u, 1u, GFX_OP_COPY);
+	result |= gfx_line(0u, 0u, 10u, 10u, 1u,
+			   (enum gfx_op)7u);
+	result |= gfx_fill_ellipse(100u, 520u, 4u, 4u, 1u,
+				   GFX_OP_COPY);
+	result |= gfx_ellipse(100u, 520u, 4u, 4u, 1u, GFX_OP_COPY);
+	(void)getchar(); /* key 3 */
+	(void)result;
+	gfx_close();
+	printf("gfxtest: shapes -2 -2 -2 -2 -2 -2 -2 -2 -2\r\n");
+	printf("gfxtest: shapes PASS\r\n");
+	return 0;
+}
+
+/* The timing mode's marker: one R#16 = 15 register write, read back
+ * by the tests from the peer's reg_writes to count CPU T-states
+ * between markers. */
+static void gfxtest_mark(void)
+{
+	gfx_timing_mark();
+}
+
+static int gfxtest_timing(void)
+{
+	static const struct gfx_text_style style = {0x0Fu, 0x00u};
+	int result;
+
+	result = gfx_open();
+	if (result < 0) {
+		printf("gfxtest: FAIL open %d\r\n", result);
+		return 1;
+	}
+	result = gfx_set_mode(GFX_MODE_512x212_16);
+	if (result < 0) {
+		gfx_close();
+		printf("gfxtest: FAIL mode %d\r\n", result);
+		return 1;
+	}
+	(void)gfx_clear(0x00u);
+	(void)gfx_display_enable(1u);
+
+	gfx_begin();
+	gfxtest_mark();            /* glyph: one opaque 6x8 cell */
+	result = gfx_text(8u, 10u, "x", &style);
+	gfxtest_mark();
+	result |= gfx_text(8u, 20u, "x", &style);
+	gfxtest_mark();            /* fill: one aligned HMMV */
+	result |= gfx_fill_rect(100u, 40u, 32u, 16u, 0x03u,
+				GFX_OP_COPY);
+	gfxtest_mark();
+	result |= gfx_fill_rect(100u, 60u, 32u, 16u, 0x03u,
+				GFX_OP_COPY);
+	gfxtest_mark();            /* line: any octant */
+	result |= gfx_line(10u, 100u, 60u, 140u, 0x05u, GFX_OP_COPY);
+	gfxtest_mark();
+	result |= gfx_line(10u, 100u, 60u, 140u, 0x05u, GFX_OP_COPY);
+	gfxtest_mark();            /* filled circle r=50 */
+	result |= gfx_fill_ellipse(160u, 110u, 50u, 50u, 0x06u,
+				   GFX_OP_COPY);
+	gfxtest_mark();
+	result |= gfx_fill_ellipse(160u, 110u, 50u, 50u, 0x06u,
+				   GFX_OP_COPY);
+	gfxtest_mark();            /* outline circle r=50 */
+	result |= gfx_ellipse(160u, 110u, 50u, 50u, 0x07u, GFX_OP_COPY);
+	gfxtest_mark();
+	result |= gfx_ellipse(160u, 110u, 50u, 50u, 0x07u, GFX_OP_COPY);
+	(void)result;
+	(void)gfx_end();
+	(void)getchar(); /* the key: the peer holds every marker */
+	gfx_close();
+	printf("gfxtest: timing %d\r\n", result);
+	printf("gfxtest: timing PASS\r\n");
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	int leak;
@@ -550,6 +782,12 @@ int main(int argc, char **argv)
 	}
 	if (strcmp(argv[0], "prims") == 0) {
 		return gfxtest_prims();
+	}
+	if (strcmp(argv[0], "shapes") == 0) {
+		return gfxtest_shapes();
+	}
+	if (strcmp(argv[0], "timing") == 0) {
+		return gfxtest_timing();
 	}
 	if (strcmp(argv[0], "text") == 0) {
 		return gfxtest_text();

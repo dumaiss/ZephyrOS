@@ -184,8 +184,9 @@ $(EXE_LIBTUI_WIDGETS): $(EXE_WIDGET_OBJS) $(KOS_RULES)
 # and the backend interface stay in this directory.
 KOS_GFX_SRC     := $(KOS_SDK_ROOT)/gfx/src
 KOS_GFX_PRIVATE := $(KOS_GFX_SRC)/gfx_internal.h
-KOS_GFX_C_SRC   := gfx.c gfx_mode.c gfx_draw.c gfx_batch.c gfx_palette.c \
-	gfx_upload.c gfx_font.c gfx_text.c backends/v9958/v9958_gfx.c
+KOS_GFX_C_SRC   := gfx.c gfx_mode.c gfx_draw.c gfx_shapes.c gfx_batch.c \
+	gfx_palette.c gfx_upload.c gfx_font.c gfx_text.c \
+	backends/v9958/v9958_gfx.c
 KOS_GFX_ASM_SRC := backends/v9958/v9958_io.asm
 EXE_GFX_OBJS    := $(addprefix $(EXE_SDK_BUILD)/gfx/,\
 	$(patsubst %.c,%.rel,$(KOS_GFX_C_SRC)) \

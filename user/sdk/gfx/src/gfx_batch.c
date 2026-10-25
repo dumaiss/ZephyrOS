@@ -56,6 +56,23 @@ int gfx_flush(void)
 	return 0;
 }
 
+int gfx_wait(void)
+{
+	if (gfx_state.video_handle == 0) {
+		return -KOS_EINVAL;
+	}
+	gfx_v9958_io_wait_command();
+	return 0;
+}
+
+void gfx_timing_mark(void)
+{
+	if (gfx_state.video_handle == 0) {
+		return;
+	}
+	gfx_v9958_io_reg(15u, GFX_V9958_REG_R16);
+}
+
 void gfx_batch_submit(const struct gfx_cmd *cmd)
 {
 	if (gfx_state.batch_depth == 0u) {

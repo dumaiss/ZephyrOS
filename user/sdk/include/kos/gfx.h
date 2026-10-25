@@ -73,6 +73,14 @@ int gfx_display_enable(uint8_t enabled);
  * queued and executed with the batch.  No VIDEO IPC. */
 int gfx_clear(gfx_color_t color);
 
+/* The operation a shape draws with: GFX_OP_COPY writes the colour,
+ * GFX_OP_XOR combines it with what is there, so a shape drawn twice
+ * restores the screen (a cursor, a play marker, a selection). */
+enum gfx_op {
+	GFX_OP_COPY,
+	GFX_OP_XOR
+};
+
 /* Batch drawing commands: between gfx_begin and the matching gfx_end,
  * drawing calls append compact records to a process-local queue (32
  * records; a full queue flushes itself).  gfx_end flushes when the
@@ -83,14 +91,58 @@ void gfx_begin(void);
 int gfx_end(void);
 int gfx_flush(void);
 
-/* Fill the rectangle (x, y, width, height) with `color` (HMMV): x and
- * width even in the 16-colour mode and multiples of 4 in YJK (four
- * pixels share one J/K pair), y may target the off-screen page
+/* Wait until the last drawing command has finished, for a program
+ * that reads VRAM or times its frame.  No VIDEO IPC. */
+int gfx_wait(void);
+
+/* A timing marker: one register write (R#16 = 15, the palette
+ * pointer) that the gfxtest timing replay reads back to count CPU
+ * T-states between markers.  No VIDEO IPC. */
+void gfx_timing_mark(void);
+
+/* Fill the rectangle (x, y, width, height) with `color`: HMMV when
+ * the op is COPY and x and width are byte-aligned, LMMV (a logical,
+ * per-pixel fill) otherwise, so any x is accepted in the 16-colour
+ * mode with LMMV, and XOR combines with what is there.  In YJK (four
+ * pixels share one J/K pair) only an aligned COPY is accepted
+ * (-KOS_ENOTSUP otherwise).  y may target the off-screen page
  * (256-511).  A zero width or height is a no-op (0, nothing queued);
  * a rectangle outside the mode's width or the 512-line space is
  * -KOS_EINVAL and queues nothing.  Batched or immediate per above. */
 int gfx_fill_rect(uint16_t x, uint16_t y, uint16_t width, uint16_t height,
-		  gfx_color_t color);
+		  gfx_color_t color, enum gfx_op op);
+
+/* The rectangle's outline in `color`: four LINE commands, each corner
+ * plotted exactly once.  Sizes, bounds, YJK and batching as
+ * gfx_fill_rect (the outline runs per dot, so in YJK it is
+ * -KOS_ENOTSUP). */
+int gfx_rect(uint16_t x, uint16_t y, uint16_t width, uint16_t height,
+	     gfx_color_t color, enum gfx_op op);
+
+/* The line from (x0, y0) to (x1, y1) inclusive, one LINE command.
+ * YJK is -KOS_ENOTSUP; a line outside the mode's width or the
+ * 512-line space is -KOS_EINVAL and queues nothing. */
+int gfx_line(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1,
+	     gfx_color_t color, enum gfx_op op);
+
+/* One dot, one PSET command; bounds, YJK and batching as gfx_line. */
+int gfx_point(uint16_t x, uint16_t y, gfx_color_t color, enum gfx_op op);
+
+/* The ellipse outline centred at (cx, cy) with radii rx and ry: the
+ * midpoint algorithm walks one quadrant and mirrors it, and each
+ * scanline's outline pixels are drawn as horizontal LMMV spans that
+ * never overlap, so an XOR ellipse drawn twice restores everything.
+ * The radii's squares are 32-bit in the error terms only.  A zero
+ * radius draws the degenerate line or point.  The bounding box must
+ * lie inside the mode's width and the 512-line space (-KOS_EINVAL
+ * queues nothing); YJK is -KOS_ENOTSUP. */
+int gfx_ellipse(uint16_t cx, uint16_t cy, uint16_t rx, uint16_t ry,
+		gfx_color_t color, enum gfx_op op);
+
+/* The filled ellipse: one horizontal LMMV span per scanline.  Bounds,
+ * YJK and batching as gfx_ellipse. */
+int gfx_fill_ellipse(uint16_t cx, uint16_t cy, uint16_t rx, uint16_t ry,
+		     gfx_color_t color, enum gfx_op op);
 
 /* Copy the rectangle (width, height) from (src_x, src_y) to (dst_x,
  * dst_y) with one high-speed move (HMMM); the direction is chosen

@@ -25,8 +25,33 @@
 #define GFX_BATCH_ENTRIES  32u
 #define GFX_BATCH_DEPTH_MAX 8u
 
-#define GFX_OP_FILL 1u
-#define GFX_OP_COPY 2u
+/* The ellipse expansion's span scratch (gfx_shapes.c): the midpoint
+ * walk tracks each scanline's leftmost and rightmost visited dot;
+ * the emit pass turns them into one fill span per scanline and the
+ * two outline boundary dots. */
+#define GFX_SPAN_RECORDS 1u
+#define GFX_SPAN_LINES    512u
+
+struct gfx_span_set {
+	uint16_t first[GFX_SPAN_LINES];
+	uint16_t last[GFX_SPAN_LINES];
+	uint16_t count[GFX_SPAN_LINES];
+};
+
+/* The record opcodes (struct gfx_cmd.opcode).  FILL and COPY take
+ * the GFX_OP_COPY/GFX_OP_XOR operation in `flags`; LINE and PSET
+ * carry the VDP op nibble there too (GFX_V9958_OP_*). */
+#define GFX_CMD_FILL 1u
+#define GFX_CMD_COPY 2u
+#define GFX_CMD_LINE 3u
+#define GFX_CMD_SPAN 4u   /* one horizontal LMMV run (ellipse pieces) */
+#define GFX_CMD_POINT 5u
+
+/* The VDP logical-operation nibbles for the drawing commands: IMP
+ * (copy) and EOR (xor).  gfx_op's GFX_OP_COPY is 0 and GFX_OP_XOR 1,
+ * so `flags` carries the op nibble directly. */
+#define GFX_V9958_OP_IMP 0x0u
+#define GFX_V9958_OP_EOR 0x3u
 
 /* The built-in 6x8 CP850 font (gfx_font.c): 256 glyphs, eight row
  * bytes each, active pixels in bits 7..2; gfx_open copies the const
@@ -107,6 +132,12 @@ struct gfx_state {
 	 * recent colour pairs, round-robin. */
 	struct gfx_text_cache_entry text_cache[GFX_TEXT_CACHE_ENTRIES];
 	uint8_t text_cache_next;
+
+	/* The ellipse span scratch (gfx_shapes.c): the midpoint walk's
+	 * per-scanline bounds and the span submission's staging
+	 * record. */
+	struct gfx_span_set spans;
+	struct gfx_cmd span_record;
 };
 
 extern struct gfx_state gfx_state;
@@ -138,6 +169,12 @@ uint8_t gfx_text_expand_row(uint8_t font_row, uint8_t fg, uint8_t bg,
  * so opening a fresh context always starts from the built-in). */
 void gfx_font_install(void);
 
+/* The shape rule shared with gfx_shapes.c: the mode's full width and
+ * bounds, and the 512-line space's rows.  A return <= 0 is the result
+ * to hand back. */
+int gfx_rect_ready(uint16_t x, uint16_t width);
+int gfx_rect_check_y(uint16_t y, uint16_t height);
+
 /* --- the shared batch path (gfx_batch.c) ----------------------------- */
 
 /* Append one validated record: executed at once outside a batch,
@@ -159,14 +196,23 @@ void v9958_run_batch(struct gfx_state *state, const struct gfx_cmd *cmds,
  *
  * Every A0h-A4h access the backend makes lives in the assembly file;
  * the ports are the record's, mirrored into these bytes at mode setup,
- * so the OUT forms can use them. */
+ * so the OUT forms can use them.  The shape builders build one
+ * command block each from a `struct gfx_cmd` and issue it through the
+ * indirect port (one R#17 select, then OUTI/OTIR); `g6` tells them
+ * the mode, so a GRAPHIC 6 colour packs two 4-bit pixels. */
 extern uint8_t gfx_v9958_port_cmd;
 extern uint8_t gfx_v9958_port_indirect;
 extern uint8_t gfx_v9958_port_data;
 extern uint8_t gfx_v9958_port_palette;
+extern uint8_t gfx_v9958_g6;
 void gfx_v9958_io_reg(uint8_t value, uint8_t reg);
 void gfx_v9958_io_wait_command(void);
 void gfx_v9958_io_start_command(const uint8_t *cmd);
+void gfx_v9958_io_run_hmmv(const struct gfx_cmd *cmd);
+void gfx_v9958_io_run_hmmm(const struct gfx_cmd *cmd);
+void gfx_v9958_io_run_line(const struct gfx_cmd *cmd);
+void gfx_v9958_io_run_pset(const struct gfx_cmd *cmd);
+void gfx_v9958_io_run_lmmv(const struct gfx_cmd *cmd);
 void gfx_v9958_io_set_vram(uint8_t r14, uint16_t offset);
 void gfx_v9958_io_stream_vram(const uint8_t *src, uint16_t length);
 void gfx_v9958_io_palette_byte(uint8_t value);
@@ -208,7 +254,15 @@ void gfx_v9958_io_palette_byte(uint8_t value);
 #define GFX_V9958_CMD_REGISTER_COUNT 15u
 #define GFX_V9958_CMD_HMMV 0xC0u
 #define GFX_V9958_CMD_HMMM 0xD0u
+#define GFX_V9958_CMD_LINE 0x70u
+#define GFX_V9958_CMD_PSET 0x50u
+#define GFX_V9958_CMD_LMMV 0x80u
 #define GFX_V9958_STATUS2_CE 0x01u
+#define GFX_V9958_STATUS2_VR 0x40u
+
+/* The LINE command's ARG bits: MAJ marks the major axis along Y (the
+ * long side is X when clear), DIX/DIY step against the dot order. */
+#define GFX_V9958_CMD_MAJ 0x01u
 
 /* The 15-byte command block's offsets (R#32..R#46). */
 #define GFX_V9958_CMD_SX_LO  0u

@@ -41,9 +41,9 @@ int main(void)
 		return 1;
 	}
 	/* Filled bars, then a rectangle copied twice. */
-	result = gfx_fill_rect(0u, 0u, 512u, 20u, 0x05u);
-	result |= gfx_fill_rect(0u, 192u, 512u, 20u, 0x05u);
-	result |= gfx_fill_rect(20u, 40u, 40u, 8u, 0x09u);
+	result = gfx_fill_rect(0u, 0u, 512u, 20u, 0x05u, GFX_OP_COPY);
+	result |= gfx_fill_rect(0u, 192u, 512u, 20u, 0x05u, GFX_OP_COPY);
+	result |= gfx_fill_rect(20u, 40u, 40u, 8u, 0x09u, GFX_OP_COPY);
 	result |= gfx_copy_rect(20u, 40u, 80u, 60u, 40u, 8u);
 	result |= gfx_copy_rect(20u, 40u, 140u, 80u, 40u, 8u);
 	if (result != 0) {

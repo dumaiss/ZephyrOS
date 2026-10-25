@@ -64,6 +64,7 @@ user/sdk/
     src/gfx.c             gfx_open, gfx_close, gfx_get_info, the state
     src/gfx_mode.c        gfx_set_mode, gfx_display_enable
     src/gfx_draw.c        gfx_clear, gfx_fill_rect, gfx_copy_rect
+    src/gfx_shapes.c      gfx_rect/line/point/ellipse/fill_ellipse
     src/gfx_batch.c       gfx_begin/end/flush, the command queue
     src/gfx_upload.c      gfx_upload_begin/write/end (pixel streaming)
     src/gfx_palette.c     gfx_set_palette
@@ -169,7 +170,20 @@ pixels per byte through a pair cache, the 256-colour mode one byte
 per pixel - and `gfx_text_width` measures a string in pixels.
 `gfx_font_set_glyph` installs a 6x8 glyph (the low six bits of each
 row) into the RAM font, `gfx_font_reset_glyph` restores one glyph and
-`gfx_font_reset` restores them all.  Pictures come prepared: the
+`gfx_font_reset` restores them all.  The shapes of gfx-sdk.md section
+8.1 take an `enum gfx_op` (COPY or XOR) each: `gfx_rect` is four LINE
+commands with each corner plotted exactly once, `gfx_line` and
+`gfx_point` are one LINE or PSET from the endpoint coordinates (the
+command's major/minor axes and direction bits derived from them),
+`gfx_fill_ellipse` and `gfx_ellipse` expand the midpoint ellipse into
+one horizontal span (LMMV) per scanline - outline ellipses as
+non-overlapping left/right spans, so an XOR ellipse drawn twice
+restores everything - and `gfx_fill_rect` already takes the op, with
+HMMV for an aligned COPY and the per-pixel LMMV otherwise.  The
+ellipse walk runs on the CPU; the spans queue like any other record
+and the batch auto-flushes as it fills.  In YJK only an aligned COPY
+`gfx_fill_rect` is accepted; the other shapes are -KOS_ENOTSUP.
+Pictures come prepared: the
 KIMG v1 format (`kos/kimg.h`) carries a header, an optional palette and
 the payload in the mode's packing, `tools/kimg.py` converts
 PNG/JPEG to it on the host, and `pview.exe` (UserSoftware/PView)
@@ -786,6 +800,7 @@ the gates the same way any client does:
 | `gfx_open`, `gfx_close`, `gfx_get_info` | `gfx`, `gfx_font`, `ipc`, `kos_ipcgate`, `nsgate` |
 | `gfx_set_mode`, `gfx_display_enable` | `gfx_mode`, `v9958_gfx`, `gfx_v9958_io` |
 | `gfx_clear`, `gfx_fill_rect`, `gfx_copy_rect` | `gfx_draw`, `gfx_batch`, `v9958_gfx`, `gfx_v9958_io` |
+| `gfx_rect`, `gfx_line`, `gfx_point`, `gfx_ellipse`, `gfx_fill_ellipse` | `gfx_shapes`, `gfx_batch`, `v9958_gfx`, `gfx_v9958_io` |
 | `gfx_begin`, `gfx_end`, `gfx_flush` | `gfx_batch`, `v9958_gfx`, `gfx_v9958_io` |
 | `gfx_set_palette` | `gfx_palette`, `v9958_gfx`, `gfx_v9958_io` |
 | `gfx_upload_begin`, `gfx_upload_write`, `gfx_upload_end` | `gfx_upload`, `gfx_v9958_io` |
