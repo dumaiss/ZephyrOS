@@ -28,6 +28,27 @@
 #define GFX_OP_FILL 1u
 #define GFX_OP_COPY 2u
 
+/* The built-in 6x8 CP850 font (gfx_font.c): 256 glyphs, eight row
+ * bytes each, active pixels in bits 7..2; gfx_open copies the const
+ * table into the RAM font. */
+#define GFX_FONT_GLYPH_BYTES   8u
+#define GFX_FONT_GLYPH_COUNT   256u
+#define GFX_FONT_SIZE          (GFX_FONT_GLYPH_BYTES * GFX_FONT_GLYPH_COUNT)
+#define GFX_FONT_GLYPH_WIDTH   6u
+#define GFX_FONT_GLYPH_HEIGHT  8u
+
+/* The G6 text expansion's pair cache: this many recent colour pairs,
+ * each three 256-entry pages (one per output byte of a glyph row).
+ * The size is recorded in the package's validation record. */
+#define GFX_TEXT_CACHE_ENTRIES 2u
+
+struct gfx_text_cache_entry {
+	uint8_t active;            /* 1 after the first build */
+	uint8_t fg;
+	uint8_t bg;
+	uint8_t pages[3][256];
+};
+
 /* One batched drawing call: the design's fixed-size backend-
  * independent record (docs/gfx-sdk.md 9.1). */
 struct gfx_cmd {
@@ -46,6 +67,7 @@ struct gfx_cmd {
 #if defined(__SDCC)
 _Static_assert(sizeof(struct gfx_cmd) == 16, "gfx_cmd is 16 bytes");
 _Static_assert(GFX_BATCH_ENTRIES == 32, "the batch holds 32 records");
+_Static_assert(GFX_FONT_SIZE == 2048, "the font is 2048 bytes");
 #endif /* __SDCC */
 
 struct gfx_state {
@@ -76,9 +98,45 @@ struct gfx_state {
 	uint8_t batch_depth;
 	uint8_t batch_count;
 	struct gfx_cmd batch_queue[GFX_BATCH_ENTRIES];
+
+	/* The RAM font (gfx_font.c): the built-in's mutable copy, made at
+	 * gfx_open; the glyph calls change these bytes. */
+	uint8_t font_ram[GFX_FONT_SIZE];
+
+	/* The G6 text expansion's pair cache (gfx_text.c): the most
+	 * recent colour pairs, round-robin. */
+	struct gfx_text_cache_entry text_cache[GFX_TEXT_CACHE_ENTRIES];
+	uint8_t text_cache_next;
 };
 
 extern struct gfx_state gfx_state;
+
+/* --- the text path (gfx_text.c) -------------------------------------- */
+
+/* One pixel sink: the expansion hands each glyph row's pixels to the
+ * sink, which owns the placement.  `col` and `y` are the row's
+ * top-left in the mode's byte units.  The opaque sink writes the bytes
+ * through the data port with one VRAM address per glyph row.  A
+ * transparent sink plugs in by replacing the emit function: it would
+ * start one LMMC per string with TIMP set and R#17's auto-increment
+ * off, and feed each expanded row through R#44, the chip skipping
+ * colour-0 pixels; the font, the expansion and the text calls stay as
+ * they are (docs/gfx-sdk.md 14). */
+struct gfx_text_sink {
+	void (*emit)(const struct gfx_text_sink *sink, uint16_t col,
+		     uint16_t y, const uint8_t *row, uint8_t row_bytes);
+};
+
+extern const struct gfx_text_sink gfx_text_sink_opaque;
+
+/* Expand one font row byte to `row_bytes` pixel bytes in the style's
+ * colours (3 in G6 through the pair tables, 6 in G7). */
+uint8_t gfx_text_expand_row(uint8_t font_row, uint8_t fg, uint8_t bg,
+			    uint8_t *row);
+
+/* Install the built-in font into the RAM font (gfx_open calls this,
+ * so opening a fresh context always starts from the built-in). */
+void gfx_font_install(void);
 
 /* --- the shared batch path (gfx_batch.c) ----------------------------- */
 

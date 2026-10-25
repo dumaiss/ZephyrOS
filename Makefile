@@ -845,6 +845,14 @@ $(MODULES)/v9958-6x8.font: drivers/v9958/assets/font_cp850_6x8.inc \
 		tools/fontpack.py | $(MODULES)
 	$(PYTHON) tools/fontpack.py $< $@
 
+# libgfx's built-in font: the same pinned asset as a C byte list the
+# const table (user/sdk/gfx/src/gfx_font.c) includes.  The path is
+# spelled out: this rule sits before exe.mk defines EXE_SDK_BUILD.
+$(BUILD)/user/sdk/gfx/font_builtin.inc: \
+		drivers/v9958/assets/font_cp850_6x8.inc tools/fontpack.py
+	@mkdir -p $(dir $@)
+	$(PYTHON) tools/fontpack.py table $< $@
+
 # --- target acceptance objects (tests/target/, acceptance builds only) -------
 
 $(BUILD)/target_test.rel: tests/target/support/target_test.c \

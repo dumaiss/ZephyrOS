@@ -100,6 +100,35 @@ int gfx_fill_rect(uint16_t x, uint16_t y, uint16_t width, uint16_t height,
 int gfx_copy_rect(uint16_t src_x, uint16_t src_y, uint16_t dst_x,
 		  uint16_t dst_y, uint16_t width, uint16_t height);
 
+/* The built-in 6x8 CP850 font.  gfx_open copies it into the 2,048-byte
+ * RAM font; these calls change that copy, so a redefined glyph is what
+ * the next draw uses and there is no VRAM cache.  `rows` holds eight
+ * row bytes whose low six bits are the pixels.  No VIDEO IPC. */
+int gfx_font_set_glyph(uint8_t code, const uint8_t rows[8]);
+int gfx_font_reset_glyph(uint8_t code);
+void gfx_font_reset(void);
+
+/* Opaque text.  `fg` and `bg` are the mode's colour (0..15 in the
+ * 16-colour mode). */
+struct gfx_text_style {
+	gfx_color_t fg;
+	gfx_color_t bg;
+};
+
+/* Draw one line of byte-oriented text (no newlines, tabs or escapes)
+ * at (x, y), the top-left pixel of the first glyph; x and width count
+ * pixels (6 per glyph, height 8).  Glyphs are clipped whole at the
+ * right edge; the off-screen page is an ordinary target.  A pending
+ * drawing batch is flushed first.  The YJK mode is -KOS_ENOTSUP; in
+ * the 16-colour mode x must be even.  No VIDEO IPC. */
+int gfx_text(uint16_t x, uint16_t y, const char *text,
+	     const struct gfx_text_style *style);
+int gfx_text_n(uint16_t x, uint16_t y, const char *text, uint16_t length,
+	       const struct gfx_text_style *style);
+
+/* The default font's width of `text`: its length x 6. */
+uint16_t gfx_text_width(const char *text);
+
 /* Program `count` palette entries starting at `first` (the 16-colour
  * mode holds 16 entries).  Direct I/O under the hardware WAIT; a mode
  * without a programmable palette (256-colour and YJK) is

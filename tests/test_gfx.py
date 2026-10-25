@@ -53,9 +53,14 @@ from z80sim import IocCommandPeer  # noqa: E402
 GFXTEST_EXE = os.path.join(ROOT, "build", "user", "gfxtest.exe")
 PVIEW_EXE = os.path.join(ROOT, "UserSoftware", "PView", "build", "user",
                          "pview.exe")
+GFXDEMO_EXE = os.path.join(ROOT, "UserSoftware", "GfxDemo", "build",
+                           "user", "gfxdemo.exe")
 FIXTURES = os.path.join(ROOT, "tests", "gfx", "fixtures")
+FONT_ASSET = os.path.join(ROOT, "drivers", "v9958", "assets",
+                          "font_cp850_6x8.inc")
 DEV_NAME = "GFXTEST.EXE"
 PVIEW_DEV = "PVIEW.EXE"
+GFXDEMO_DEV = "GFXDEMO.EXE"
 MODULE_DIR = os.path.join(ROOT, "build", "modules")
 PROTOCOL_H = os.path.join(ROOT, "abi", "kos", "protocol.h")
 KVIDEO_H = os.path.join(ROOT, "abi", "kos", "kvideo.h")
@@ -63,6 +68,7 @@ MAKEFILE = os.path.join(ROOT, "Makefile")
 GFX_SRC = os.path.join(ROOT, "user", "sdk", "gfx", "src")
 EXE_MK = os.path.join(ROOT, "user", "sdk", "exe.mk")
 GFX_H = os.path.join(ROOT, "user", "sdk", "include", "kos", "gfx.h")
+FONTPACK = os.path.join(ROOT, "tools", "fontpack.py")
 
 # The record the driver answers.
 FLAGS = 0x000F
@@ -121,6 +127,32 @@ def upload_byte(i):
     """gfxtest_upload_byte: the upload mode's payload byte at offset i
     (two identical 4-bit pixels per GRAPHIC 6 byte)."""
     return ((i * 7 + 5) & 0x0F) * 0x11
+
+
+def load_font():
+    """The pinned CP850 6x8 font, parsed from the reviewable asset."""
+    from fontpack import parse_font
+    return parse_font(FONT_ASSET)
+
+
+def g6_pair(fg, bg):
+    """The expansion's pair table: two font bits (the left pixel in
+    bit 1) to one packed GRAPHIC 6 byte."""
+    return ((bg << 4) | bg) & 0xFF, ((bg << 4) | fg) & 0xFF, \
+        ((fg << 4) | bg) & 0xFF, ((fg << 4) | fg) & 0xFF
+
+
+def g6_text_row(font, code, row, fg, bg):
+    """One expanded glyph row's three GRAPHIC 6 bytes."""
+    byte = font[code * 8 + row]
+    pair = g6_pair(fg, bg)
+    return bytes(pair[(byte >> shift) & 3] for shift in (6, 4, 2))
+
+
+def g7_text_row(font, code, row, fg, bg):
+    """One expanded glyph row's six GRAPHIC 7 bytes."""
+    byte = font[code * 8 + row]
+    return bytes(fg if byte & (0x80 >> bit) else bg for bit in range(6))
 
 
 # gfxtest upload's four rectangles (first byte address, rows, bytes per
@@ -223,6 +255,31 @@ class GfxHostTests(unittest.TestCase):
         exe_mk = read_text(EXE_MK)
         self.assertIn("gfx_batch.c", exe_mk)
 
+    def test_text_and_font_surface(self):
+        """The public header declares the font and text API; the
+        internal header holds the 2048-byte font size, the pair cache
+        and the sink interface; the font table is generated from the
+        pinned asset at build."""
+        gfx_h = read_text(GFX_H)
+        for name in ("gfx_font_set_glyph", "gfx_font_reset_glyph",
+                     "gfx_font_reset", "gfx_text", "gfx_text_n",
+                     "gfx_text_width", "struct gfx_text_style"):
+            self.assertIn(name, gfx_h)
+        internal = read_text(os.path.join(GFX_SRC, "gfx_internal.h"))
+        self.assertIn("GFX_FONT_SIZE", internal)
+        self.assertIn("GFX_TEXT_CACHE_ENTRIES 2u", internal)
+        self.assertIn("struct gfx_text_sink {", internal)
+        self.assertIn("gfx_text_sink_opaque", internal)
+        exe_mk = read_text(EXE_MK)
+        self.assertIn("gfx_font.c", exe_mk)
+        self.assertIn("gfx_text.c", exe_mk)
+        font_c = read_text(os.path.join(GFX_SRC, "gfx_font.c"))
+        self.assertIn('#include "font_builtin.inc"', font_c)
+        makefile = read_text(MAKEFILE)
+        self.assertIn("fontpack.py table $< $@", makefile)
+        fontpack = read_text(FONTPACK)
+        self.assertIn('command == "table"', fontpack)
+
     def test_makefile_wires_gfxtest_with_libgfx(self):
         makefile = read_text(MAKEFILE)
         lines = [line for line in makefile.splitlines()
@@ -285,6 +342,24 @@ class GfxReplay(HwtestReplay):
         self.assertEqual(run[at - 1:at + 2], OPS_RUN, run)
         for op in run:
             self.assertIn(op, (OPS_WRITE,) + OPS_RUN, run)
+
+    # -- text evidence ---------------------------------------------------
+    def assert_text(self, z, font, text, x, y, fg, bg, g6, where):
+        """Every glyph of `text`, drawn at (x, y) in the style's
+        colours, decoded from the peer's VRAM against the pinned
+        font."""
+        peer = z.vdp
+        width = 3 if g6 else 6
+        for index, code in enumerate(text.encode("latin-1")):
+            col = (x + index * 6) // 2 if g6 else x + index * 6
+            for row in range(8):
+                expected = (g6_text_row(font, code, row, fg, bg)
+                            if g6 else g7_text_row(font, code, row, fg,
+                                                   bg))
+                base = (y + row) * 256 + col
+                self.assertEqual(peer.vram[base:base + width], expected,
+                                 "%s: '%s' glyph %u row %u"
+                                 % (where, text, index, row))
 
     # -- mode evidence --------------------------------------------------
     def mode_on(self, mode):
@@ -849,6 +924,184 @@ class TestGfxPrims(GfxReplay):
         fresh = self.trace(z, since)
         self.assertIn("gfxtest: prims -2 0 0 0 -2 -2 0", fresh)
         self.assertIn("gfxtest: prims PASS", fresh)
+        self.assertNotIn("FAIL", fresh)
+        self.assert_hold_sequence(ops)
+        self.assert_restored(z, before)
+        self.assertEqual(self.exclusive(z), 0,
+                         "the exclusive flag survived the run")
+
+
+class TestGfxText(GfxReplay):
+    """`gfxtest text`: the expansion and the opaque sink in both modes,
+    two colour pairs, the right-edge clip, the redefined glyph and its
+    reset, the odd-x and YJK refusals."""
+
+    def test_pairs_clip_glyph_and_refusals(self):
+        font = load_font()
+        z = self.start()
+        before = self.snapshot(z)
+        ops = []
+        marks = []
+        since = len(z.glyphs)
+        z.hid.hid_queue.extend(b"/fs/gfxtest.exe text\r")
+
+        def held(z):
+            if OPS_ACQUIRE in ops and not marks:
+                marks.append(len(z.vdp.commands))
+            if OPS_RELEASE in ops and len(marks) == 1:
+                marks.append(len(z.vdp.commands))
+            return OPS_RELEASE in ops
+        # The release: every draw is done, the console not redrawn yet.
+        self.run_recording(z, ops, held)
+        # Text is data-port traffic only: inside the hold the peer
+        # sees no command with a drawing code (the mode changes write
+        # the stop command, code 0; the console's own commands start
+        # after the release).
+        self.assertEqual([c["code"] for c in z.vdp.commands[marks[0]:
+                                                            marks[1]]],
+                         [0x00] * (marks[1] - marks[0]),
+                         z.vdp.commands[marks[0]:marks[1]])
+        # G6, two pairs: every glyph byte against the pinned font.
+        self.assert_text(z, font, "GFX", 8, 20, 0x01, 0x02, True,
+                         "g6 pair1")
+        self.assert_text(z, font, "text", 8, 30, 0x03, 0x04, True,
+                         "g6 pair2")
+        # The right-edge clip: x 506 fits exactly one glyph, so "ABCD"
+        # shows only the A.
+        self.assert_text(z, font, "A", 506, 40, 0x01, 0x02, True,
+                         "the clip")
+        # The redefined glyph: a full 6x8 block (every pair byte the
+        # fg-fg value 0x11), then the built-in's glyph for 0x80.
+        for row in range(8):
+            base = (50 + row) * 256 + 4
+            self.assertEqual(z.vdp.vram[base:base + 3],
+                             bytes([0x11]) * 3, "block row %u" % row)
+        self.assert_text(z, font, "\x80", 8, 60, 0x01, 0x02, True,
+                         "the reset")
+        # G7, one byte per pixel.
+        self.assert_text(z, font, "g7", 100, 80, 0x1C, 0x00, False,
+                         "g7")
+
+        self.run_recording(z, ops, lambda z:
+                           SHELL_PROMPT in "".join(z.glyphs[since:]))
+        self.settle(z, lambda z: z.vdp.regs[8] == 0x08)
+        fresh = self.trace(z, since)
+        self.assertIn("gfxtest: text -2 0 0 -7", fresh)
+        self.assertIn("gfxtest: text PASS", fresh)
+        self.assertNotIn("FAIL", fresh)
+        self.assert_hold_sequence(ops)
+        self.assert_restored(z, before)
+        self.assertEqual(self.exclusive(z), 0,
+                         "the exclusive flag survived the run")
+
+
+class TestGfxDemo(GfxReplay):
+    """`gfxdemo`: the GFX v1 completion demo on the peer - fills,
+    copies, two text pairs, the application glyph - and the console
+    restored after the key."""
+
+    def setUp(self):
+        super().setUp()
+        if not os.path.exists(GFXDEMO_EXE):
+            self.skipTest("%s missing; run make -C UserSoftware/GfxDemo"
+                          % GFXDEMO_EXE)
+
+    def test_demo_draws_and_restores(self):
+        font = load_font()
+        with open(GFXDEMO_EXE, "rb") as handle:
+            files = {"/".join(KEEP_NAME): KEEP_CONTENT,
+                     GFXDEMO_DEV: handle.read()}
+        z = self.start(files)
+        before = self.snapshot(z)
+        ops = []
+        since = len(z.glyphs)
+        marks = []
+        seen_off = []
+        z.hid.hid_queue.extend(b"/fs/gfxdemo.exe\r")
+
+        def shown(z):
+            if OPS_ACQUIRE not in ops:
+                return False
+            if not marks:
+                marks.append(len(z.vdp.commands))
+            if z.vdp.regs[1] == 0x00:
+                seen_off.append(True)
+            return bool(seen_off) and z.vdp.regs[1] == 0x40
+        self.run_recording(z, ops, shown)
+        peer = z.vdp
+        draws = [c for c in peer.commands[marks[0]:]
+                 if c["code"] != 0x00]
+        # The demo's whole picture is six commands: the two text pairs
+        # and the two glyph runs are data-port traffic only.
+        self.assertEqual(len(draws), 6,
+                         [c.get("fill", c["code"]) for c in draws])
+        # The clear, the two bars, the filled rectangle...
+        self.assertEqual([c["fill"] for c in draws[:4]],
+                         [(0, 0, 512, 212, 0x44),
+                          (0, 0, 512, 20, 0x55),
+                          (0, 192, 512, 20, 0x55),
+                          (20, 40, 40, 8, 0x99)],
+                         [c.get("fill") for c in draws])
+        # ...and its two copies (HMMM, DIX and DIY from the overlap,
+        # every far edge in the blocks).
+        self.assertEqual([c["code"] for c in draws[4:6]], [0xD0, 0xD0])
+        for c, dx, dy in zip(draws[4:6], (80, 140), (60, 80)):
+            block = c["block"]
+            self.assertEqual((block[0] | (block[1] << 8),
+                              block[2] | (block[3] << 8),
+                              block[4] | (block[5] << 8),
+                              block[6] | (block[7] << 8)),
+                             (59, 47, dx + 39, dy + 7))
+            self.assertEqual(block[8] | (block[9] << 8), 40)
+            self.assertEqual(block[10] | (block[11] << 8), 8)
+            self.assertEqual(block[13], 0x0C)
+        # The bars and the clear's colour.
+        for row in range(20):
+            self.assertEqual(peer.vram[row * 256:(row + 1) * 256],
+                             bytes([0x55]) * 256, "top bar row %u" % row)
+        for row in range(192, 212):
+            self.assertEqual(peer.vram[row * 256:(row + 1) * 256],
+                             bytes([0x55]) * 256,
+                             "bottom bar row %u" % row)
+        for row in range(20, 40):
+            self.assertEqual(peer.vram[row * 256:(row + 1) * 256],
+                             bytes([0x44]) * 256,
+                             "clear row %u" % row)
+        # The fill and its copies.
+        for row in range(40, 48):
+            line = peer.vram[row * 256:(row + 1) * 256]
+            self.assertEqual(line[10:30], bytes([0x99]) * 20,
+                             "fill row %u" % row)
+        for row in range(60, 68):
+            self.assertEqual(peer.vram[row * 256 + 40:row * 256 + 60],
+                             bytes([0x99]) * 20, "copy 1 row %u" % row)
+        for row in range(80, 88):
+            self.assertEqual(peer.vram[row * 256 + 70:row * 256 + 90],
+                             bytes([0x99]) * 20, "copy 2 row %u" % row)
+        # The text in two colour pairs, and the application glyph.
+        self.assert_text(z, font, "KonaOS GFX v1", 20, 100, 0x0F, 0x04,
+                         True, "demo white")
+        self.assert_text(z, font, "text colours", 20, 116, 0x0A, 0x00,
+                         True, "demo green")
+        face = (0x1E, 0x21, 0x21, 0x21, 0x21, 0x12, 0x0C, 0x00)
+        pair = g6_pair(0x0F, 0x04)
+        for row in range(8):
+            byte = (face[row] << 2) & 0xFC
+            expected = bytes(pair[(byte >> shift) & 3]
+                             for shift in (6, 4, 2))
+            base = (140 + row) * 256 + 10
+            self.assertEqual(peer.vram[base:base + 3], expected,
+                             "face row %u" % row)
+        self.assert_text(z, font, "\x80", 36, 140, 0x0F, 0x04, True,
+                         "demo restored glyph")
+
+        # The key: the console is restored.
+        z.hid.hid_queue.extend(b"x")
+        self.run_recording(z, ops, lambda z:
+                           SHELL_PROMPT in "".join(z.glyphs[since:]))
+        self.settle(z, lambda z: z.vdp.regs[8] == 0x08)
+        fresh = self.trace(z, since)
+        self.assertIn("gfxdemo: done", fresh)
         self.assertNotIn("FAIL", fresh)
         self.assert_hold_sequence(ops)
         self.assert_restored(z, before)

@@ -185,7 +185,7 @@ $(EXE_LIBTUI_WIDGETS): $(EXE_WIDGET_OBJS) $(KOS_RULES)
 KOS_GFX_SRC     := $(KOS_SDK_ROOT)/gfx/src
 KOS_GFX_PRIVATE := $(KOS_GFX_SRC)/gfx_internal.h
 KOS_GFX_C_SRC   := gfx.c gfx_mode.c gfx_draw.c gfx_batch.c gfx_palette.c \
-	gfx_upload.c backends/v9958/v9958_gfx.c
+	gfx_upload.c gfx_font.c gfx_text.c backends/v9958/v9958_gfx.c
 KOS_GFX_ASM_SRC := backends/v9958/v9958_io.asm
 EXE_GFX_OBJS    := $(addprefix $(EXE_SDK_BUILD)/gfx/,\
 	$(patsubst %.c,%.rel,$(KOS_GFX_C_SRC)) \
@@ -195,12 +195,17 @@ EXE_LIBGFX      := $(EXE_SDK_BUILD)/libgfx.lib
 $(EXE_SDK_BUILD)/gfx/%.rel: $(KOS_GFX_SRC)/%.c $(EXE_HEADERS) \
 		$(KOS_GFX_PRIVATE)
 	@mkdir -p $(dir $@)
-	$(SDCC) $(EXE_CFLAGS) -I $(KOS_GFX_SRC) -c $< -o $@
+	$(SDCC) $(EXE_CFLAGS) -I $(KOS_GFX_SRC) -I $(EXE_SDK_BUILD)/gfx \
+		-c $< -o $@
 
 $(EXE_SDK_BUILD)/gfx/%.rel: $(KOS_GFX_SRC)/%.asm $(EXE_HEADERS) \
 		$(KOS_GFX_PRIVATE)
 	@mkdir -p $(dir $@)
 	$(SDASZ80) $(EXE_ASFLAGS) -o $@ $<
+
+# gfx_font.c includes the generated font byte list (the OS tree's
+# Makefile builds it from the pinned asset with tools/fontpack.py).
+$(EXE_SDK_BUILD)/gfx/gfx_font.rel: $(EXE_SDK_BUILD)/gfx/font_builtin.inc
 
 # `-D` zeroes the members' dates and ids.  The in-tree programs link
 # this archive and the standalone SDK ships it, so the library never

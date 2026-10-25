@@ -190,6 +190,8 @@ OWNER_FILES = (
     "user/sdk/gfx/src/gfx_batch.c",
     "user/sdk/gfx/src/gfx_upload.c",
     "user/sdk/gfx/src/gfx_palette.c",
+    "user/sdk/gfx/src/gfx_font.c",
+    "user/sdk/gfx/src/gfx_text.c",
     "user/sdk/gfx/src/backends/v9958/v9958_gfx.c",
     "user/sdk/gfx/src/backends/v9958/v9958_io.asm",
     "user/sdk/include/kos/gfx.h",

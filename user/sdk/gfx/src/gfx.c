@@ -70,6 +70,8 @@ int gfx_open(void)
 	gfx_state.backend = info.backend;
 	gfx_state.caps = info.flags;
 	gfx_state.info = info;
+	/* The RAM font starts from the built-in (gfx_font.c). */
+	gfx_font_install();
 	return 0;
 }
 

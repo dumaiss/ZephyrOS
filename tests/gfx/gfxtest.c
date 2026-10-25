@@ -18,6 +18,9 @@
  *   gfxtest prims            batch ordering, the auto-flush, the four
  *                            overlap copies, page copies, the G6
  *                            refusals, two keys
+ *   gfxtest text             two pairs in each mode, the right-edge
+ *                            clip, the redefined glyph and its reset,
+ *                            the odd-x and YJK refusals
  *
  * While /dev/video is held the console's output to the VDP is dropped,
  * so every line is printed outside the hold.
@@ -406,8 +409,7 @@ static int gfxtest_prims(void)
 	(void)getchar(); /* key 2: the peer holds every result */
 	/* The 16-colour refusals: odd x queues nothing, the even fill
 	 * beside it runs, and the zero sizes are silent no-ops. */
-	result = gfx_set_mode(GFX_MODE_512x212_16);
-	if (result < 0) {
+	result = gfx_set_mode(GFX_MODE_512x212_16);	if (result < 0) {
 		gfx_close();
 		printf("gfxtest: FAIL mode %d\r\n", result);
 		return 1;
@@ -442,6 +444,89 @@ static int gfxtest_prims(void)
 	return 1;
 }
 
+/* The text path: two pairs in each mode, the right-edge clip, the
+ * redefined glyph and its reset, the odd-x and YJK refusals.  The
+ * tests decode every glyph straight from the peer's VRAM against the
+ * pinned font. */
+static int gfxtest_text(void)
+{
+	static const struct gfx_text_style pair1 = {0x01u, 0x02u};
+	static const struct gfx_text_style pair2 = {0x03u, 0x04u};
+	static const struct gfx_text_style g7 = {0x1Cu, 0x00u};
+	/* A full 6x8 block: every row's six pixels on. */
+	static const uint8_t block[8] = {
+		0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F
+	};
+	int odd_result;
+	int set_result;
+	int reset_result;
+	int yjk_result;
+	int result;
+
+	result = gfx_open();
+	if (result < 0) {
+		printf("gfxtest: FAIL open %d\r\n", result);
+		return 1;
+	}
+	result = gfx_set_mode(GFX_MODE_512x212_16);
+	if (result < 0) {
+		gfx_close();
+		printf("gfxtest: FAIL mode %d\r\n", result);
+		return 1;
+	}
+	/* The G6 refusals and the two pairs. */
+	odd_result = gfx_text(1u, 10u, "X", &pair1);
+	result = gfx_text(8u, 20u, "GFX", &pair1);
+	result |= gfx_text(8u, 30u, "text", &pair2);
+	/* x 506 fits exactly one glyph: the clip drops the rest. */
+	result |= gfx_text(506u, 40u, "ABCD", &pair1);
+	if (result != 0) {
+		gfx_close();
+		printf("gfxtest: FAIL text %d\r\n", result);
+		return 1;
+	}
+	/* The redefined glyph, drawn, restored and drawn again. */
+	set_result = gfx_font_set_glyph(0x80u, block);
+	result = gfx_text(8u, 50u, "\x80", &pair1);
+	reset_result = gfx_font_reset_glyph(0x80u);
+	result |= gfx_text(8u, 60u, "\x80", &pair1);
+	if (result != 0) {
+		gfx_close();
+		printf("gfxtest: FAIL glyph %d\r\n", result);
+		return 1;
+	}
+	/* G7, then the YJK refusal. */
+	result = gfx_set_mode(GFX_MODE_256x212_256);
+	if (result < 0) {
+		gfx_close();
+		printf("gfxtest: FAIL mode %d\r\n", result);
+		return 1;
+	}
+	result = gfx_text(100u, 80u, "g7", &g7);
+	if (result < 0) {
+		gfx_close();
+		printf("gfxtest: FAIL g7 text %d\r\n", result);
+		return 1;
+	}
+	result = gfx_set_mode(GFX_MODE_256x212_YJK);
+	if (result < 0) {
+		gfx_close();
+		printf("gfxtest: FAIL mode %d\r\n", result);
+		return 1;
+	}
+	yjk_result = gfx_text(0u, 0u, "x", &g7);
+	gfx_close();
+	printf("gfxtest: text %d %d %d %d\r\n", odd_result, set_result,
+	       reset_result, yjk_result);
+	if (odd_result == -KOS_EINVAL && set_result == 0 &&
+	    reset_result == 0 && yjk_result == -KOS_ENOTSUP) {
+		printf("gfxtest: text PASS\r\n");
+		return 0;
+	}
+	printf("gfxtest: text FAIL\r\n");
+	return 1;
+}
+
 int main(int argc, char **argv)
 {
 	int leak;
@@ -449,7 +534,7 @@ int main(int argc, char **argv)
 	/* argv holds the command-tail words only (the kernel transports no
 	 * program name), so argv[0] is the mode. */
 	if (argc < 1) {
-		printf("gfxtest: mode6|mode7|yjk|info|upload|palette|prims [leak]"
+		printf("gfxtest: mode6|mode7|yjk|info|upload|palette|prims|text [leak]"
 		       "\r\n");
 		return 1;
 	}
@@ -465,6 +550,9 @@ int main(int argc, char **argv)
 	}
 	if (strcmp(argv[0], "prims") == 0) {
 		return gfxtest_prims();
+	}
+	if (strcmp(argv[0], "text") == 0) {
+		return gfxtest_text();
 	}
 	if (strcmp(argv[0], "mode6") == 0) {
 		return gfxtest_run("mode6", GFX_MODE_512x212_16,

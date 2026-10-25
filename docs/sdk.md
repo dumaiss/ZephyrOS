@@ -66,6 +66,8 @@ user/sdk/
     src/gfx_batch.c       gfx_begin/end/flush, the command queue
     src/gfx_upload.c      gfx_upload_begin/write/end (pixel streaming)
     src/gfx_palette.c     gfx_set_palette
+    src/gfx_font.c        the RAM font, gfx_font_set/reset_glyph/reset
+    src/gfx_text.c        gfx_text/text_n/text_width (pairs, the sink)
     src/backends/v9958/   the V9958 backend: mode/command C and port I/O
   template/               the copyable minimal program (Makefile, hello.c)
   examples/               hello, fardemo, fardata, files
@@ -158,11 +160,23 @@ batch executes at once.  `gfx_upload_begin`,
 `gfx_upload_write` and `gfx_upload_end` stream a rectangle's pixels
 straight to VRAM through the data port (any chunk length, one address
 per row, the exact byte count enforced), and `gfx_set_palette`
-programs the 16-colour mode's palette.  Pictures come prepared: the
+programs the 16-colour mode's palette.  `gfx_text` and `gfx_text_n`
+draw a string with a style (the foreground and background colours),
+each glyph expanded from the RAM font and streamed through the data
+port with one VRAM address per row - the 16-colour mode packs two
+pixels per byte through a pair cache, the 256-colour mode one byte
+per pixel - and `gfx_text_width` measures a string in pixels.
+`gfx_font_set_glyph` installs a 6x8 glyph (the low six bits of each
+row) into the RAM font, `gfx_font_reset_glyph` restores one glyph and
+`gfx_font_reset` restores them all.  Pictures come prepared: the
 KIMG v1 format (`kos/kimg.h`) carries a header, an optional palette and
 the payload in the mode's packing, `tools/kimg.py` converts
 PNG/JPEG to it on the host, and `pview.exe` (UserSoftware/PView)
 displays a picture file; the design is gfx-sdk.md sections 10-17.
+`gfxdemo.exe` (UserSoftware/GfxDemo) is the whole surface in one
+picture - clear, bars, copied fills, text in two colour pairs and an
+application glyph drawn, restored and drawn again (gfx-sdk.md
+section 23).
 The packings are the V9958's own:
 
 - **16-colour (G6):** two palette indices per byte, the left pixel in
@@ -766,13 +780,14 @@ the gates the same way any client does:
 
 | a program calls | gfx members linked |
 |---|---|
-| `gfx_open`, `gfx_close`, `gfx_get_info` | `gfx`, `ipc`, `kos_ipcgate`, `nsgate` |
-| `gfx_set_mode`, `gfx_display_enable` | `gfx_mode`, `v9958_gfx`, `gfx_v9958_io` |
+| `gfx_open`, `gfx_close`, `gfx_get_info` | `gfx`, `gfx_font`, `ipc`, `kos_ipcgate`, `nsgate` |
 | `gfx_set_mode`, `gfx_display_enable` | `gfx_mode`, `v9958_gfx`, `gfx_v9958_io` |
 | `gfx_clear`, `gfx_fill_rect`, `gfx_copy_rect` | `gfx_draw`, `gfx_batch`, `v9958_gfx`, `gfx_v9958_io` |
 | `gfx_begin`, `gfx_end`, `gfx_flush` | `gfx_batch`, `v9958_gfx`, `gfx_v9958_io` |
 | `gfx_set_palette` | `gfx_palette`, `v9958_gfx`, `gfx_v9958_io` |
 | `gfx_upload_begin`, `gfx_upload_write`, `gfx_upload_end` | `gfx_upload`, `gfx_v9958_io` |
+| `gfx_font_set_glyph`, `gfx_font_reset_glyph`, `gfx_font_reset` | `gfx_font` |
+| `gfx_text`, `gfx_text_n`, `gfx_text_width` | `gfx_text`, `gfx_batch`, `gfx_v9958_io`, `strlen` |
 
 The backend's assembly member is pulled only through the backend C
 member, so a program that calls none of the drawing entry points links

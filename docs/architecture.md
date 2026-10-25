@@ -1525,16 +1525,12 @@ aperture page otherwise.
 Planned work, in order. None of it changes the contracts above unless it
 says so.
 
-1. **The graphics SDK** (`docs/gfx-sdk.md`): `libgfx`, a user-space
-   graphics library over the exclusively held VIDEO device, plus one
-   resident addition, `KVIDEO_OP_DIRECT_INFO`; the card picture viewer
-   `pview` is its first application.
-2. **Mouse and game controllers** in the HID driver: `/dev/input/mouse`,
+1. **Mouse and game controllers** in the HID driver: `/dev/input/mouse`,
    `/dev/input/controller/0` and `/1`. They grow the driver tier inside
    its reserve and need nothing from the nucleus. The mouse pointer is a
    sprite, which the console's sprites-off drawing bracket must not hide
    while a mouse is open.
-3. **After that:** compatibility personalities, starting with CP/M.
+2. **After that:** compatibility personalities, starting with CP/M.
 
 Diagnostics and benchmarks are user programs; the nucleus gains a
 diagnostic interface only where a program cannot measure without it.
