@@ -30,12 +30,12 @@ PASS = "fs-selftest: truncate PASS"
 FAIL = "fs-selftest: truncate FAIL"
 
 # One check() line per outcome the tail runs.
-CHECKS = 13
+CHECKS = 14
 OUTCOMES = (
     "trunc-open", "trunc-write", "trunc-cache-read", "trunc-shrink",
     "trunc-eof", "trunc-stat", "trunc-head", "trunc-end", "trunc-noop",
     "trunc-position", "trunc-ro-handle", "trunc-ro-unchanged",
-    "trunc-ro-system",
+    "trunc-ro-system", "trunc-call-refusal",
 )
 
 

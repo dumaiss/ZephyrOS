@@ -1007,7 +1007,9 @@ SDK file API. A program that does not link libkres pays nothing for it.
 The API in one paragraph:
 
 - `kres_install(io, cache, ctx)` installs the adapter, the catalog
-  cache and the per-process context once.
+  cache and the per-process context once; `kres_install_mut` also
+  installs the read path's mutation-side hooks (create-on-missing and
+  close-flush).
 - `kres_open(c, path, flags)` binds a container (KRES_OPEN_READ/WRITE/
   CREATE), `kres_close` flushes and closes, `kres_flush` commits.
 - `kres_get`, `kres_create`, `kres_read`, `kres_write`, `kres_seek`,
@@ -1040,3 +1042,33 @@ The archive member rule applies: the read path, the mutation and flush
 machinery, the builder and the compactor are separate members, so a
 program that only reads sealed containers links none of the
 catalog-commit or compaction code.
+
+The KonaOS edition ships as `libkres.lib`, linked with `LIBS=kres`
+(like `LIBS=gfx`). Its members:
+
+| member | holds |
+|---|---|
+| `kres_util.rel` | the install, header parse, entry codecs, shared buffer |
+| `kres_read.rel` | open/close/get/read/seek, the read path |
+| `kres_adapter.rel` | the KonaOS adapter's read side |
+| `kres_cache_xmem.rel` | the 2 KiB XMEM catalog cache |
+| `kres_mut.rel` | mutation, flush and the growth machinery |
+| `kres_adapter_mut.rel` | the adapter's write/truncate/rename/unlink |
+| `kres_build.rel` | the sealed builder |
+| `kres_compact.rel` | rebuild compaction |
+| `kres_extract.rel` | one-resource export |
+| `kres_verify.rel` | the validation pass |
+
+A sealed-container reader links only the first four members and calls
+`kres_install(&kres_io_konaos_read, &kres_cache_xmem, &ctx)` (from
+`kos/kres_konaos.h`); a mutating program calls
+`kres_install_mut(&kres_io_konaos, &kres_cache_xmem, &ctx)`. The
+adapter keeps two file slots keyed by container and the card serves at
+most two open files system-wide, so a tool flushes and **closes its
+container before `run()`ing the next tool** (design §9.1); compaction
+holds both slots. The cache is one 2 KiB XMEM object per open
+container, allocated at open and freed at close. A write beyond the
+physical end extends the file with zero records; compaction's
+temporary and recovery files spell with 8.3 names in the container's
+directory. `krestest` (tests/kres) and `tests/test_kres_native.py` are
+the native acceptance program and replays.

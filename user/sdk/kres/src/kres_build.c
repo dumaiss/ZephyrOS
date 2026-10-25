@@ -177,7 +177,6 @@ int kres_build_write(const void *src, uint16_t len)
 
 int kres_build_end(void)
 {
-	uint8_t header[KRES_RECORD_SIZE];
 	uint8_t zero[KRES_ENTRY_SIZE];
 	unsigned int i;
 	int result;
@@ -201,20 +200,20 @@ int kres_build_end(void)
 	if (result < 0) {
 		goto fail;
 	}
-	memset(header, 0, KRES_RECORD_SIZE);
-	memcpy(header + KRES_HDR_MAGIC, "KRES", 4);
-	kres_put16(header + KRES_HDR_MAJOR, KRES_HDR_MAJOR_V1);
-	kres_put16(header + KRES_HDR_MINOR, KRES_HDR_MINOR_V1);
-	kres_put16(header + KRES_HDR_RECORD_SIZE, KRES_RECORD_SIZE);
-	kres_put16(header + KRES_HDR_CATALOG_RECS, KRES_CATALOG_RECORDS);
-	kres_put16(header + KRES_HDR_RES_COUNT, build_count);
-	kres_put32(header + KRES_HDR_NEXT_RECORD, build_next_record);
-	kres_put32(header + KRES_HDR_FLAGS, KRES_HDR_FLAG_SEALED);
+	memset(kres_shared, 0, KRES_RECORD_SIZE);
+	memcpy(kres_shared + KRES_HDR_MAGIC, "KRES", 4);
+	kres_put16(kres_shared + KRES_HDR_MAJOR, KRES_HDR_MAJOR_V1);
+	kres_put16(kres_shared + KRES_HDR_MINOR, KRES_HDR_MINOR_V1);
+	kres_put16(kres_shared + KRES_HDR_RECORD_SIZE, KRES_RECORD_SIZE);
+	kres_put16(kres_shared + KRES_HDR_CATALOG_RECS, KRES_CATALOG_RECORDS);
+	kres_put16(kres_shared + KRES_HDR_RES_COUNT, build_count);
+	kres_put32(kres_shared + KRES_HDR_NEXT_RECORD, build_next_record);
+	kres_put32(kres_shared + KRES_HDR_FLAGS, KRES_HDR_FLAG_SEALED);
 	result = kres_io->seek(kres_ctx, 0u);
 	if (result < 0) {
 		goto fail;
 	}
-	result = kres_io->write(kres_ctx, header, KRES_RECORD_SIZE);
+	result = kres_io->write(kres_ctx, kres_shared, KRES_RECORD_SIZE);
 	if (result != (int)KRES_RECORD_SIZE) {
 		result = -KOS_EIO;
 		goto fail;

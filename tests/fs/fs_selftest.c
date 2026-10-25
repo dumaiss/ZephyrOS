@@ -451,6 +451,24 @@ static int truncate_case(void)
 	if (ro >= 0) {
 		(void)close((unsigned int)ro);
 	}
+	/* The `call` gate: an op the FILE gate does not forward (0xEE)
+	 * is refused with -KOS_EINVAL.  The refusal must surface as the
+	 * call's result - the reply status field stays 0 on a refusal,
+	 * so returning the status instead would report success here. */
+	{
+		struct kos_ipc_request req;
+
+		req.frame.op = 0xEEu;
+		req.frame.flags = 0u;
+		req.frame.desc = KOS_IPC_DESC_NONE;
+		req.frame.arg0 = 0u;
+		req.frame.arg1 = 0u;
+		req.buffer = (void *)0;
+		req.length = 0u;
+		req.direction = KOS_IPC_DESC_NONE;
+		check("trunc-call-refusal",
+		      call((unsigned char)handle, &req) == -KOS_EINVAL);
+	}
 	(void)close((unsigned int)handle);
 	(void)unlink(TR_FILE);
 	printf("fs-selftest: truncate %u checks, %u failures\r\n", checks,

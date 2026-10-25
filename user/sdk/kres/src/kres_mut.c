@@ -9,8 +9,26 @@
 
 #include "kres_internal.h"
 
+/* A whole zero record, in const storage (ROM on the target): the
+ * file-extension writes use it, so extending never disturbs whatever
+ * the caller staged in the shared buffer.  Defined here, in the
+ * mutation member, so a read-only program does not link it. */
+const uint8_t kres_zero_page[KRES_RECORD_SIZE];
+
 /* The growth policy's floor (design §5.3: the `minimum` term). */
 #define KRES_GROW_MIN 4u
+
+/* The mutation-capable install: kres_install plus the read path's
+ * mutation-side hooks.  A program that never mutates calls plain
+ * kres_install and links none of this member's machinery. */
+int kres_install_mut(const struct kres_io *io,
+		     const struct kres_cache *cache, void *ctx)
+{
+	kres_install(io, cache, ctx);
+	kres_create_hook = kres_create_container;
+	kres_flush_hook = kres_flush;
+	return 0;
+}
 
 /* An empty mutable container's physical size: header, both catalog
  * areas, no data records. */
@@ -58,7 +76,6 @@ static int zero_records(void *ctx, uint32_t record, uint32_t count)
  * written last. */
 static int create_empty(void *ctx)
 {
-	uint8_t header[KRES_RECORD_SIZE];
 	kres_container state;
 	int result;
 
@@ -76,12 +93,12 @@ static int create_empty(void *ctx)
 	if (result < 0) {
 		return result;
 	}
-	header_emit(&state, header);
+	header_emit(&state, kres_shared);
 	result = kres_io->seek(ctx, 0u);
 	if (result < 0) {
 		return result;
 	}
-	result = kres_io->write(ctx, header, KRES_RECORD_SIZE);
+	result = kres_io->write(ctx, kres_shared, KRES_RECORD_SIZE);
 	if (result < 0) {
 		return result;
 	}
@@ -605,7 +622,6 @@ int kres_rename(kres_container *c, const char *old_name,
 int kres_flush(kres_container *c)
 {
 	uint32_t area;
-	uint8_t header[KRES_RECORD_SIZE];
 	int result;
 
 	if (c == (kres_container *)0 || c->opened == 0u ||
@@ -638,12 +654,12 @@ int kres_flush(kres_container *c)
 	 * advanced; the single commit point. */
 	c->active_area = (uint8_t)(1u - c->active_area);
 	c->generation = (uint32_t)(c->generation + 1u);
-	header_emit(c, header);
+	header_emit(c, kres_shared);
 	result = kres_io->seek(c->io_ctx, 0u);
 	if (result < 0) {
 		return result;
 	}
-	result = kres_io->write(c->io_ctx, header, KRES_RECORD_SIZE);
+	result = kres_io->write(c->io_ctx, kres_shared, KRES_RECORD_SIZE);
 	if (result < 0) {
 		return result;
 	}

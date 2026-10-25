@@ -13,7 +13,7 @@ static void install(void)
 
 	mem_io_reset();
 	mem_truncate_refuses_growth(1);
-	kres_install(mem_io(), &kres_cache_mem, &ctx);
+	kres_install_mut(mem_io(), &kres_cache_mem, &ctx);
 }
 
 static const struct mem_file *build_valid(const char *path)

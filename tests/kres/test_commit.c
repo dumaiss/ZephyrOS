@@ -12,7 +12,7 @@ static void install(void)
 
 	mem_io_reset();
 	mem_truncate_refuses_growth(1);
-	kres_install(mem_io(), &kres_cache_mem, &ctx);
+	kres_install_mut(mem_io(), &kres_cache_mem, &ctx);
 }
 
 int main(void)
@@ -32,7 +32,7 @@ int main(void)
 		/* A fresh container with one committed resource. */
 		mem_io_reset();
 		mem_truncate_refuses_growth(1);
-		kres_install(mem_io(), &kres_cache_mem, &(uint8_t){0});
+		kres_install_mut(mem_io(), &kres_cache_mem, &(uint8_t){0});
 		CHECK_EQ(kres_create_container("c.kpr"), 0);
 		CHECK_EQ(kres_open(&c, "c.kpr",
 				   KRES_OPEN_READ | KRES_OPEN_WRITE), 0);

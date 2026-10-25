@@ -214,3 +214,41 @@ $(EXE_LIBGFX): $(EXE_GFX_OBJS) $(KOS_RULES)
 	@mkdir -p $(dir $@)
 	rm -f $@
 	sdar -rcD $@ $(EXE_GFX_OBJS)
+
+# --- libkres -------------------------------------------------------------
+# The portable KRES core plus the KonaOS adapter and the XMEM catalog
+# cache.  One archive member per source, so a program that only reads
+# a sealed container links the read path, the adapter's read side and
+# the cache, and none of the mutation, flush, builder, compaction,
+# extract or verify code (design §8).
+
+KOS_KRES_SRC       := $(KOS_SDK_ROOT)/kres/src
+KOS_KRES_KONAOS    := $(KOS_SDK_ROOT)/kres/konaos
+KOS_KRES_PRIVATE   := $(KOS_KRES_SRC)/kres_internal.h \
+	$(KOS_KRES_SRC)/kres_layout.h $(KOS_KRES_KONAOS)/kona_internal.h
+KOS_KRES_PUBLIC    := $(KOS_INCLUDE)/kos/kres.h \
+	$(KOS_INCLUDE)/kos/kres_konaos.h
+KOS_KRES_C_SRC     := kres_util.c kres_read.c kres_mut.c kres_build.c \
+	kres_compact.c kres_verify.c kres_extract.c
+KOS_KRES_KONAOS_SRC := kres_adapter.c kres_adapter_mut.c kres_cache_xmem.c
+EXE_KRES_OBJS      := $(addprefix $(EXE_SDK_BUILD)/kres/,\
+	$(patsubst %.c,%.rel,$(KOS_KRES_C_SRC))) \
+	$(addprefix $(EXE_SDK_BUILD)/kres/konaos/,\
+	$(patsubst %.c,%.rel,$(KOS_KRES_KONAOS_SRC)))
+EXE_LIBKRES        := $(EXE_SDK_BUILD)/libkres.lib
+
+$(EXE_SDK_BUILD)/kres/konaos/%.rel: $(KOS_KRES_KONAOS)/%.c \
+		$(EXE_HEADERS) $(KOS_KRES_PRIVATE) $(KOS_KRES_PUBLIC)
+	@mkdir -p $(dir $@)
+	$(SDCC) $(EXE_CFLAGS) -I $(KOS_KRES_SRC) -I $(KOS_KRES_KONAOS) \
+		-c $< -o $@
+
+$(EXE_SDK_BUILD)/kres/%.rel: $(KOS_KRES_SRC)/%.c $(EXE_HEADERS) \
+		$(KOS_KRES_PRIVATE) $(KOS_KRES_PUBLIC)
+	@mkdir -p $(dir $@)
+	$(SDCC) $(EXE_CFLAGS) -I $(KOS_KRES_SRC) -c $< -o $@
+
+$(EXE_LIBKRES): $(EXE_KRES_OBJS) $(KOS_RULES)
+	@mkdir -p $(dir $@)
+	rm -f $@
+	sdar -rcD $@ $(EXE_KRES_OBJS)

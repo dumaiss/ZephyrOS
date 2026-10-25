@@ -34,6 +34,11 @@ static int make_swap_name(char *out, unsigned int out_size,
 	return 0;
 }
 
+/* The swap and recovery spellings (static: two path buffers on the
+ * stack would sit inside the copy loops). */
+static char kres_swap_path[KRES_PATH_MAX];
+static char kres_recovery_path[KRES_PATH_MAX];
+
 /* Stream one resource's live bytes into `out` (an open descriptor). */
 static int copy_bytes(kres_resource *in, kres_resource *out)
 {
@@ -80,7 +85,7 @@ static int copy_resources(kres_container *src, kres_container *dst,
 	if (result < 0) {
 		return result;
 	}
-	while (kres_iter_next(&it, &info) != 0) {
+	while (kres_iter_next(&it, &info) > 0) {
 		uint16_t capacity = (flags & KRES_TIGHT) != 0u
 					    ? (uint16_t)((info.used_bytes +
 							  KRES_RECORD_SIZE - 1u) /
@@ -130,7 +135,7 @@ static int seal_copy(kres_container *src, const char *temp)
 	if (result < 0) {
 		goto fail;
 	}
-	while (kres_iter_next(&it, &info) != 0) {
+	while (kres_iter_next(&it, &info) > 0) {
 		kres_resource in;
 		uint32_t at = 0u;
 
@@ -178,15 +183,13 @@ fail:
 int kres_compact(const char *path, unsigned int flags)
 {
 	kres_container src;
-	char swap_path[160];
-	char recovery[160];
 	int result;
 
 	if (kres_io == (const struct kres_io *)0 || path == (const char *)0 ||
 	    (flags & ~(KRES_TIGHT | KRES_SEAL)) != 0u) {
 		return -KOS_EINVAL;
 	}
-	result = make_swap_name(swap_path, sizeof(swap_path), path,
+	result = make_swap_name(kres_swap_path, KRES_PATH_MAX, path,
 				KRES_TEMP_SUFFIX);
 	if (result < 0) {
 		return result;
@@ -196,10 +199,10 @@ int kres_compact(const char *path, unsigned int flags)
 		if (result < 0) {
 			return result;
 		}
-		result = seal_copy(&src, swap_path);
+		result = seal_copy(&src, kres_swap_path);
 		if (result != 0) {
 			(void)kres_close(&src);
-			(void)kres_io->unlink(kres_ctx, swap_path);
+			(void)kres_io->unlink(kres_ctx, kres_swap_path);
 			return result;
 		}
 		(void)kres_close(&src);
@@ -210,16 +213,16 @@ int kres_compact(const char *path, unsigned int flags)
 		if (result < 0) {
 			return result;
 		}
-		result = kres_create_container(swap_path);
+		result = kres_create_container(kres_swap_path);
 		if (result < 0) {
 			(void)kres_close(&src);
 			return result;
 		}
-		result = kres_open(&dst, swap_path, KRES_OPEN_READ |
+		result = kres_open(&dst, kres_swap_path, KRES_OPEN_READ |
 						    KRES_OPEN_WRITE);
 		if (result < 0) {
 			(void)kres_close(&src);
-			(void)kres_io->unlink(kres_ctx, swap_path);
+			(void)kres_io->unlink(kres_ctx, kres_swap_path);
 			return result;
 		}
 		result = copy_resources(&src, &dst, flags);
@@ -230,28 +233,28 @@ int kres_compact(const char *path, unsigned int flags)
 		}
 		(void)kres_close(&src);
 		if (result < 0) {
-			(void)kres_io->unlink(kres_ctx, swap_path);
+			(void)kres_io->unlink(kres_ctx, kres_swap_path);
 			return result;
 		}
 	}
 	/* The swap: original to the recovery name, the temp into place,
 	 * then the recovery file away. */
-	result = make_swap_name(recovery, sizeof(recovery), path,
+	result = make_swap_name(kres_recovery_path, KRES_PATH_MAX, path,
 				KRES_RECOVERY_SUFFIX);
 	if (result < 0) {
-		(void)kres_io->unlink(kres_ctx, swap_path);
+		(void)kres_io->unlink(kres_ctx, kres_swap_path);
 		return result;
 	}
-	result = kres_io->rename(kres_ctx, path, recovery);
+	result = kres_io->rename(kres_ctx, path, kres_recovery_path);
 	if (result < 0) {
-		(void)kres_io->unlink(kres_ctx, swap_path);
+		(void)kres_io->unlink(kres_ctx, kres_swap_path);
 		return result;
 	}
-	result = kres_io->rename(kres_ctx, swap_path, path);
+	result = kres_io->rename(kres_ctx, kres_swap_path, path);
 	if (result < 0) {
 		/* The recovery copy still holds the original. */
-		(void)kres_io->rename(kres_ctx, recovery, path);
+		(void)kres_io->rename(kres_ctx, kres_recovery_path, path);
 		return result;
 	}
-	return kres_io->unlink(kres_ctx, recovery);
+	return kres_io->unlink(kres_ctx, kres_recovery_path);
 }

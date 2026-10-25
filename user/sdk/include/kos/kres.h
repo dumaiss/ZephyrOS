@@ -137,9 +137,17 @@ extern const struct kres_cache kres_cache_mem;
 
 /* Install the platform adapter, the catalog cache and the per-process
  * context both receive (the platform glue calls this once, before the
- * first container call). */
+ * first container call).  The read-only install: no mutation code is
+ * linked through it. */
 void kres_install(const struct kres_io *io,
 		  const struct kres_cache *cache, void *ctx);
+
+/* The mutation-capable install (kres_mut): kres_install plus the
+ * read path's hooks, so kres_open's create-on-missing fallback and
+ * kres_close's flush work.  A program that only reads calls plain
+ * kres_install. */
+int kres_install_mut(const struct kres_io *io,
+		     const struct kres_cache *cache, void *ctx);
 
 /* Bind `c` to `path` through the installed adapter.  KRES_OPEN_CREATE
  * makes a missing file an empty mutable container. */

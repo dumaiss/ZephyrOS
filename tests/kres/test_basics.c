@@ -13,7 +13,7 @@ static void install(void)
 
 	mem_io_reset();
 	mem_truncate_refuses_growth(1);
-	kres_install(mem_io(), &kres_cache_mem, &ctx);
+	kres_install_mut(mem_io(), &kres_cache_mem, &ctx);
 }
 
 static uint8_t pattern[1500];

@@ -10,16 +10,19 @@
 /* The one shared I/O buffer: 512 bytes, never one per resource. */
 uint8_t kres_shared[KRES_RECORD_SIZE];
 
-/* A whole zero record, in const storage (ROM on the target): the
- * file-extension writes use it, so extending never disturbs whatever
- * the caller staged in the shared buffer. */
-const uint8_t kres_zero_page[KRES_RECORD_SIZE];
-
 /* The platform adapter and catalog cache, installed once by the
  * platform glue before the first call. */
 const struct kres_io *kres_io;
 const struct kres_cache *kres_cache;
 void *kres_ctx;
+
+/* The mutation-side entry points the read path reaches without linking
+ * the mutation member: kres_open's create-on-missing fallback and
+ * kres_close's flush.  The mutation member's startup initializer
+ * installs both, so a program that links no mutation member keeps the
+ * read path self-contained (design §8, "Library size"). */
+int (*kres_create_hook)(const char *path);
+int (*kres_flush_hook)(kres_container *c);
 
 void kres_install(const struct kres_io *io, const struct kres_cache *cache,
 		  void *ctx)
@@ -125,16 +128,15 @@ int kres_header_parse(const uint8_t *header, kres_container *out)
 	uint16_t count;
 	uint8_t active;
 
-	if (header[0] != 'K' || header[1] != 'R' || header[2] != 'E' ||
-	    header[3] != 'S') {
-		return -KRES_E_BAD;
-	}
-	if (kres_get16(header + KRES_HDR_MAJOR) != KRES_HDR_MAJOR_V1 ||
-	    kres_get16(header + KRES_HDR_MINOR) != KRES_HDR_MINOR_V1 ||
-	    kres_get16(header + KRES_HDR_RECORD_SIZE) !=
-		    KRES_RECORD_SIZE ||
-	    kres_get16(header + KRES_HDR_CATALOG_RECS) !=
-		    KRES_CATALOG_RECORDS) {
+	/* The fixed fields sit as adjacent pairs: one 32-bit compare per
+	 * pair (magic "KRES", major|minor, record|catalog records). */
+	if (kres_get32(header + KRES_HDR_MAGIC) != 0x5345524Bu ||
+	    kres_get32(header + KRES_HDR_MAJOR) !=
+		    (KRES_HDR_MAJOR_V1 |
+		     ((uint32_t)KRES_HDR_MINOR_V1 << 16)) ||
+	    kres_get32(header + KRES_HDR_RECORD_SIZE) !=
+		    (KRES_RECORD_SIZE |
+		     ((uint32_t)KRES_CATALOG_RECORDS << 16))) {
 		return -KRES_E_BAD;
 	}
 	flags = kres_get32(header + KRES_HDR_FLAGS);

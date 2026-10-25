@@ -1,6 +1,6 @@
 # KRES — Kona Resource SDK
 
-**Status:** Design, KRES format v1 (the format freezes when host and KonaOS acceptance pass)
+**Status:** KRES format v1 frozen
 **Scope:** Portable userland library and utilities; **not** a KonaOS kernel service
 **Primary consumers:** `EDIT.EXE`, KonaM2 frontend, Z80 backend, linker, and other applications
 **Container extension:** `.KPR` for project/workspace containers; the KRES format is not project-specific

@@ -1122,6 +1122,19 @@ $(eval $(call exe_program,gfxtest,tests/gfx,\
 
 all: $(EXE_USER_ROOT)/gfxtest.exe
 
+# The KRES KonaOS edition outcome programs: card programs the KRES
+# native replays run from the shell (tests/test_kres_native.py), in no
+# store.  `LIBS=kres` links libkres after the program objects, before
+# libkos.  krestest installs the full adapter; kresread installs the
+# read side only, and its map proves a reader links no mutation
+# member.
+$(eval $(call exe_program,krestest,tests/kres,\
+	krestest.c,STACK=384,LIBS=kres))
+$(eval $(call exe_program,kresread,tests/kres,\
+	kresread.c,STACK=384,LIBS=kres))
+
+all: $(EXE_USER_ROOT)/krestest.exe $(EXE_USER_ROOT)/kresread.exe
+
 # The TUI SDK outcome program: a card program the TUI replays run from the
 # shell, in no store.  `LIBS=tui_widgets:tui` links the widget archive
 # before its core dependency and both after the program objects, before
@@ -1306,12 +1319,14 @@ sdk: $(KOS_SDK_TARBALL)
 	@echo "sdk: $(KOS_SDK_TARBALL)"
 
 $(KOS_SDK_TARBALL): $(EXE_SDK_RELEASE_LIB) $(EXE_LIBTUI) $(EXE_LIBTUI_WIDE) \
-		$(EXE_LIBTUI_WIDGETS) $(EXE_LIBGFX) $(EXE_CRT0) $(SDK_INPUTS)
+		$(EXE_LIBTUI_WIDGETS) $(EXE_LIBGFX) $(EXE_LIBKRES) \
+		$(EXE_CRT0) $(SDK_INPUTS)
 	$(PYTHON) tools/sdkpack.py --version $(KOS_SDK_VERSION) \
 		--libkos $(EXE_SDK_RELEASE_LIB) --libtui $(EXE_LIBTUI) \
 		--libtui-wide $(EXE_LIBTUI_WIDE) \
 		--libtui-widgets $(EXE_LIBTUI_WIDGETS) \
 		--libgfx $(EXE_LIBGFX) \
+		--libkres $(EXE_LIBKRES) \
 		--crt0 $(EXE_CRT0) \
 		--out $(KOS_SDK_DIR) --tar $@
 

@@ -403,11 +403,13 @@ class TestSdkBoundary(unittest.TestCase):
         # programs the production replays run (`tests/test_vblank.py`,
         # `tests/test_sound.py`); `gfxtest` is the graphics foundation
         # outcome program the production replays run
-        # (`tests/test_gfx.py`); `tui_test` is the TUI SDK outcome
-        # program (`tests/test_tui.py`) and `tui_wide` the same source
-        # built with TUI_GRID=128x35, `tui_putwide` its put_text
-        # equivalence mode on that capacity; `textbench` is the direct-text
-        # measurement program a card copy carries
+        # (`tests/test_gfx.py`); `krestest` and `kresread` are the KRES
+        # KonaOS edition outcome programs the production replays run
+        # (`tests/test_kres_native.py`); `tui_test` is the TUI SDK
+        # outcome program (`tests/test_tui.py`) and `tui_wide` the same
+        # source built with TUI_GRID=128x35, `tui_putwide` its put_text
+        # equivalence mode on that capacity; `textbench` is the
+        # direct-text measurement program a card copy carries
         # (`tests/test_textbench.py`).
         self.assertEqual(sorted(name for name, _d, _s, _o in programs),
                          ["banks", "beat", "devtest", "events",
@@ -417,7 +419,7 @@ class TestSdkBoundary(unittest.TestCase):
                           "hello",
                           "hwtest", "iobench", "iomix", "iomix_child",
                           "iostream", "ipc", "ipccopy",
-                          "monitor", "ns",
+                          "kresread", "krestest", "monitor", "ns",
                           "nschild", "readphase", "shell", "sound",
                           "textbench", "timer",
                           "tui_core_probe", "tui_demo", "tui_dialog",

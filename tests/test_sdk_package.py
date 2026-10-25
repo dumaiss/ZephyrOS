@@ -89,6 +89,7 @@ SDK_FILES = {
     "include/kos/gfx.h",
     "include/kos/kimg.h",
     "include/kos/kres.h",
+    "include/kos/kres_konaos.h",
     "include/kos/timer.h",
     "include/kos/xmem.h",
     "include/klibc/fmt.h",
@@ -113,6 +114,7 @@ SDK_FILES = {
     "lib/libtui_128x35.lib",
     "lib/libtui_widgets.lib",
     "lib/libgfx.lib",
+    "lib/libkres.lib",
     "lib/crt0.rel",
     "tools/exepack.py",
     "tools/exemanifest.py",
@@ -407,7 +409,8 @@ class TestSdkPackage(unittest.TestCase):
         every member's date and ids are zero, so the shipped libraries do
         not record when they were built."""
         for library in ("libkos.lib", "libtui.lib", "libtui_128x35.lib",
-                        "libtui_widgets.lib", "libgfx.lib"):
+                        "libtui_widgets.lib", "libgfx.lib",
+                        "libkres.lib"):
             members = list(_ar_members(os.path.join(self.tree, "lib",
                                                     library)))
             self.assertGreater(len(members), 1, library)
@@ -433,6 +436,7 @@ class TestSdkPackage(unittest.TestCase):
             os.path.join(self.tree, "lib", "libtui_128x35.lib"),
             os.path.join(self.tree, "lib", "libtui_widgets.lib"),
             os.path.join(self.tree, "lib", "libgfx.lib"),
+            os.path.join(self.tree, "lib", "libkres.lib"),
             os.path.join(self.tree, "lib", "crt0.rel"))
         sdkpack.pack_tar(tree, again)
         # Same tree, same bytes: neither the member order nor the gzip

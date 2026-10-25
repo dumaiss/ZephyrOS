@@ -35,6 +35,11 @@ extern const struct kres_io *kres_io;
 /* The installed per-process context (kres_install). */
 extern void *kres_ctx;
 
+/* The mutation-side hooks (installed by the mutation member's startup
+ * initializer; NULL when no mutation member is linked). */
+extern int (*kres_create_hook)(const char *path);
+extern int (*kres_flush_hook)(kres_container *c);
+
 /* --- the catalog cache interface -------------------------------------- */
 
 /* Defined in kos/kres.h: `load` fills the four records of `area`
@@ -57,6 +62,10 @@ extern const struct kres_cache *kres_cache;
 
 /* The byte offset of a record number. */
 #define kres_record_offset(record) ((record) * KRES_RECORD_SIZE)
+
+/* The longest path the core buffers (compaction's swap and recovery
+ * spellings); the KonaOS edition's own limit is 127 bytes plus NUL. */
+#define KRES_PATH_MAX 160u
 
 /* One full-record adapter operation with the shared buffer, in three
  * bounded calls; `length` is a whole number of records.  Returns the

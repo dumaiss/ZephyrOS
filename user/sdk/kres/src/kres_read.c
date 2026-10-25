@@ -12,7 +12,6 @@
  * (through the mutation member, so read-only programs do not link it). */
 int kres_open(kres_container *c, const char *path, unsigned int flags)
 {
-	uint8_t header[KRES_RECORD_SIZE];
 	uint32_t size;
 	int result;
 
@@ -24,13 +23,19 @@ int kres_open(kres_container *c, const char *path, unsigned int flags)
 	memset(c, 0, sizeof(*c));
 	c->io_ctx = c; /* the adapter keys its per-open state by ctx, so a
 			* compactor can hold two containers open at once */
-	result = kres_io->open(c, path, flags);
-	if (result == -KOS_ENOENT && (flags & KRES_OPEN_CREATE) != 0u) {
-		result = kres_create_container(path);
+	/* KRES_OPEN_CREATE does not reach the adapter: an adapter that
+	 * creates on demand (KFS_O_CREATE, "w+b") would make the
+	 * missing file itself and return a zero-length file the header
+	 * check rejects.  Probe without it; only a reported miss goes
+	 * through the mutation member's create-on-missing. */
+	result = kres_io->open(c, path, flags & ~KRES_OPEN_CREATE);
+	if (result == -KOS_ENOENT && (flags & KRES_OPEN_CREATE) != 0u &&
+	    kres_create_hook != (int (*)(const char *))0) {
+		result = kres_create_hook(path);
 		if (result < 0) {
 			return result;
 		}
-		result = kres_io->open(c, path, flags);
+		result = kres_io->open(c, path, flags & ~KRES_OPEN_CREATE);
 	}
 	if (result < 0) {
 		return result;
@@ -44,11 +49,11 @@ int kres_open(kres_container *c, const char *path, unsigned int flags)
 		result = -KRES_E_BAD;
 		goto fail;
 	}
-	if (kres_read_records_at(c->io_ctx, 0u, header, 1u) != 1) {
+	if (kres_read_records_at(c->io_ctx, 0u, kres_shared, 1u) != 1) {
 		result = -KOS_EIO;
 		goto fail;
 	}
-	result = kres_header_parse(header, c);
+	result = kres_header_parse(kres_shared, c);
 	if (result < 0) {
 		goto fail;
 	}
@@ -92,8 +97,9 @@ int kres_close(kres_container *c)
 		return -KOS_EINVAL;
 	}
 	result = 0;
-	if (c->writable != 0u) {
-		result = kres_flush(c);
+	if (c->writable != 0u &&
+	    kres_flush_hook != (int (*)(kres_container *))0) {
+		result = kres_flush_hook(c);
 	}
 	if (result == 0) {
 		result = kres_io->close(c->io_ctx);

@@ -939,7 +939,7 @@ int main(int argc, char **argv)
 	if (argc < 2) {
 		return usage();
 	}
-	kres_install(&host_io, &kres_cache_mem, &io_ctx);
+	kres_install_mut(&host_io, &kres_cache_mem, &io_ctx);
 	if (strcmp(argv[1], "create") == 0) {
 		return cmd_create(argc - 2, argv + 2);
 	}
