@@ -405,4 +405,3 @@ int gfx_fill_ellipse(uint16_t cx, uint16_t cy, uint16_t rx, uint16_t ry,
 	}
 	return gfx_ellipse_run(cx, cy, rx, ry, color, op, 1);
 }
-
