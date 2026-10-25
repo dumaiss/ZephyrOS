@@ -417,7 +417,10 @@ static int truncate_case(void)
 	check("trunc-shrink", result == 0);
 	(void)seek((unsigned int)handle, 1500, KFS_SEEK_SET);
 	check("trunc-eof", read((unsigned int)handle, buf, FS_BLOCK) == 0);
-	check("trunc-stat", stat(TR_FILE, &st) == 0 && st.size == 1000u);
+	/* stat by path reads the directory entry, which takes the open
+	 * file's size at a sync (or the close). */
+	check("trunc-stat", sync((unsigned int)handle) == 0 &&
+	      stat(TR_FILE, &st) == 0 && st.size == 1000u);
 	/* The first 1,000 bytes are intact; 1,000 is end of file. */
 	(void)seek((unsigned int)handle, 0, KFS_SEEK_SET);
 	check("trunc-head",
@@ -442,7 +445,7 @@ static int truncate_case(void)
 	if (ro >= 0) {
 		(void)close((unsigned int)ro);
 	}
-	check("trunc-ro-unchanged",
+	check("trunc-ro-unchanged", sync((unsigned int)handle) == 0 &&
 	      stat(TR_FILE, &st) == 0 && st.size == 500u);
 	/* The read-only provider refuses the same way. */
 	ro = open(SYS_FILE, KFS_O_READ);

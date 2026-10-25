@@ -69,6 +69,10 @@ PROTOCOL_H = os.path.join(ROOT, "abi", "kos", "protocol.h")
 KVIDEO_H = os.path.join(ROOT, "abi", "kos", "kvideo.h")
 MAKEFILE = os.path.join(ROOT, "Makefile")
 GFX_SRC = os.path.join(ROOT, "user", "sdk", "gfx", "src")
+GFX_V9958 = os.path.join(GFX_SRC, "backends", "v9958")
+# The drawing modules: every routine that draws or moves pixels.
+GFX_DRAW_ASM = ("gfx_cmd.asm", "gfx_ellipse.asm", "gfx_text.asm",
+                "gfx_atlas_draw.asm", "gfx_upload.asm")
 EXE_MK = os.path.join(ROOT, "user", "sdk", "exe.mk")
 GFX_H = os.path.join(ROOT, "user", "sdk", "include", "kos", "gfx.h")
 FONTPACK = os.path.join(ROOT, "tools", "fontpack.py")
@@ -233,16 +237,16 @@ class GfxHostTests(unittest.TestCase):
                              "gfx.h")
         for path in (os.path.join(GFX_SRC, "gfx.c"),
                      os.path.join(GFX_SRC, "gfx_mode.c"),
-                     os.path.join(GFX_SRC, "gfx_draw.c"),
-                     os.path.join(GFX_SRC, "gfx_batch.c"),
-                     os.path.join(GFX_SRC, "gfx_upload.c"),
                      os.path.join(GFX_SRC, "gfx_palette.c"),
                      os.path.join(GFX_SRC, "backends", "v9958",
                                   "v9958_gfx.c"),
                      gfx_h):
             self.assertTrue(os.path.isfile(path), path)
-        for name in ("gfx.c", "gfx_mode.c", "gfx_draw.c", "gfx_batch.c",
-                     "gfx_upload.c", "gfx_palette.c",
+        for name in GFX_DRAW_ASM:
+            self.assertTrue(os.path.isfile(os.path.join(GFX_V9958, name)),
+                            name)
+        for name in ("gfx.c", "gfx_mode.c", "gfx_palette.c", "gfx_font.c",
+                     "gfx_font4.c", "gfx_atlas.c",
                      "backends/v9958/v9958_gfx.c"):
             source = read_text(os.path.join(GFX_SRC, name))
             for token in ("__sfr", "__at", "outp(", "inp("):
@@ -263,57 +267,58 @@ class GfxHostTests(unittest.TestCase):
                      "gfx_upload_write", "gfx_upload_end"):
             self.assertIn(name, gfx_h)
         exe_mk = read_text(EXE_MK)
-        self.assertIn("gfx_upload.c", exe_mk)
+        self.assertIn("gfx_upload.asm", exe_mk)
         self.assertIn("gfx_palette.c", exe_mk)
-        asm = read_text(os.path.join(GFX_SRC, "backends", "v9958",
-                                     "v9958_io.asm"))
+        asm = read_text(os.path.join(GFX_V9958, "v9958_io.asm"))
         for name in ("_gfx_v9958_io_set_vram",
                      "_gfx_v9958_io_stream_vram",
                      "_gfx_v9958_io_palette_byte"):
             self.assertIn(name, asm)
+        upload = read_text(os.path.join(GFX_V9958, "gfx_upload.asm"))
+        for name in ("_gfx_upload_begin::", "_gfx_upload_write::",
+                     "_gfx_upload_end::"):
+            self.assertIn(name, upload)
 
     def test_batch_and_primitives_surface(self):
         """The public header declares the batch and the rectangle
-        primitives; the queue is 32 16-byte records and exe.mk builds
-        the batch member into libgfx."""
+        primitives; the command path's assembly holds them, the queue
+        is 32 ready command blocks, and exe.mk builds it into libgfx."""
         gfx_h = read_text(GFX_H)
         for name in ("gfx_begin", "gfx_end", "gfx_flush",
                      "gfx_fill_rect", "gfx_copy_rect"):
             self.assertIn(name, gfx_h)
-        internal = read_text(os.path.join(GFX_SRC, "gfx_internal.h"))
-        self.assertIn("GFX_BATCH_ENTRIES  32u", internal)
-        self.assertIn('sizeof(struct gfx_cmd) == 16', internal)
-        self.assertIn("struct gfx_cmd {", internal)
-        self.assertIn("GFX_CMD_FILL 1u", internal)
-        self.assertIn("GFX_CMD_COPY 2u", internal)
+        cmd = read_text(os.path.join(GFX_V9958, "gfx_cmd.asm"))
+        self.assertIn("GFX_BATCH_ENTRIES       = 32", cmd)
+        for name in ("_gfx_begin::", "_gfx_end::", "_gfx_flush::",
+                     "_gfx_fill_rect::", "_gfx_clear::",
+                     "_gfx_copy_rect::"):
+            self.assertIn(name, cmd)
         exe_mk = read_text(EXE_MK)
-        self.assertIn("gfx_batch.c", exe_mk)
+        self.assertIn("gfx_cmd.asm", exe_mk)
 
     def test_shapes_surface(self):
         """The public header declares the shapes API (the op enum and
-        the six calls), the internal header the command constants and
-        the assembly the per-command builders."""
+        the six calls); the assembly holds the entry points and the
+        command codes, and exe.mk builds the ellipse member."""
         gfx_h = read_text(GFX_H)
         for name in ("enum gfx_op {", "GFX_OP_COPY", "GFX_OP_XOR",
                      "gfx_rect", "gfx_line", "gfx_point", "gfx_ellipse",
                      "gfx_fill_ellipse"):
             self.assertIn(name, gfx_h)
         self.assertIn("enum gfx_op op);", gfx_h)
-        internal = read_text(os.path.join(GFX_SRC, "gfx_internal.h"))
-        for name in ("GFX_CMD_FILL 1u", "GFX_CMD_COPY 2u",
-                     "GFX_CMD_LINE 3u", "GFX_CMD_SPAN 4u",
-                     "GFX_CMD_POINT 5u", "GFX_V9958_CMD_LINE 0x70u",
-                     "GFX_V9958_CMD_PSET 0x50u",
-                     "GFX_V9958_CMD_LMMV 0x80u"):
-            self.assertIn(name, internal)
-        asm = read_text(os.path.join(GFX_SRC, "backends", "v9958",
-                                     "v9958_io.asm"))
-        for name in ("_gfx_v9958_io_run_hmmv", "_gfx_v9958_io_run_hmmm",
-                     "_gfx_v9958_io_run_line", "_gfx_v9958_io_run_pset",
-                     "_gfx_v9958_io_run_lmmv"):
-            self.assertIn(name, asm)
+        cmd = read_text(os.path.join(GFX_V9958, "gfx_cmd.asm"))
+        for name in ("_gfx_rect::", "_gfx_line::", "_gfx_point::",
+                     "GFX_CMD_HMMV            = 0xC0",
+                     "GFX_CMD_HMMM            = 0xD0",
+                     "GFX_CMD_LMMV            = 0x80",
+                     "GFX_CMD_LINE            = 0x70",
+                     "GFX_CMD_PSET            = 0x50"):
+            self.assertIn(name, cmd)
+        ellipse = read_text(os.path.join(GFX_V9958, "gfx_ellipse.asm"))
+        for name in ("_gfx_ellipse::", "_gfx_fill_ellipse::"):
+            self.assertIn(name, ellipse)
         exe_mk = read_text(EXE_MK)
-        self.assertIn("gfx_shapes.c", exe_mk)
+        self.assertIn("gfx_ellipse.asm", exe_mk)
 
     def test_text_and_font_surface(self):
         """The public header declares the font and text API; the
@@ -330,12 +335,12 @@ class GfxHostTests(unittest.TestCase):
         internal = read_text(os.path.join(GFX_SRC, "gfx_internal.h"))
         self.assertIn("GFX_FONT_SIZE", internal)
         self.assertIn("GFX_FONT4_SIZE", internal)
-        self.assertIn("GFX_CMD_GLYPH", internal)
-        self.assertIn("GFX_TEXT_CACHE_ENTRIES 2u", internal)
-        self.assertIn("struct gfx_text_row_args {", internal)
+        text = read_text(os.path.join(GFX_V9958, "gfx_text.asm"))
+        for name in ("_gfx_text::", "_gfx_text_n::"):
+            self.assertIn(name, text)
         exe_mk = read_text(EXE_MK)
         for member in ("gfx_font.c", "gfx_font4.c", "gfx_atlas.c",
-                       "gfx_text.c"):
+                       "gfx_text.asm", "gfx_atlas_draw.asm"):
             self.assertIn(member, exe_mk)
         font_c = read_text(os.path.join(GFX_SRC, "gfx_font.c"))
         self.assertIn('#include "font_builtin.inc"', font_c)
@@ -1311,13 +1316,10 @@ class TestGfxShapes(GfxReplay):
                          "the display is on at key 1")
 
         # Key 1: every G7 drawing's result is on the peer's VRAM.
-        # The reference draws the same shapes: the lines, points and
-        # rectangles from the reference walkers, the fill circle from
-        # the reference set (its walk matches the binary's), the
-        # wide and tall outlines from the reference boundary, and the
-        # r=24 outline circle from its filled twin's spans on the
-        # peer - the boundary rule applied to the fill the binary
-        # actually drew, so filled and outline agree by construction.
+        # The reference draws the same shapes, in the program's order:
+        # the lines, points and rectangles from the reference walkers,
+        # the fills from the reference midpoint sets and the outlines
+        # from the reference boundary.
         g7_end = len(z.vdp.commands)
         peer = z.vdp
         width = 256
@@ -1347,25 +1349,21 @@ class TestGfxShapes(GfxReplay):
             screen[x, y] = 0x6F
         for x, y in fill_ellipse_pixels(128, 50, 20, 20):
             screen[x, y] = 0x1F
+        for x, y in outline_ellipse_pixels(128, 62, 24, 24):
+            screen[x, y] = 0x2F
+        for x, y in fill_ellipse_pixels(190, 110, 24, 24):
+            screen[x, y] = 0x1E
         for x, y in outline_ellipse_pixels(190, 180, 40, 12):
             screen[x, y] = 0x3F
         for x, y in outline_ellipse_pixels(60, 180, 6, 40):
             screen[x, y] = 0x4F
-        # The r=24 filled twin at (190, 110), decoded from the spans
-        # the binary dispatched; the outline circle at (128, 62) is
-        # the twin's boundary translated by (-62, -48).
-        twin = set()
+        # A COPY span is an HMMV in GRAPHIC 7: no ellipse colour runs
+        # through the per-dot LMMV.
         for entry in [c for c in z.vdp.commands[:g7_end]
                       if c.get("code") == 0x80]:
-            dx, dy, nx, ny, color, _op = entry["logical_fill"]
-            if color == 0x1E:
-                for y in range(dy, dy + ny):
-                    for x in range(dx, dx + nx):
-                        twin.add((x, y))
-        for x, y in twin:
-            screen[x, y] = 0x1E
-        for x, y in fill_boundary(twin):
-            screen[x - 62, y - 48] = 0x2F
+            self.assertNotIn(entry["logical_fill"][4],
+                             (0x1F, 0x2F, 0x1E, 0x3F, 0x4F),
+                             "a G7 COPY ellipse span ran as LMMV")
         for y in range(212):
             for x in range(width):
                 self.assertEqual(peer.vram[y * 256 + x],
@@ -1423,10 +1421,7 @@ class TestGfxShapes(GfxReplay):
             self.assertEqual(peer.vram[y * 256 + x // 2]
                              >> (4 if x % 2 == 0 else 0) & 0x0F,
                              0x0A, "corner %u,%u" % (x, y))
-        # The G6 ellipses from the reference sets, except the outline
-        # ellipse whose expected pixels derive from its filled twin's
-        # spans on the peer (the boundary rule applied to the fill
-        # the binary actually drew).
+        # The G6 ellipses from the reference sets.
         g6_end = len(z.vdp.commands)
         screen6 = {}
         for x, y in vdp_line(31, 10, 40, 10, 0):
@@ -1441,31 +1436,23 @@ class TestGfxShapes(GfxReplay):
                 screen6[x, y] = 0x09
         for x, y in rect_outline_pixels(10, 40, 20, 12):
             screen6[x, y] = 0x0A
-        # The G6 fill ellipse's spans, decoded from the peer (the
-        # binary's walk for 14x20 differs from the source mirror, so
-        # the comparison is against what the program dispatched).
-        for entry in [c for c in z.vdp.commands[:g6_end]
-                      if c.get("code") == 0x80]:
-            dx, dy, nx, ny, color, _op = entry["logical_fill"]
-            if color == 0x0D:
-                for y in range(dy, dy + ny):
-                    for x in range(dx, dx + nx):
-                        screen6[x, y] = 0x0D
-        # The 18x12 filled twin at (60, 90), decoded from the spans
-        # the binary dispatched; the outline ellipse at (128, 90) is
-        # the twin's boundary translated by (+68, 0).
-        twin6 = set()
-        for entry in [c for c in z.vdp.commands[:g6_end]
-                      if c.get("code") == 0x80]:
-            dx, dy, nx, ny, color, _op = entry["logical_fill"]
-            if color == 0x0E:
-                for y in range(dy, dy + ny):
-                    for x in range(dx, dx + nx):
-                        twin6.add((x, y))
-        for x, y in twin6:
+        for x, y in outline_ellipse_pixels(128, 90, 18, 12):
+            screen6[x, y] = 0x0C
+        for x, y in fill_ellipse_pixels(60, 90, 18, 12):
             screen6[x, y] = 0x0E
-        for x, y in fill_boundary(twin6):
-            screen6[x + 68, y] = 0x0C
+        for x, y in fill_ellipse_pixels(200, 90, 14, 20):
+            screen6[x, y] = 0x0D
+        # A G6 COPY span is an HMMV over its whole bytes (the colour in
+        # both nibbles) with an LMMV for an odd end dot: the even-centred
+        # 14x20 fill ends every wide span on an even dot.
+        g6_cmds = z.vdp.commands[g7_end:g6_end]
+        self.assertTrue(any(c.get("code") == 0xC0 and
+                            c["block"][12] == 0xDD for c in g6_cmds),
+                        "the G6 fill's whole bytes run as HMMV")
+        self.assertTrue(any(c.get("code") == 0x80 and
+                            c["logical_fill"][4] == 0x0D
+                            for c in g6_cmds),
+                        "the G6 fill's odd end dots run as LMMV")
         for y in range(0, 112):
             for x in range(0, 216):
                 value = peer.vram[y * 256 + x // 2]
@@ -1495,10 +1482,11 @@ class TestGfxShapes(GfxReplay):
 
 class TestGfxTiming(GfxReplay):
     """`gfxtest timing`: the CPU T-state budgets between the markers,
-    counted on the peer's register-write timestamps.  The first five
-    pairs run with the duration model off (the historical conditions);
-    the frame clock and the duration model switch on for package 96's
-    workloads, so their engine waits are the modeled times."""
+    counted on the peer's register-write timestamps, with the frame
+    clock and the duration model on throughout.  Each figure is the
+    window's CPU time with the engine and retrace waits taken out (the
+    status-register polls' run, from the peer's status log), the
+    figure the targets are set on."""
 
     def test_timing_budgets(self):
         z = self.start()
@@ -1507,64 +1495,58 @@ class TestGfxTiming(GfxReplay):
         z.hid.hid_queue.extend(b"/fs/gfxtest.exe timing\r")
         self.run_recording(z, ops, lambda z: OPS_ACQUIRE in ops)
         peer = z.vdp
+        peer.frame_period = FRAME_TSTATES
+        peer.duration_model = True
 
         def markers():
             return [now for value, reg, now in peer.reg_writes
                     if reg == 16 and value == 15]
-        # The legacy five pairs run with the model off; the boot
-        # console and the program's own mode setup each write the G6
-        # palette through R#16 (values 0..15), so their entry-15
-        # writes lead the list.  After the fifth pair's ten markers,
-        # the frame clock and the duration model come on for 96's
-        # workloads (the scope, the stripe changes, the page switch,
-        # the partial present).
+        # The boot console and the program's own mode setup each write
+        # the G6 palette through R#16 (values 0..15), so their entry-15
+        # writes lead the list.
         z.hid.hid_queue.extend(b"x")
-        self.run_recording(z, ops, lambda z: len(markers()) >= 12)
-        z.vdp.frame_period = FRAME_TSTATES
-        z.vdp.duration_model = True
         self.run_recording(
             z, ops, lambda z: "gfxtest: timing" in "".join(z.glyphs[since:]))
         marks = markers()[2:]
         self.assertGreaterEqual(len(marks), 24, marks)
         pairs = list(zip(marks[::2], marks[1::2]))
-        glyph = pairs[0][1] - pairs[0][0]
-        fill = pairs[1][1] - pairs[1][0]
-        line = pairs[2][1] - pairs[2][0]
-        filled = pairs[3][1] - pairs[3][0]
-        outline = pairs[4][1] - pairs[4][0]
-        polyline = pairs[5][1] - pairs[5][0]
-        row_new = pairs[6][1] - pairs[6][0]
-        row_cached = pairs[7][1] - pairs[7][0]
-        stripe = pairs[8][1] - pairs[8][0]
-        page_switch = pairs[9][1] - pairs[9][0]
-        vblank = pairs[10][1] - pairs[10][0]
+        reads = [now for now, _ce, _vr in peer.status_reads]
+
+        def figure(index):
+            """(total, waits) of the index'th window: a wait is a run
+            of back-to-back status polls (the CE and VR loops)."""
+            start, end = pairs[index]
+            waits = 0
+            inside = [t for t in reads if start <= t < end]
+            for before, after in zip(inside, inside[1:]):
+                if after - before <= 48:
+                    waits += after - before
+            return end - start, waits
+        names = ("glyph", "fill", "line", "filled", "outline",
+                 "polyline", "row-new", "row-cached", "stripe", "page",
+                 "vblank", "present")
+        cpu = {}
+        for index, name in enumerate(names):
+            total, waits = figure(index)
+            cpu[name] = total - waits
+            print("gfx timing: %-10s cpu %8d wait %8d total %8d"
+                  % (name, total - waits, waits, total))
+        # The ceilings are the measured CPU figures + 10%, regression
+        # guards; each message names its target.
+        for name, ceiling, target in (
+                ("fill", PIN_FILL, "1,200"),
+                ("line", PIN_LINE, "1,500"),
+                ("filled", PIN_FILLED, "150,000"),
+                ("outline", PIN_OUTLINE, "250,000"),
+                ("polyline", PIN_POLYLINE, "200,000"),
+                ("row-cached", PIN_ROW_CACHED, "90,000"),
+                ("row-new", PIN_ROW_NEW, "100,000"),
+                ("stripe", PIN_FILL, "1,200"),
+                ("present", PIN_PRESENT, "report")):
+            self.assertLessEqual(cpu[name], ceiling,
+                                 "%s CPU %d (target %s)"
+                                 % (name, cpu[name], target))
         present = pairs[11][1] - pairs[11][0]
-        print("gfx timing: glyph %d fill %d line %d filled %d "
-              "outline %d polyline %d row-new %d row-cached %d "
-              "stripe %d page %d vblank %d present %d"
-              % (glyph, fill, line, filled, outline, polyline,
-                 row_new, row_cached, stripe, page_switch, vblank,
-                 present))
-        self.assertLessEqual(fill, 4200,
-                             "one command, queue + flush (target 1,200)")
-        self.assertLessEqual(line, 5200,
-                             "gfx_line, any octant (target 1,500)")
-        self.assertLessEqual(filled, 1795900,
-                             "filled circle r=50 (target 150,000)")
-        self.assertLessEqual(outline, 2810500,
-                             "outline circle r=50 (target 250,000)")
-        # Package 96's workloads: the ceilings are the measured
-        # figures + 10%, regression guards.
-        self.assertLessEqual(polyline, 798100,
-                             "the 128-segment scope")
-        self.assertLessEqual(row_cached, 257700,
-                             "the cached 128-glyph row (target 100,000)")
-        self.assertLessEqual(row_new, 395200,
-                             "the uncached row (the pair table build)")
-        self.assertLessEqual(stripe, 4200,
-                             "the 512x6 stripe fill, queue only")
-        self.assertLessEqual(present, 6600,
-                             "the partial present's CPU")
         # The page switch: its R#2 write landed inside the retrace,
         # and the switch back put page 0 on display.
         _write_at, value, clock = peer.page2_writes[-1]
@@ -1594,6 +1576,23 @@ class TestGfxTiming(GfxReplay):
         fresh = self.trace(z, since)
         self.assertIn("gfxtest: timing PASS", fresh)
         self.assert_hold_sequence(ops)
+
+
+# The timing ceilings: the measured CPU figures (engine waits out) +
+# 10%.
+PIN_FILL = 2050
+PIN_LINE = 1860
+PIN_FILLED = 301300
+PIN_OUTLINE = 346100
+PIN_POLYLINE = 288700
+PIN_ROW_CACHED = 83300
+PIN_ROW_NEW = 85400
+PIN_PRESENT = 4800
+PIN_ATLAS_ROW = 83200
+PIN_ATLAS_G6S = 13500
+PIN_ATLAS_BUILD = 80800
+PIN_ATLAS_TRANS = 9100
+PIN_ATLAS_G7 = 14400
 
 
 # 60 Hz at the emulated 10 MHz CPU; the retrace is the frame's last
@@ -2323,25 +2322,37 @@ class TestGfxAtlas(GfxReplay):
                  if reg == 16 and _value == 15][2:]
         self.assertGreaterEqual(len(marks), 14, marks)
         pairs = list(zip(marks[::2], marks[1::2]))
+        reads = [now for now, _ce, _vr in peer.status_reads]
+
+        def cpu(start, end):
+            """The window's CPU T-states with the engine waits (runs of
+            back-to-back status polls) taken out."""
+            inside = [t for t in reads if start <= t < end]
+            return (end - start) - sum(
+                after - before for before, after in zip(inside, inside[1:])
+                if after - before <= 48)
         row128, g6s, build, trans4, stale, g7opaque, g7trans = \
-            (b - a for a, b in pairs)
-        print("gfx atlas: 128-row %d g6s %d build %d transparent4 %d "
+            (cpu(a, b) for a, b in pairs)
+        print("gfx atlas cpu: 128-row %d g6s %d build %d transparent4 %d "
               "stale %d g7opaque %d g7transparent4 %d"
               % (row128, g6s, build, trans4, stale, g7opaque,
                  g7trans))
-        self.assertLessEqual(row128, 255500,
-                             "the full 4x6 row (target 100,000)")
-        self.assertLessEqual(row128, 128 * 2000,
-                             "per-glyph 4x6 G6 (target 700)")
-        self.assertLessEqual(g6s, 61100,
-                             "opaque 6x8 G6, cached pair "
-                             "(target 1,000 per glyph)")
-        self.assertLessEqual(g7opaque, 37400,
-                             "opaque 4x6 G7 (target 1,000 per glyph)")
-        self.assertLessEqual(trans4, 47400,
-                             "transparent G6 (target 1,000 per glyph)")
-        self.assertLessEqual(g7trans, 45100,
-                             "transparent G7 (target 1,000 per glyph)")
+        # The ceilings are the measured CPU figures + 10%, regression
+        # guards; each message names its target.
+        for name, figure, ceiling, target in (
+                ("the full 128-glyph 4x6 row", row128, PIN_ATLAS_ROW,
+                 "90,000"),
+                ("opaque 6x8 G6, 8 glyphs", g6s, PIN_ATLAS_G6S, "8,000"),
+                ("the 95-glyph atlas build", build, PIN_ATLAS_BUILD,
+                 "150,000"),
+                ("transparent G6, 4 glyphs", trans4, PIN_ATLAS_TRANS,
+                 "4,000"),
+                ("opaque 4x6 G7, 6 glyphs", g7opaque, PIN_ATLAS_G7,
+                 "6,000"),
+                ("transparent G7, 4 glyphs", g7trans, PIN_ATLAS_TRANS,
+                 "4,000")):
+            self.assertLessEqual(figure, ceiling, "%s CPU %d (target %s)"
+                                 % (name, figure, target))
 
         z.hid.hid_queue.extend(b"x")
         self.run_recording(z, ops, lambda z:

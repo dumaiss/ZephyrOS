@@ -22,7 +22,7 @@ bootstrap:
 	mkdir -p build
 	rm -rf "$(KOS_SDK_ROOT)"
 	tar -xzf "$(KOS_SDK_ARCHIVE)" -C build
-	@touch "$(KOS_SDK_ROOT)/lib/libkos.lib" "$(KOS_SDK_ROOT)/lib/crt0.rel"
+	@touch "$(KOS_SDK_ROOT)"/lib/*
 	@printf '%s\n' "$(KOS_SDK_HASH)" > build/.kos-sdk-sha256
 	$(MAKE) --no-print-directory KOS_SDK_ROOT="$(abspath $(KOS_SDK_ROOT))" all
 

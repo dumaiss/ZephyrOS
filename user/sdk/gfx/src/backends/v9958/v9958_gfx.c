@@ -1,9 +1,10 @@
 /* libgfx V9958 backend (user/sdk/gfx/src/backends/v9958/).
  *
- * Mode setup, the display switch and the primitives' command engine,
- * in C over the assembly port layer (v9958_io.asm owns every A0h-A4h
- * access).  The ports come from the KVIDEO_OP_DIRECT_INFO record, not
- * from board constants; the register numbers are V9958 facts.
+ * Mode setup, the display switch, the page switch and the palette, in
+ * C over the assembly port layer (v9958_io.asm owns every A0h-A4h
+ * access; the drawing itself is the gfx_*.asm modules).  The ports
+ * come from the KVIDEO_OP_DIRECT_INFO record, not from board
+ * constants; the register numbers are V9958 facts.
  *
  * gfx_set_mode's register set mirrors the proven bring-up baseline
  * (drivers/v9958/v9958.c v9958_init_g6) through native-WAIT writes:
@@ -15,7 +16,7 @@
  * the hardware WAIT is on, so no write is software-paced.
  *
  * The tables are const (a program cannot hold an initialized
- * non-const static array); the command blocks are built on the stack.
+ * non-const static array).
  */
 
 #include "kos/gfx.h"
@@ -53,9 +54,9 @@ static const uint8_t v9958_common_regs[][2] = {
 	(sizeof(v9958_common_regs) / sizeof(v9958_common_regs[0]))
 
 /* Load the ports the record reported into the assembly layer's bytes:
- * the backend reaches the command, indirect, data and palette ports
- * through them. */
-static void v9958_load_ports(const struct kvideo_direct_info *info)
+ * the backend and the drawing assembly reach the command, indirect,
+ * data and palette ports through them (gfx_open loads them). */
+void v9958_load_ports(const struct kvideo_direct_info *info)
 {
 	gfx_v9958_port_cmd = info->command_port;
 	gfx_v9958_port_indirect = info->indirect_port;
@@ -93,70 +94,6 @@ void v9958_display_enable(struct gfx_state *state, uint8_t enabled)
 	v9958_load_ports(&state->info);
 	gfx_v9958_io_reg(enabled != 0u ? GFX_V9958_R1_DISPLAY_ON :
 			 GFX_V9958_R1_DISPLAY_OFF, GFX_V9958_REG_R1);
-}
-
-/* Adjust one HMMM record in place before the assembly builder: when
- * the source sits left of (or above) the destination the overlapping
- * rows (or columns) must copy from the far edge, so DIX (or DIY) is
- * set in flags and sx/sy/dx/dy carry each rectangle's far edge;
- * otherwise the near edge and the forward direction.  Coordinates
- * are dots, 9-bit for the 512-dot axis and the 512-line space. */
-static void v9958_hmmm_adjust(struct gfx_cmd *record)
-{
-	if (record->sx < record->dx) {
-		record->flags |= GFX_V9958_CMD_DIX;
-		record->sx = (uint16_t)(record->sx + record->width - 1u);
-		record->dx = (uint16_t)(record->dx + record->width - 1u);
-	}
-	if (record->sy < record->dy) {
-		record->flags |= GFX_V9958_CMD_DIY;
-		record->sy = (uint16_t)(record->sy + record->height - 1u);
-		record->dy = (uint16_t)(record->dy + record->height - 1u);
-	}
-}
-
-/* Execute `count` records in order: one command per record, each one
- * built and started by the assembly builders (the block build and the
- * R#32-46 write live there: one R#17 select, then OUTI/OTIR).  The
- * builders wait for the engine before each command; the batch returns
- * as soon as its last command is issued, with the VDP still drawing,
- * so the CPU runs while the engine finishes (gfx_wait waits for it). */
-void v9958_run_batch(struct gfx_state *state, const struct gfx_cmd *cmds,
-		     uint8_t count)
-{
-	struct gfx_cmd record;
-	uint8_t i;
-
-	gfx_v9958_g6 = state->mode == (uint8_t)GFX_MODE_512x212_16 ? 1u : 0u;
-	v9958_load_ports(&state->info);
-	for (i = 0u; i < count; ++i) {
-		switch (cmds[i].opcode) {
-		case GFX_CMD_FILL:
-			if (cmds[i].reserved != 0u) {
-				gfx_v9958_io_run_lmmv(&cmds[i]);
-			} else {
-				gfx_v9958_io_run_hmmv(&cmds[i]);
-			}
-			break;
-		case GFX_CMD_COPY:
-			record = cmds[i];
-			v9958_hmmm_adjust(&record);
-			gfx_v9958_io_run_hmmm(&record);
-			break;
-		case GFX_CMD_LINE:
-			gfx_v9958_io_run_line(&cmds[i]);
-			break;
-		case GFX_CMD_SPAN:
-			gfx_v9958_io_run_lmmv(&cmds[i]);
-			break;
-		case GFX_CMD_GLYPH:
-			gfx_v9958_io_run_lmmm(&cmds[i]);
-			break;
-		default:
-			gfx_v9958_io_run_pset(&cmds[i]);
-			break;
-		}
-	}
 }
 
 /* Wait for the command engine: gfx_wait, and the CPU VRAM paths that

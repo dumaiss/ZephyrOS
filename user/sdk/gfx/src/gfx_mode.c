@@ -3,8 +3,9 @@
  * gfx_set_mode establishes a complete known register state from any
  * VDP state, with the display off; gfx_display_enable is the only call
  * that turns it on.  gfx_show_page switches the displayed page at the
- * next vertical blank; gfx_wait_vblank waits for one.  All go straight
- * to the backend: no VIDEO IPC.
+ * next vertical blank; gfx_wait_vblank waits for one; gfx_wait waits
+ * for the command engine, and gfx_timing_mark writes the timing replay's
+ * marker.  All go straight to the backend: no VIDEO IPC.
  */
 
 #include "kos.h"
@@ -50,6 +51,12 @@ int gfx_set_mode(enum gfx_mode mode)
 		gfx_state.height = GFX_HEIGHT;
 		gfx_state.bpp = GFX_BPP_G7;
 	}
+	/* The drawing assembly's view of the mode. */
+	gfx_draw_mode = (uint8_t)mode;
+	gfx_draw_width = gfx_state.width;
+	gfx_draw_shape = mode == GFX_MODE_256x212_256 ? 2u :
+		mode == GFX_MODE_512x212_16 ? 1u : 0u;
+	gfx_draw_ready = 1u;
 	return 0;
 }
 
@@ -93,4 +100,21 @@ int gfx_wait_vblank(void)
 	}
 	v9958_wait_vblank(&gfx_state);
 	return 0;
+}
+
+int gfx_wait(void)
+{
+	if (gfx_state.video_handle == 0) {
+		return -KOS_EINVAL;
+	}
+	v9958_wait_command(&gfx_state);
+	return 0;
+}
+
+void gfx_timing_mark(void)
+{
+	if (gfx_state.video_handle == 0) {
+		return;
+	}
+	gfx_v9958_io_reg(15u, GFX_V9958_REG_R16);
 }

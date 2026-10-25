@@ -1,11 +1,17 @@
 /* libgfx private state and the V9958 backend interface.  Not part of
  * the public SDK surface: a program includes only kos/gfx.h.
  *
+ * Every routine that draws or moves pixels is assembly
+ * (backends/v9958/gfx_*.asm, docs/gfx-sdk.md 2.6); the C side is the
+ * setup: open/close, the mode, the display, the palette, the fonts'
+ * tables and the atlas layout.  The drawing state the assembly tests
+ * lives in the assembly (gfx_cmd.asm); C writes it at open, mode set and
+ * close.
+ *
  * One graphics context per process, held in the one module-level
  * gfx_state.  The whole block is BSS (programs hold no initialized
  * non-const statics), so a closed context is video_handle == 0 (bind
- * returns handles >= 1) and an unset mode is mode_set == 0; the mode
- * geometry follows gfx_set_mode.
+ * returns handles >= 1) and an unset mode is mode_set == 0.
  */
 
 #ifndef KOS_SDK_GFX_INTERNAL_H
@@ -19,97 +25,6 @@
 #define GFX_BPP_G6    4u
 #define GFX_BPP_G7    8u
 
-/* The command queue: one 16-byte record per drawing call, 32 records
- * (512 bytes of the process's data), flushed automatically when full;
- * begin/end nest to at most this depth. */
-#define GFX_BATCH_ENTRIES  32u
-#define GFX_BATCH_DEPTH_MAX 8u
-
-/* The ellipse expansion's span scratch (gfx_shapes.c): the midpoint
- * walk tracks each scanline's leftmost and rightmost visited dot;
- * the emit pass turns them into one fill span per scanline and the
- * two outline boundary dots. */
-#define GFX_SPAN_RECORDS 1u
-#define GFX_SPAN_LINES    512u
-
-struct gfx_span_set {
-	uint16_t first[GFX_SPAN_LINES];
-	uint16_t last[GFX_SPAN_LINES];
-	uint16_t count[GFX_SPAN_LINES];
-};
-
-/* The record opcodes (struct gfx_cmd.opcode).  FILL and COPY take
- * the GFX_OP_COPY/GFX_OP_XOR operation in `flags`; LINE, PSET and
- * GLYPH carry the VDP op nibble there too (GFX_V9958_OP_*). */
-#define GFX_CMD_FILL 1u
-#define GFX_CMD_COPY 2u
-#define GFX_CMD_LINE 3u
-#define GFX_CMD_SPAN 4u   /* one horizontal LMMV run (ellipse pieces) */
-#define GFX_CMD_POINT 5u
-#define GFX_CMD_GLYPH 6u  /* one transparent LMMM (atlas cell) */
-
-/* The VDP logical-operation nibbles for the drawing commands: IMP
- * (copy), EOR (xor) and TIMP (transparent copy).  gfx_op's
- * GFX_OP_COPY is 0 and GFX_OP_XOR 1, so `flags` carries the op
- * nibble directly. */
-#define GFX_V9958_OP_IMP 0x0u
-#define GFX_V9958_OP_EOR 0x3u
-#define GFX_V9958_OP_TIMP 0x8u
-
-/* The built-in 6x8 CP850 font (gfx_font.c): 256 glyphs, eight row
- * bytes each, active pixels in bits 7..2; gfx_open copies the const
- * table into the RAM font. */
-#define GFX_FONT_GLYPH_BYTES   8u
-#define GFX_FONT_GLYPH_COUNT   256u
-#define GFX_FONT_SIZE          (GFX_FONT_GLYPH_BYTES * GFX_FONT_GLYPH_COUNT)
-#define GFX_FONT_GLYPH_WIDTH   6u
-#define GFX_FONT_GLYPH_HEIGHT  8u
-
-/* The built-in 4x6 CP850 font (gfx_font4.c): 256 glyphs, six row
- * bytes each, active pixels in bits 7..4.  The RAM copy (and the
- * const table) store glyphs at an 8-byte stride - the six rows then
- * two pads - so the text row loop's glyph addressing is one shift in
- * both fonts. */
-#define GFX_FONT4_GLYPH_BYTES  6u
-#define GFX_FONT4_GLYPH_STRIDE 8u
-#define GFX_FONT4_SIZE         (GFX_FONT4_GLYPH_STRIDE * GFX_FONT_GLYPH_COUNT)
-#define GFX_FONT4_GLYPH_WIDTH  4u
-#define GFX_FONT4_GLYPH_HEIGHT 6u
-
-/* The G6 text expansion's pair cache: this many recent colour pairs,
- * each three 256-entry pages (one per output byte of a glyph row).
- * The size is recorded in the package's validation record. */
-#define GFX_TEXT_CACHE_ENTRIES 2u
-
-struct gfx_text_cache_entry {
-	uint8_t active;            /* 1 after the first build */
-	uint8_t fg;
-	uint8_t bg;
-	uint8_t pages[3][256];
-};
-
-/* One batched drawing call: the design's fixed-size backend-
- * independent record (docs/gfx-sdk.md 9.1). */
-struct gfx_cmd {
-	uint8_t opcode;
-	uint8_t flags;
-	uint16_t sx;
-	uint16_t sy;
-	uint16_t dx;
-	uint16_t dy;
-	uint16_t width;
-	uint16_t height;
-	uint8_t color;
-	uint8_t reserved;
-};
-
-#if defined(__SDCC)
-_Static_assert(sizeof(struct gfx_cmd) == 16, "gfx_cmd is 16 bytes");
-_Static_assert(GFX_BATCH_ENTRIES == 32, "the batch holds 32 records");
-_Static_assert(GFX_FONT_SIZE == 2048, "the font is 2048 bytes");
-_Static_assert(GFX_FONT4_SIZE == 2048, "the 4x6 RAM font is 2048 bytes");
-#endif /* __SDCC */
-
 struct gfx_state {
 	int video_handle;              /* 0 while closed, >= 1 the handle */
 	uint8_t backend;               /* KVIDEO_BACKEND_*         */
@@ -121,130 +36,114 @@ struct gfx_state {
 	uint16_t height;
 	uint8_t bpp;
 	struct kvideo_direct_info info; /* the record gfx_open asked */
-
-	/* The streaming upload's position (gfx_upload.c). */
-	uint8_t upload_active;
-	uint8_t upload_full_width;     /* one address covers the transfer */
-	uint8_t upload_addressed;      /* the full-width address is set   */
-	uint8_t upload_page;           /* y >> 8                          */
-	uint8_t upload_row;            /* y & 0xFF                        */
-	uint16_t upload_col_byte;      /* the byte column inside the row  */
-	uint16_t upload_row_bytes;     /* payload bytes per row           */
-	uint16_t upload_row_left;      /* bytes left in the current row   */
-	uint16_t upload_remaining;     /* bytes left of the whole upload  */
-
-	/* The drawing batch (gfx_batch.c): begin/end nest to
-	 * GFX_BATCH_DEPTH_MAX; a record queued at count ==
-	 * GFX_BATCH_ENTRIES flushes the queue first. */
-	uint8_t batch_depth;
-	uint8_t batch_count;
-	struct gfx_cmd batch_queue[GFX_BATCH_ENTRIES];
-
-	/* The RAM font (gfx_font.c): the built-in's mutable copy, made at
-	 * gfx_open; the glyph calls change these bytes. */
-	uint8_t font_ram[GFX_FONT_SIZE];
-
-	/* The G6 text expansion's pair cache (gfx_text.c): the most
-	 * recent colour pairs, round-robin. */
-	struct gfx_text_cache_entry text_cache[GFX_TEXT_CACHE_ENTRIES];
-	uint8_t text_cache_next;
-
-	/* The redefined-glyph marks (gfx_font.c/gfx_font4.c set a glyph's
-	 * bit; gfx_atlas.c clears it once every atlas redraws the cell):
-	 * one bit per code, per font, so a stale glyph is redrawn into
-	 * each atlas at its next transparent use. */
-	uint8_t font_stale6[32];
-	uint8_t font_stale4[32];
-
-	/* The ellipse span scratch (gfx_shapes.c): the midpoint walk's
-	 * per-scanline bounds and the span submission's staging
-	 * record. */
-	struct gfx_span_set spans;
-	struct gfx_cmd span_record;
 };
 
 extern struct gfx_state gfx_state;
 
-/* --- the text path (gfx_text.c) -------------------------------------- */
+/* --- the drawing state (gfx_cmd.asm) --------------------------------- */
 
-/* The scanline-major opaque emit: one call per scanline of a string
- * holds the row's arguments, and the assembly loop streams every
- * glyph's row bytes through the data port (one VRAM address per
- * scanline, set once by the C side).  `table` is the G6 expansion:
- * for the 6x8 the pair cache's three 256-byte pages; for the 4x6 the
- * pair table's 32 bytes.  `mode` selects the expansion:
- * 0 G6 6x8, 1 G6 4x6, 2 G7 6x8, 3 G7 4x6. */
-struct gfx_text_row_args {
-	const uint8_t *text;       /* the string's codes */
-	const uint8_t *font;       /* the RAM font's base + row */
-	const uint8_t *table0;     /* the G6 expansion (page 0 or the
-				     4x6 pair table) */
-	const uint8_t *table1;     /* the G6 expansion's page 1 */
-	const uint8_t *table2;     /* the G6 expansion's page 2 */
-	uint8_t count;             /* glyphs in the row */
-	uint8_t mode;              /* the expansion selector */
-	uint8_t fg;                /* the G7 colours */
-	uint8_t bg;
-};
+extern uint8_t gfx_draw_open;      /* 1 while the handle is held */
+extern uint8_t gfx_draw_ready;     /* 1 while open with a mode set */
+extern uint8_t gfx_draw_mode;      /* enum gfx_mode */
+extern uint16_t gfx_draw_width;    /* the mode's width in dots */
+extern uint8_t gfx_draw_shape;     /* 2 G7, 1 G6, 0 no shapes (YJK/none) */
+extern uint8_t gfx_batch_depth;    /* gfx_begin nesting */
+extern uint8_t gfx_batch_count;    /* queued command blocks */
 
-/* The assembly row loop (backends/v9958/v9958_io.asm). */
-void gfx_v9958_io_text_row(const struct gfx_text_row_args *args);
+/* --- the fonts (gfx_font.c, gfx_font4.c) ------------------------------
+ *
+ * The RAM fonts are row-major: one 256-byte page per glyph row, indexed
+ * by the character code, so the text loop reaches a glyph's row with the
+ * code alone.  A row byte holds the row's pixels pre-scaled as an index
+ * into the colour pair's expansion table: the 6x8's six pixels (bit 5
+ * the left) times 4, the 4x6's four pixels (bit 3 the left) times 2.
+ * The pages, and the two pages of the expansion tables the text path
+ * builds per colour pair, are 256-byte aligned inside one area. */
+#define GFX_FONT_GLYPH_BYTES   8u
+#define GFX_FONT_GLYPH_COUNT   256u
+#define GFX_FONT_SIZE          (GFX_FONT_GLYPH_BYTES * GFX_FONT_GLYPH_COUNT)
+#define GFX_FONT_GLYPH_WIDTH   6u
+#define GFX_FONT_GLYPH_HEIGHT  8u
 
-/* One opaque glyph cell through the scanline emit (gfx_text.c); the
- * atlas build and the stale redraws draw with it. */
-void gfx_text_emit_glyph(uint16_t x, uint16_t y, uint8_t code,
-			 uint8_t fg, uint8_t bg, uint8_t font);
+/* The const 4x6 table stores glyphs at an 8-byte stride (six rows, two
+ * pads), as the asset generator emits it. */
+#define GFX_FONT4_GLYPH_BYTES  6u
+#define GFX_FONT4_GLYPH_STRIDE 8u
+#define GFX_FONT4_SIZE         (GFX_FONT4_GLYPH_STRIDE * GFX_FONT_GLYPH_COUNT)
+#define GFX_FONT4_GLYPH_WIDTH  4u
+#define GFX_FONT4_GLYPH_HEIGHT 6u
 
-/* Install the built-in 6x8 font into the RAM font (gfx_open calls
- * this, so opening a fresh context always starts from the built-in). */
+#define GFX_FONT6_PAGES  8u
+#define GFX_FONT4_PAGES  6u
+#define GFX_PAIR_PAGES   2u
+#define GFX_TEXT_PAGES   (GFX_FONT6_PAGES + GFX_FONT4_PAGES + GFX_PAIR_PAGES)
+
+#if defined(__SDCC)
+_Static_assert(GFX_FONT_SIZE == 2048, "the font is 2048 bytes");
+_Static_assert(GFX_FONT4_SIZE == 2048, "the 4x6 table is 2048 bytes");
+#endif /* __SDCC */
+
+/* The pages' high bytes (gfx_font.c sets them at gfx_open). */
+extern uint8_t gfx_font6_page;
+extern uint8_t gfx_font4_page;
+extern uint8_t gfx_pair_page;
+
+/* Install the built-in 6x8 font into its RAM pages (gfx_open calls this,
+ * so opening a fresh context always starts from the built-in). */
 void gfx_font_install(void);
 
-/* The 4x6 font (gfx_font4.c): the lazy RAM copy, the glyph calls'
- * dispatch and the G6 pair table. */
+/* The 4x6 RAM pages, made at the font's first use (the text path calls
+ * this), and the glyph calls' bodies. */
 void gfx_font4_install(void);
-uint8_t *gfx_font4_ram(void);
-const uint8_t *gfx_font4_builtin(void);
 int gfx_font4_set_glyph(uint8_t code, const uint8_t rows[6]);
 int gfx_font4_reset_glyph(uint8_t code);
-const uint8_t *gfx_font4_pair(uint8_t fg, uint8_t bg);
+void gfx_font4_reset(void);
 
 /* The 6x8 glyph calls' bodies (gfx_font.c), behind the dispatch in
- * gfx_font4.c so 6x8-only programs link no 4x6 member. */
+ * gfx_font4.c. */
 int gfx_font_set_glyph6(uint8_t code, const uint8_t rows[8]);
 int gfx_font_reset_glyph6(uint8_t code);
 void gfx_font_reset6(void);
 
-/* The glyph atlas (gfx_atlas.c): the transparent path's state, the
- * per-colour builds and the per-glyph LMMM records. */
+/* The redefined-glyph marks (gfx_font4.c sets a glyph's bit; the atlas
+ * draw clears it once every atlas redraws the cell): one bit per code,
+ * per font. */
+extern uint8_t gfx_font_stale6[32];
+extern uint8_t gfx_font_stale4[32];
+
+/* --- the glyph atlas (gfx_atlas.c lays it out; gfx_atlas_draw.asm) ---- */
+
+#define GFX_ATLAS_SLOTS_MAX 8u
+#define GFX_ATLAS_SLOT_FREE 0xFFu
+
+extern uint8_t gfx_atlas_active;   /* 1 after a successful setup */
+extern uint8_t gfx_atlas_mode;     /* the setup's mode (packing changes) */
+extern uint8_t gfx_atlas_font;     /* GFX_FONT_* */
+extern uint8_t gfx_atlas_gw;       /* the glyph width, 4 or 6 dots */
+extern uint8_t gfx_atlas_ch;       /* the cell height, 6 or 8 lines */
+extern uint8_t gfx_atlas_first;
+extern uint16_t gfx_atlas_count;
+extern uint8_t gfx_atlas_per_row;  /* glyphs per atlas row */
+extern uint8_t gfx_atlas_rows;     /* atlas rows of glyphs */
+extern uint8_t gfx_atlas_slots;    /* atlases the band holds */
+extern uint8_t gfx_atlas_lru_next;
+extern uint8_t gfx_atlas_slot_color[GFX_ATLAS_SLOTS_MAX]; /* FREE or colour */
+extern uint8_t gfx_atlas_slot_lru[GFX_ATLAS_SLOTS_MAX];   /* higher: recent */
+extern uint16_t gfx_atlas_slot_y[GFX_ATLAS_SLOTS_MAX];    /* each slot's top */
+extern uint16_t gfx_atlas_cell_x[256]; /* per range index: the cell's x */
+extern uint8_t gfx_atlas_cell_y[256];  /* and its line inside the slot */
+
 int gfx_atlas_setup(enum gfx_font font, uint16_t y, uint16_t lines,
 		    uint8_t first, uint16_t count);
-int gfx_atlas_draw(uint16_t x, uint16_t y, const char *text,
-		   uint16_t length, uint8_t fg);
-
-/* The shape rule shared with gfx_shapes.c: the mode's full width and
- * bounds, and the 512-line space's rows.  A return <= 0 is the result
- * to hand back. */
-int gfx_rect_ready(uint16_t x, uint16_t width);
-int gfx_rect_check_y(uint16_t y, uint16_t height);
-
-/* --- the shared batch path (gfx_batch.c) ----------------------------- */
-
-/* Append one validated record: executed at once outside a batch,
- * queued inside (the queue flushes itself when full). */
-void gfx_batch_submit(const struct gfx_cmd *cmd);
 
 /* --- the V9958 backend (backends/v9958/v9958_gfx.c) ------------------ */
 
+void v9958_load_ports(const struct kvideo_direct_info *info);
 void v9958_set_mode(struct gfx_state *state, enum gfx_mode mode);
 void v9958_display_enable(struct gfx_state *state, uint8_t enabled);
 void v9958_set_palette(struct gfx_state *state, uint8_t first,
 		       uint8_t count, const struct gfx_rgb *colors);
-/* Execute `count` queued records in order, each as its own command.
- * The engine is waited for before each one starts; the batch returns
- * with its last command still drawing (asynchronous execution). */
-void v9958_run_batch(struct gfx_state *state, const struct gfx_cmd *cmds,
-		     uint8_t count);
-/* Wait for the command engine (gfx_wait and the CPU VRAM paths). */
+/* Wait for the command engine (gfx_wait and the setup paths). */
 void v9958_wait_command(struct gfx_state *state);
 /* Wait for the start of the next vertical retrace. */
 void v9958_wait_vblank(struct gfx_state *state);
@@ -253,30 +152,22 @@ void v9958_show_page(struct gfx_state *state, uint8_t page);
 
 /* --- the backend's port layer (backends/v9958/v9958_io.asm) ----------
  *
- * Every A0h-A4h access the backend makes lives in the assembly file;
- * the ports are the record's, mirrored into these bytes at mode setup,
- * so the OUT forms can use them.  The shape builders build one
- * command block each from a `struct gfx_cmd` and issue it through the
- * indirect port (one R#17 select, then OUTI/OTIR); `g6` tells them
- * the mode, so a GRAPHIC 6 colour packs two 4-bit pixels. */
+ * The ports are the record's, mirrored into these bytes at gfx_open, so
+ * the OUT forms can use them. */
 extern uint8_t gfx_v9958_port_cmd;
 extern uint8_t gfx_v9958_port_indirect;
 extern uint8_t gfx_v9958_port_data;
 extern uint8_t gfx_v9958_port_palette;
-extern uint8_t gfx_v9958_g6;
 void gfx_v9958_io_reg(uint8_t value, uint8_t reg);
 void gfx_v9958_io_wait_command(void);
 void gfx_v9958_io_wait_vblank(void);
-void gfx_v9958_io_start_command(const uint8_t *cmd);
-void gfx_v9958_io_run_hmmv(const struct gfx_cmd *cmd);
-void gfx_v9958_io_run_hmmm(const struct gfx_cmd *cmd);
-void gfx_v9958_io_run_line(const struct gfx_cmd *cmd);
-void gfx_v9958_io_run_pset(const struct gfx_cmd *cmd);
-void gfx_v9958_io_run_lmmv(const struct gfx_cmd *cmd);
-void gfx_v9958_io_run_lmmm(const struct gfx_cmd *cmd);
 void gfx_v9958_io_set_vram(uint8_t r14, uint16_t offset);
 void gfx_v9958_io_stream_vram(const uint8_t *src, uint16_t length);
 void gfx_v9958_io_palette_byte(uint8_t value);
+/* Lay a const font out in its row-major RAM pages (the 6x8 or the 4x6
+ * row byte encoding above). */
+void gfx_font_transpose6(uint8_t page, const uint8_t *src);
+void gfx_font_transpose4(uint8_t page, const uint8_t *src);
 
 /* V9958 register numbers (V9958 facts, private to the backend). */
 #define GFX_V9958_REG_R0  0u
@@ -308,46 +199,8 @@ void gfx_v9958_io_palette_byte(uint8_t value);
 #define GFX_V9958_R25_WAIT_ON  0x04u
 #define GFX_V9958_R25_YJK      0x08u /* R#25 bit 3; bit 4 (10h) is YAE */
 
-/* The VRAM address's second command-port byte sets A16's home in R#14
- * (the 64Kx4 DRAM page). */
-#define GFX_V9958_VRAM_ADDR_HI 0x40u
-
-/* The command engine. */
-#define GFX_V9958_CMD_REGISTER_BASE 32u
-#define GFX_V9958_CMD_REGISTER_COUNT 15u
-#define GFX_V9958_CMD_HMMV 0xC0u
-#define GFX_V9958_CMD_HMMM 0xD0u
-#define GFX_V9958_CMD_LINE 0x70u
-#define GFX_V9958_CMD_PSET 0x50u
-#define GFX_V9958_CMD_LMMV 0x80u
+/* The command engine (the drawing assembly holds the command codes). */
 #define GFX_V9958_STATUS2_CE 0x01u
 #define GFX_V9958_STATUS2_VR 0x40u
-
-/* The LINE command's ARG bits: MAJ marks the major axis along Y (the
- * long side is X when clear), DIX/DIY step against the dot order. */
-#define GFX_V9958_CMD_MAJ 0x01u
-
-/* The 15-byte command block's offsets (R#32..R#46). */
-#define GFX_V9958_CMD_SX_LO  0u
-#define GFX_V9958_CMD_SX_HI  1u
-#define GFX_V9958_CMD_SY_LO  2u
-#define GFX_V9958_CMD_SY_HI  3u
-#define GFX_V9958_CMD_DX_LO  4u
-#define GFX_V9958_CMD_DX_HI  5u
-#define GFX_V9958_CMD_DY_LO  6u
-#define GFX_V9958_CMD_DY_HI  7u
-#define GFX_V9958_CMD_NX_LO  8u
-#define GFX_V9958_CMD_NX_HI  9u
-#define GFX_V9958_CMD_NY_LO  10u
-#define GFX_V9958_CMD_NY_HI  11u
-#define GFX_V9958_CMD_CLR    12u
-#define GFX_V9958_CMD_ARG    13u
-#define GFX_V9958_CMD_CODE   14u
-
-/* The HMMM argument's direction bits: DIX copies the rows right to
- * left, DIY the columns bottom to top (the block then carries each
- * rectangle's far edge). */
-#define GFX_V9958_CMD_DIX 0x04u
-#define GFX_V9958_CMD_DIY 0x08u
 
 #endif /* KOS_SDK_GFX_INTERNAL_H */

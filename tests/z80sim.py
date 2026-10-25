@@ -254,6 +254,10 @@ class IocCommandPeer:
         self.fs2_files = {}
         # Two file slots and one directory slot (CAPS v1).
         self.fs2_slots = [None, None]   # [path, writable, cookie]
+        # A file open for writing keeps its directory entry's size until
+        # a sync or the close (FatFs updates the entry then), and STAT
+        # and READDIR read the entry: path -> the committed size.
+        self.fs2_committed = {}
         self.fs2_cookies = [1, 1]
         self.fs2_dir = None             # [path, cookie] or None
         self.fs2_dir_cookie = 1
@@ -689,6 +693,7 @@ class IocCommandPeer:
         context (the firmware's fs2_media_invalidated)."""
         self.fs2_generation = (self.fs2_generation % 0xFFFFFFFF) + 1
         self.fs2_slots = [None, None]
+        self.fs2_committed = {}
         self.fs2_dir = None
         self.fs2_resolver = []
 
@@ -734,11 +739,19 @@ class IocCommandPeer:
                 out.append((d[-1], True, 0))
         for f, content in self.fs2_files.items():
             if len(f) == len(path) + 1 and f[:len(path)] == path:
-                out.append((f[-1], False, len(content)))
+                out.append((f[-1], False, self._fs2_entry_size(f)))
         return sorted(out)
+
+    def _fs2_entry_size(self, path):
+        """The size the file's directory entry holds: the committed size
+        while it is open for writing, else its content's."""
+        if path in self.fs2_committed:
+            return self.fs2_committed[path]
+        return len(self.fs2_files[path])
 
     def _fs2_close_all(self):
         self.fs2_slots = [None, None]
+        self.fs2_committed = {}
 
     def _build_fs2_reply(self, rtype, seq, data):
         self.fs2_counts[rtype] += 1
@@ -872,6 +885,8 @@ class IocCommandPeer:
             return self._fs2_reply(rtype, seq, self.ST_FS2_NO_HANDLE)
         self.fs2_cookies[slot] = (self.fs2_cookies[slot] % 255) + 1
         self.fs2_slots[slot] = [path, writable, self.fs2_cookies[slot]]
+        if writable:
+            self.fs2_committed[path] = len(self.fs2_files[path])
         out = bytearray(7)
         out[0:2] = self._fs2_token(slot, self.fs2_cookies[slot]).to_bytes(
             2, "little")
@@ -984,6 +999,8 @@ class IocCommandPeer:
         if entry is None:
             return self._fs2_reply(self.CMD_FS2_CLOSE, seq, status)
         self.fs2_slots[(token & 0xFF) - 1] = None
+        if entry[1]:
+            self.fs2_committed.pop(entry[0], None)
         return self._fs2_reply(self.CMD_FS2_CLOSE, seq, self.ST_FS2_OK)
 
     def _fs2_sync(self, seq, data):
@@ -991,6 +1008,8 @@ class IocCommandPeer:
         entry, status = self._fs2_file_for(token)
         if entry is None:
             return self._fs2_reply(self.CMD_FS2_SYNC, seq, status)
+        if entry[1]:
+            self.fs2_committed[entry[0]] = len(self.fs2_files[entry[0]])
         return self._fs2_reply(self.CMD_FS2_SYNC, seq, self.ST_FS2_OK)
 
     def _fs2_truncate(self, seq, data):
@@ -1015,7 +1034,7 @@ class IocCommandPeer:
             return self._fs2_reply(self.CMD_FS2_STAT, seq, self.ST_FS2_OK, out)
         if path in self.fs2_files:
             out = bytearray(5)
-            out[0:4] = len(self.fs2_files[path]).to_bytes(4, "little")
+            out[0:4] = self._fs2_entry_size(path).to_bytes(4, "little")
             return self._fs2_reply(self.CMD_FS2_STAT, seq, self.ST_FS2_OK, out)
         return self._fs2_reply(self.CMD_FS2_STAT, seq, self.ST_FS2_NOT_FOUND)
 

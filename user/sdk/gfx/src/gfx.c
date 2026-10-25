@@ -70,8 +70,12 @@ int gfx_open(void)
 	gfx_state.backend = info.backend;
 	gfx_state.caps = info.flags;
 	gfx_state.info = info;
+	/* The drawing assembly reaches the ports through the mirrored
+	 * bytes from here on. */
+	v9958_load_ports(&gfx_state.info);
 	/* The RAM font starts from the built-in (gfx_font.c). */
 	gfx_font_install();
+	gfx_draw_open = 1u;
 	return 0;
 }
 
@@ -88,10 +92,13 @@ void gfx_close(void)
 	}
 	(void)unbind((unsigned char)gfx_state.video_handle);
 	gfx_state.video_handle = 0;
+	gfx_draw_open = 0u;
+	gfx_draw_ready = 0u;
+	gfx_draw_shape = 0u;
 	/* The queue dies with the handle: whatever was pending never
 	 * runs, and the next open starts an empty batch. */
-	gfx_state.batch_depth = 0u;
-	gfx_state.batch_count = 0u;
+	gfx_batch_depth = 0u;
+	gfx_batch_count = 0u;
 }
 
 int gfx_get_info(struct gfx_info *info)

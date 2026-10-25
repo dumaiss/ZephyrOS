@@ -944,6 +944,7 @@ static int gfxtest_timing(void)
 {
 	static const struct gfx_text_style style = {0x0Fu, 0x00u};
 	static const struct gfx_text_style style4 = {0x05u, 0x06u, 0u, 1u};
+	static const struct gfx_text_style style4w = {0x07u, 0x08u, 0u, 1u};
 	static char row128[129];
 	unsigned int i;
 	int result;
@@ -962,12 +963,13 @@ static int gfxtest_timing(void)
 	(void)gfx_clear(0x00u);
 	(void)gfx_display_enable(1u);
 
-	gfx_begin();
+	/* Every workload runs as direct calls, the way a program draws:
+	 * each command is issued as its call returns. */
 	gfxtest_mark();            /* glyph: one opaque 6x8 cell */
 	result = gfx_text(8u, 10u, "x", &style);
 	gfxtest_mark();
 	result |= gfx_text(8u, 20u, "x", &style);
-	gfxtest_mark();            /* fill: one aligned HMMV */
+	gfxtest_mark();            /* fill: one aligned HMMV, issued */
 	result |= gfx_fill_rect(100u, 40u, 32u, 16u, 0x03u,
 				GFX_OP_COPY);
 	gfxtest_mark();
@@ -1004,6 +1006,10 @@ static int gfxtest_timing(void)
 		row128[i] = (i & 1u) != 0u ? 'W' : 'M';
 	}
 	row128[128] = '\0';
+	/* The 4x6 font's RAM pages are made at its first use: one glyph
+	 * in another pair first, so the marks price the row and its
+	 * pair alone. */
+	result |= gfx_text(0u, 300u, "W", &style4w);
 	gfxtest_mark();
 	result |= gfx_text(0u, 80u, row128, &style4);
 	gfxtest_mark();
@@ -1029,7 +1035,6 @@ static int gfxtest_timing(void)
 	result |= gfx_copy_rect(0u, 456u, 0u, 102u, 128u, 40u);
 	gfxtest_mark();
 	(void)result;
-	(void)gfx_end();
 	(void)getchar(); /* the key: the peer holds every marker */
 	gfx_close();
 	printf("gfxtest: timing %d\r\n", result);

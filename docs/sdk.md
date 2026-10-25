@@ -62,18 +62,22 @@ user/sdk/
   widgets/                the widget layer's sources (part of the TUI SDK)
   gfx/                    the graphics SDK: libgfx (gfx-sdk.md)
     src/gfx.c             gfx_open, gfx_close, gfx_get_info, the state
-    src/gfx_mode.c        gfx_set_mode, gfx_display_enable
-    src/gfx_draw.c        gfx_clear, gfx_fill_rect, gfx_copy_rect
-    src/gfx_shapes.c      gfx_rect/line/point/ellipse/fill_ellipse
-    src/gfx_batch.c       gfx_begin/end/flush, the command queue
-    src/gfx_upload.c      gfx_upload_begin/write/end (pixel streaming)
+    src/gfx_mode.c        gfx_set_mode, gfx_display_enable, gfx_show_page,
+                          gfx_wait_vblank, gfx_wait
     src/gfx_palette.c     gfx_set_palette
-    src/gfx_font.c        the 6x8 RAM font and its glyph bodies
-    src/gfx_font4.c       the 4x6 RAM font, the 32-byte pair tables,
-                          the glyph calls' dispatch (font + stale marks)
-    src/gfx_text.c        gfx_text/text_n/text_width, the row loop
-    src/gfx_atlas.c       gfx_text_atlas, the transparent path
-    src/backends/v9958/   the V9958 backend: mode/command C and port I/O
+    src/gfx_font.c        the 6x8 RAM font, the text pages, text_width
+    src/gfx_font4.c       the 4x6 RAM font, the glyph calls' dispatch
+                          (font + stale marks)
+    src/gfx_atlas.c       gfx_text_atlas: the atlas layout
+    src/backends/v9958/   the V9958 backend: the drawing, in assembly
+      gfx_cmd.asm         gfx_begin/end/flush, gfx_clear, gfx_fill_rect,
+                          gfx_copy_rect, gfx_rect/line/point, the issue
+      gfx_ellipse.asm     gfx_ellipse, gfx_fill_ellipse
+      gfx_text.asm        gfx_text, gfx_text_n, the scanline emit
+      gfx_atlas_draw.asm  transparent text: the atlas builds and copies
+      gfx_upload.asm      gfx_upload_begin/write/end (pixel streaming)
+      v9958_gfx.c         mode, display, page switch and palette setup
+      v9958_io.asm        the setup's port I/O, the font transposes
   template/               the copyable minimal program (Makefile, hello.c)
   examples/               hello, fardemo, fardata, files
 
@@ -155,64 +159,66 @@ program includes `kos/gfx.h` and calls `gfx_open` to take `/dev/video`
 exclusively.  The design is [gfx-sdk.md](gfx-sdk.md); a program that
 uses no graphics pays no gfx code or data cost.
 
-The drawing pieces hang off the same library.  `gfx_clear`,
-`gfx_fill_rect` and `gfx_copy_rect` are the rectangle primitives
-(HMMV/HMMM; a copy chooses its direction from the rectangles'
-overlap, and source or destination may sit on the off-screen page);
-`gfx_begin`/`gfx_end`/`gfx_flush` batch them into a process-local
-queue of 32 records, flushed in order when full, and a call outside a
-batch executes at once.  `gfx_upload_begin`,
-`gfx_upload_write` and `gfx_upload_end` stream a rectangle's pixels
-straight to VRAM through the data port (any chunk length, one address
-per row, the exact byte count enforced), and `gfx_set_palette`
-programs the 16-colour mode's palette.  `gfx_text` and `gfx_text_n`
-draw a string with a style: the colours, a `font` (the built-in 6x8
-CP850, or the 4x6 that fits 128 columns in the 16-colour mode) and a
-`flags` word; a zeroed style is opaque 6x8.  Opaque text is
-scanline-major in assembly: one VRAM address per scanline of the
-string, then a row loop streams every glyph's bytes (the font row
-byte, the pair-table lookup, OUT) - in the 16-colour mode the 6x8
-expansion comes from a cached three-page pair table and the 4x6's
-from a 32-byte table per pair, in the 256-colour mode one byte per
-pixel - and `gfx_text_width` measures a string in the font's pixels
-(6 or 4 per glyph).  `GFX_TEXT_TRANSPARENT` draws only each glyph's
-foreground: `gfx_text_atlas` hands libgfx an off-screen band, a font
-and a glyph range, and each glyph is one batched LMMM with
-transparency (TIMP) from an atlas of its colour, so colour-0 pixels
-leave the screen untouched.  The band must lie whole in one page's
-spare lines (212-255 or 468-511) and hold one atlas; an atlas is
-built on its colour's first transparent use and rebuilt least
+The drawing pieces hang off the same library, and every routine that
+draws or moves pixels is assembly, from the entry point to the port
+(gfx-sdk.md 2.6).  `gfx_clear`, `gfx_fill_rect` and `gfx_copy_rect`
+are the rectangle primitives (HMMV/HMMM; a copy chooses its direction
+from the rectangles' overlap, and source or destination may sit on the
+off-screen page).  A drawing call validates, builds the V9958's
+register block and issues it as it returns; `gfx_begin`/`gfx_end`/
+`gfx_flush` instead queue the ready blocks (32 of them, flushed in
+order when full), which costs a copy per command and buys only the
+deferral.  `gfx_upload_begin`, `gfx_upload_write` and
+`gfx_upload_end` stream a rectangle's pixels straight to VRAM through
+the data port (any chunk length, one address per row, the exact byte
+count enforced), and `gfx_set_palette` programs the 16-colour mode's
+palette.  `gfx_text` and `gfx_text_n` draw a string with a style: the
+colours, a `font` (the built-in 6x8 CP850, or the 4x6 that fits 128
+columns in the 16-colour mode) and a `flags` word; a zeroed style is
+opaque 6x8.  Opaque text is scanline-major: one VRAM address per
+scanline of the string, then an inner loop streams every glyph's
+bytes - the code indexes the font's row page, whose byte indexes the
+colour pair's expansion table, built when the pair changes - and
+`gfx_text_width` measures a string in the font's pixels (6 or 4 per
+glyph).  `GFX_TEXT_TRANSPARENT` draws only each glyph's foreground:
+`gfx_text_atlas` hands libgfx an off-screen band, a font and a glyph
+range, and each glyph is one LMMM with transparency (TIMP) from an
+atlas of its colour, so colour-0 pixels leave the screen untouched.
+The band must lie whole in one page's spare lines (212-255 or
+468-511) and hold one atlas; an atlas is built on its colour's first
+transparent use (one opaque string per atlas row) and rebuilt least
 recently used when the band is full, and a glyph redefined since the
 atlas was built is redrawn into every atlas at its next use, alone.
 `gfx_font_set_glyph(font, code, rows)` installs a glyph (the low six
 bits of each 6x8 row, the low four of each 4x6 row) into the font's
 RAM copy, `gfx_font_reset_glyph` restores one glyph and
-`gfx_font_reset` restores them all.  The 6x8 glyph calls live in
-gfx_font.c, the dispatch in gfx_font4.c, so a 6x8-only program links
-no 4x6 member and a program that never uses transparent text links
-no atlas member; the atlas build uses the same opaque emit, so it
-adds no second expansion.  Measured on the emulated 10 MHz CPU in
-T-states (the simulator's V9958 peer timestamps every register and
-status access; the figures are pinned by tests/test_gfx.py): a full
-128-glyph 4x6 row costs ~286,000 T-states with a fresh colour pair
-(~2,200 per glyph) and ~234,000 cached, an opaque 6x8 glyph in a
-cached pair ~6,900, an opaque 4x6 glyph in the 256-colour mode
-~4,200, a transparent glyph ~10,000 of CPU plus its LMMM, a 95-glyph
-atlas build ~2,330,000 - a once-per-colour cost - and the stale
-redraw of a redefined glyph into every atlas ~211,000.  The shapes of gfx-sdk.md section
+`gfx_font_reset` restores them all.  The shapes of gfx-sdk.md section
 8.1 take an `enum gfx_op` (COPY or XOR) each: `gfx_rect` is four LINE
 commands with each corner plotted exactly once, `gfx_line` and
-`gfx_point` are one LINE or PSET from the endpoint coordinates (the
-command's major/minor axes and direction bits derived from them),
-`gfx_fill_ellipse` and `gfx_ellipse` expand the midpoint ellipse into
-one horizontal span (LMMV) per scanline - the outline ellipse is the
-fill's boundary: per scanline, the dots outside either neighbour
-line's span plus the span's own ends, at most two non-overlapping
-pieces, so an XOR ellipse drawn twice restores everything - and `gfx_fill_rect` already takes the op, with
-HMMV for an aligned COPY and the per-pixel LMMV otherwise.  The
-ellipse walk runs on the CPU; the spans queue like any other record
-and the batch auto-flushes as it fills.  In YJK only an aligned COPY
-`gfx_fill_rect` is accepted; the other shapes are -KOS_ENOTSUP.
+`gfx_point` are one LINE or PSET from the endpoint coordinates,
+`gfx_fill_ellipse` and `gfx_ellipse` walk the midpoint ellipse
+incrementally and draw one span per scanline (COPY an HMMV over its
+whole bytes with an LMMV for an odd 16-colour end dot, XOR an LMMV) -
+the outline ellipse is the fill's boundary, at most two
+non-overlapping pieces per scanline, so an XOR ellipse drawn twice
+restores everything - and `gfx_fill_rect` takes the op, with HMMV for
+an aligned COPY and the per-pixel LMMV otherwise.  In YJK only an
+aligned COPY `gfx_fill_rect` is accepted; the other shapes are
+-KOS_ENOTSUP.
+
+The costs, on the emulated 10 MHz CPU in T-states of CPU time with the
+command engine's waits taken out (the simulator's V9958 peer
+timestamps every register and status access; tests/test_gfx.py pins
+them, tests/gfxprof.py profiles them), in the 16-colour mode: one
+`gfx_fill_rect` ~1,850, one `gfx_line` ~1,700 (a 128-segment polyline
+~262,000 with its caller's loop), a filled circle of radius 50
+~274,000 and its outline ~315,000; a full 128-glyph 4x6 row ~76,000
+(~590 per glyph) cached or with a fresh colour pair, 8 opaque 6x8
+glyphs ~12,300, a call of 4 transparent glyphs ~8,200 (their LMMMs
+run on the VDP), a 95-glyph atlas build ~73,000 - a once-per-
+colour cost - and the stale redraw of a redefined glyph into seven
+atlases ~46,000.  The 4x6 font's RAM pages are made at its first use
+(~75,000 once).
 
 Drawing is asynchronous: the backend waits for the VDP's command
 engine before it starts each command, not after, so `gfx_end` (and a
@@ -228,8 +234,10 @@ atomic, no tearing; `gfx_get_info` reports the shown page);
 `gfx_wait_vblank` waits for the start of the next retrace, for a
 frame loop or a partial present: draw a band on the hidden page
 (y + 256 for page 1), then `gfx_wait_vblank()` and `gfx_copy_rect`
-it onto the shown page - the VDP's copy speed decides how much of the
-band lands inside the ~3.2 ms blank.
+it onto the shown page - the ~3.2 ms blank holds about two
+full-width 16-colour rows of copy (measured on the board); small items
+that change often (meters, counters, a scope) are drawn in place on
+the shown page right after `gfx_wait_vblank()` instead.
 Pictures come prepared: the
 KIMG v1 format (`kos/kimg.h`) carries a header, an optional palette and
 the payload in the mode's packing, `tools/kimg.py` converts

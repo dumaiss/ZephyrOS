@@ -39,6 +39,9 @@ Rules:
 - A write advances the position only after the driver has confirmed it.
 - `sync` flushes a file and keeps it open; `close` flushes and releases it.
   There is no filesystem-wide sync.
+- `stat` by path and a directory listing report a file's size as of its
+  last `sync` or `close` (on the card, its directory entry); an open
+  file's live size is its handle's (`seek` to the end).
 - `rename` within one provider uses the provider's rename. Across providers
   it returns `KOS_EXDEV`; the system never turns a rename into a copy.
 - Truncation is `KFS_O_TRUNC` at open, and `truncate(handle, length)`

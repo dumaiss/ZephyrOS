@@ -171,6 +171,10 @@ wait for key
 exit
 ```
 
+### 2.6 Drawing code is assembly
+
+Speed comes before code size. Every routine that draws or moves pixels is Z80 assembly, from the public entry point to the port: the shapes, fills, copies, upload, text, the glyph atlas and the batch. The header's prototype is the assembly entry, with no C wrapper. Setup and rare calls (open/close, mode, display, palette, information, atlas setup, glyph redefinition) stay in C.
+
 ---
 
 # 3. VIDEO ABI support
@@ -256,18 +260,17 @@ Internally:
 ```text
 libgfx
  |
- +-- gfx.c                 public API and state
- +-- gfx_batch.c           command queue
- +-- gfx_text.c            font and text support
- +-- gfx_image.c           optional KIMG helpers
+ +-- gfx.c, gfx_mode.c     open/close, mode, display, pages (C)
+ +-- gfx_font*.c, atlas.c  the fonts' tables and the atlas layout (C)
  |
  `-- backends/
       `-- v9958/
-           +-- mode setup
-           +-- command execution
-           +-- streaming upload
-           +-- palette
-           `-- low-level port I/O
+           +-- gfx_cmd.asm       the command path and the batch
+           +-- gfx_ellipse.asm   the ellipses
+           +-- gfx_text.asm      text
+           +-- gfx_atlas_draw.asm transparent text
+           +-- gfx_upload.asm    streaming upload
+           `-- v9958_gfx.c, v9958_io.asm  mode setup, palette, port I/O
 ```
 
 The application's source includes only:
@@ -478,13 +481,16 @@ marker, a selection).
 | `gfx_fill_rect` | HMMV (byte fill) for COPY with byte-aligned x and width; LMMV (logical, per pixel) otherwise: any x in GRAPHIC 6, and XOR |
 | `gfx_rect` | four LINE commands; the corners are plotted once |
 | `gfx_line`, `gfx_point` | LINE and PSET |
-| `gfx_fill_ellipse` | one horizontal LMMV span per scanline |
-| `gfx_ellipse` | per scanline, the left and right outline spans as LMMV/LINE pieces |
+| `gfx_fill_ellipse` | one horizontal span per scanline: COPY an HMMV over its whole bytes (an LMMV for an odd GRAPHIC 6 end dot, and for a GRAPHIC 6 span under four dots), XOR an LMMV |
+| `gfx_ellipse` | per scanline, the fill's boundary: the outermost rows whole, the others a left and a right piece, as the fill's spans |
 
 **Ellipses** are computed on the CPU and drawn by the VDP.
 - **The algorithm:** the midpoint algorithm walks one quadrant and mirrors
-  it. The radii's squares are 32-bit (511² does not fit 16 bits), but only
-  in the error terms; the per-scanline output is 16-bit.
+  it, incrementally (the second differences are carried; the loop adds and
+  never multiplies). The decision terms are 32-bit (511² does not fit 16
+  bits); the per-scanline output is 16-bit.
+- **The outline** is the fill's boundary: every fill pixel with a
+  4-neighbour outside the fill, so it is closed at any flatness.
 - **No double plotting:** the outline's pieces never overlap, so an XOR
   ellipse drawn twice restores every pixel.
 - **Circles:** `rx == ry`. A zero radius draws the degenerate line or
@@ -498,9 +504,8 @@ marker, a selection).
   accepted, since a uniform fill keeps the J/K runs. The other shapes are
   `-KOS_ENOTSUP`.
 
-All shapes are batched in order, like the fills and copies. A record's
-`sx, sy, dx, dy` carry the geometry (an ellipse is expanded into its span
-records when it is queued), and `flags` the operation.
+All shapes are batched in order, like the fills and copies (an ellipse
+queues one block per span).
 
 ---
 
@@ -518,39 +523,7 @@ int  gfx_end(void);
 int  gfx_flush(void);
 ```
 
-Inside a batch, drawing operations append compact records to a process-local command buffer.
-
-A record is fixed-size and backend-independent, approximately:
-
-```c
-struct gfx_cmd {
-    uint8_t opcode;
-    uint8_t flags;
-
-    uint16_t sx;
-    uint16_t sy;
-
-    uint16_t dx;
-    uint16_t dy;
-
-    uint16_t width;
-    uint16_t height;
-
-    uint8_t color;
-    uint8_t reserved;
-};
-```
-
-A 16-byte command permits a useful fixed queue with little application RAM.
-
-For example:
-
-```text
-32 commands = 512 bytes
-64 commands = 1 KiB
-```
-
-The exact default is an SDK build choice.
+Inside a batch, drawing operations append ready command blocks to a process-local queue: each call validates and builds the backend's register block (for the V9958, R#32..R#46) exactly as it would issue it, and the queue holds the blocks in 16-byte slots, 32 of them (512 bytes). A flush streams them in order. Outside a batch the same block is issued as the call returns, so a batch costs a copy per command and buys only the deferral.
 
 When the queue becomes full, `libgfx` automatically flushes it.
 
@@ -849,20 +822,23 @@ pixel sink  places the pixels on the screen
 ```
 
 **Expansion** turns a glyph's rows into pixels for the requested
-foreground/background pair:
+foreground/background pair. The RAM fonts are row-major: one 256-byte
+page per glyph row, indexed by the character code, each byte the row's
+pixel pattern pre-scaled as an offset into the pair's expansion table.
+The tables are rebuilt when the pair (or the mode and font) changes:
 
 | Font | GRAPHIC 6 | GRAPHIC 7 |
 |---|---|---|
-| 6×8 | 3 bytes per row (two pixels each), through three 256-entry tables built for the pair and kept for the most recent pairs | 6 bytes per row, one per pixel |
-| 4×6 | 2 bytes per row, through one 16-entry table of byte pairs for the pair (the row's pixel nibble indexes it); at 32 bytes a pair, the tables are cheap to keep for eight pairs or to rebuild per call | 4 bytes per row |
+| 6×8 | 3 bytes per row (two pixels each), from a 64-entry table | 6 bytes per row, one per pixel, from a 64-entry table |
+| 4×6 | 2 bytes per row, from a 16-entry table | 4 bytes per row, from a 16-entry table |
 
-**The opaque sink** (GFX v1) writes those bytes through the data port, one
-VRAM address per glyph row, with the hardware WAIT pacing the writes. A
-string is one run: no command engine, no per-glyph setup beyond the row
-addresses.
+**The opaque sink** writes those bytes through the data port, scanline by
+scanline: one VRAM address per scanline of the string, then every
+glyph's bytes for that scanline, with the hardware WAIT pacing the
+writes. No command engine, no per-glyph setup.
 
-Opaque text keeps no VRAM cache: redefining a glyph changes its 8 bytes in
-the RAM font, and the next draw uses them.
+Opaque text keeps no VRAM cache: redefining a glyph changes its row bytes
+in the RAM font, and the next draw uses them.
 
 ## 14.1 Transparent text: the glyph atlas (v1.1)
 
@@ -931,8 +907,14 @@ int gfx_wait_vblank(void);
 - **Partial present:** to update only a band of the screen (a third, a
   quarter, any rectangle), draw it on the hidden page, then
   `gfx_wait_vblank()` and `gfx_copy_rect()` it onto the shown page.
-  - **Speed:** the VDP's copy speed decides how much fits in the vertical
-    blank (about 3.2 ms). A larger band still works, with a short tear.
+  - **Speed:** the vertical blank (about 3.2 ms) holds a copy of about
+    two full-width GRAPHIC 6 rows (512 bytes), measured on the board. A
+    larger band still works, with a short tear.
+- **In-place update:** for small items that change often (meters,
+  counters, a scope), draw them directly on the shown page right after
+  `gfx_wait_vblank()`: fills, text and XOR lines are short commands.
+  Before a page switch, copy the band onto the hidden page so both
+  pages agree.
   - **No OS support:** neither technique needs interrupts or OS support.
 - **Vertical blank:** detected by polling the VDP's retrace flag (status
   register 2, VR), already selected for the command-engine polls. IE0
@@ -1364,5 +1346,5 @@ physical hardware, alongside music played through the sound driver:
   (two rows redrawn), and at a page's last row the next page, already
   drawn on the hidden page, is shown with `gfx_show_page`, with the
   cursor back at the top;
-- the top band updated by partial present;
+- the top band updated in place, item by item, after the vertical blank;
 - no audible glitch, and the display and console restored on exit.

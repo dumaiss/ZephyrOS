@@ -4,7 +4,8 @@
 Run from the repository root after `make` (the top-level build makes
 gfxtest.exe and its map):
 
-    python3 tests/gfxprof.py
+    python3 tests/gfxprof.py          # the timing mode's figures
+    python3 tests/gfxprof.py atlas    # the atlas mode's text figures
 
 The twelve timing figures run exactly as TestGfxTiming measures them -
 the legacy five with the duration model off, the package-96 workloads
@@ -34,12 +35,16 @@ MAPFILE = os.path.join(ROOT, "build", "user", "gfxtest", "gfxtest.map")
 APP_LSTS = (glob.glob(os.path.join(ROOT, "build", "user", "gfxtest",
                                    "*.lst")) +
             glob.glob(os.path.join(ROOT, "build", "user", "sdk", "gfx",
-                                   "*.lst")))
+                                   "*.lst")) +
+            glob.glob(os.path.join(ROOT, "build", "user", "sdk", "gfx",
+                                   "backends", "v9958", "*.lst")))
 OS_MAP = os.path.join(ROOT, "build", "konaos.map")
 
 FIGURES = ["glyph", "fill", "line", "filled", "outline", "polyline",
            "row-new", "row-cached", "stripe", "page-switch", "vblank",
            "present"]
+ATLAS_FIGURES = ["row128", "g6s", "build", "transparent4", "stale",
+                 "g7opaque", "g7transparent4"]
 
 
 def symbols(mapfile, lsts):
@@ -47,7 +52,7 @@ def symbols(mapfile, lsts):
     listing's static labels re-based through any label the map knows."""
     gl = {}
     for line in open(mapfile):
-        m = re.match(r"\s+([0-9A-F]{8})\s+(_\w+)\s", line)
+        m = re.match(r"\s+([0-9A-F]{8})\s+([A-Za-z_]\w*)\s", line)
         if m:
             gl[m.group(2)] = int(m.group(1), 16)
     out = dict((a, n) for n, a in gl.items())
@@ -59,7 +64,8 @@ def symbols(mapfile, lsts):
             if ma:
                 area = ma.group(1)
                 continue
-            m = re.match(r"\s+([0-9A-F]{8})\s+\d+\s+(_\w+)::?", line)
+            m = re.match(r"\s+([0-9A-F]{8})\s+\d+\s+([A-Za-z_]\w*)::?",
+                         line)
             if m and area == "_CODE":
                 labels.append((int(m.group(1), 16), m.group(2)))
         base = next((gl[n] - off for off, n in labels if n in gl), None)
@@ -76,6 +82,8 @@ class Profile(T.TestGfxTiming):
 
 
 def main():
+    mode = sys.argv[1] if len(sys.argv) > 1 else "timing"
+    figures = ATLAS_FIGURES if mode == "atlas" else FIGURES
     app_a, app_n = symbols(MAPFILE, APP_LSTS)
     entries = set(app_a)
     os_syms = sorted((a, n) for n, a in read_symbols(OS_MAP).items()
@@ -88,8 +96,8 @@ def main():
     z = p.start()
     ops = []
     since = len(z.glyphs)
-    z.hid.hid_queue.extend(b"/fs/gfxtest.exe timing\r")
-    z.hid.hid_queue.extend(b"x")  # the timing mode's final key
+    z.hid.hid_queue.extend(b"/fs/gfxtest.exe %s\r" % mode.encode())
+    z.hid.hid_queue.extend(b"xxx")  # the mode's held keys
     p.run_recording(z, ops, lambda z: T.OPS_ACQUIRE in ops)
     peer = z.vdp
     app_bank = z.bank_of(0x0100)
@@ -114,8 +122,8 @@ def main():
 
     # The frame clock and the duration model come on after the 12th
     # marker (the start of the polyline), as in the timing test.
-    hist = [collections.Counter() for _ in FIGURES]
-    calls = [collections.Counter() for _ in FIGURES]
+    hist = [collections.Counter() for _ in figures]
+    calls = [collections.Counter() for _ in figures]
     enabled = False
     steps = 0
     for _step in range(T.EXEC_BUDGET * 2):
@@ -128,7 +136,7 @@ def main():
             p.pump(z)
         steps += 1
         marks = markers()
-        if not enabled and len(marks) >= 12:
+        if mode == "timing" and not enabled and len(marks) >= 12:
             peer.frame_period = T.FRAME_TSTATES
             peer.duration_model = True
             enabled = True
@@ -143,21 +151,23 @@ def main():
             else:
                 figure = (len(marks) - 3) // 2
                 start, end = marks[-1], T.EXEC_BUDGET << 30
-            if 0 <= figure < len(FIGURES) and start <= before < end:
+            if 0 <= figure < len(figures) and start <= before < end:
                 hist[figure][name(pc)] += z.tstates - before
                 if pc in entries and bank_of(pc) == app_bank:
                     calls[figure][name(pc)] += 1
-        if "gfxtest: timing" in "".join(z.glyphs[since:]):
+        if "gfxtest: %s" % mode in "".join(z.glyphs[since:]):
             break
     else:
         p.fail("no outcome in %u steps (PC=%04X)" % (T.EXEC_BUDGET, z.pc))
 
     marks = markers()[2:]
-    if len(marks) < 24:
+    if len(marks) < 2 * len(figures):
         p.fail("only %u markers" % len(marks))
     for figure, (start, end) in enumerate(zip(marks[::2], marks[1::2])):
         total = end - start
-        print("== %s: %d T-states" % (FIGURES[figure], total))
+        if figure >= len(figures):
+            break
+        print("== %s: %d T-states" % (figures[figure], total))
         covered = 0
         shown = 0
         for fn, ts in hist[figure].most_common():
