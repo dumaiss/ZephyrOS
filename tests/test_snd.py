@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""libsnd's core and manual notes (package 98).
+"""libsnd's core and manual notes.
 
 * host: the note compiler (snd_manual.c, built unchanged against a
   stub engine) - a program's bytes for a note, an envelope, a release
@@ -24,7 +24,7 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
 from snd_harness import SndReplay, STEP_BUDGET, split_ticks  # noqa: E402
-from z80sim import SoundPeer  # noqa: E402
+from z80sim import SoundPeer, read_symbols  # noqa: E402
 
 SND = os.path.join(ROOT, "tests", "snd")
 SND_SRC = os.path.join(ROOT, "user", "sdk", "snd", "src")
@@ -36,6 +36,28 @@ COMPILER = os.path.join(HOST, "snd_compiler")
 SNTEST = os.path.join(ROOT, "build", "user", "sndtest.exe")
 SNTEST_MAP = os.path.join(ROOT, "build", "user", "sndtest", "sndtest.map")
 SOUND_REPORT = os.path.join(ROOT, "build", "modules", "sound.report.json")
+SNTEST_SYMS = read_symbols(SNTEST_MAP) if os.path.exists(SNTEST_MAP) else {}
+
+
+def app_mapped(z):
+    """True while the application's mapping is in (latch mode 10): an
+    interrupt runs OS code at the same addresses, and the budgets keep
+    interrupts out."""
+    return (z.latch & 0x18) == 0x10
+
+
+def in_tick_code(pc, zvg=False):
+    """Program ranges owned by the assembly manual/output tick path."""
+    ranges = [
+        (SNTEST_SYMS["_snd_load_ports"],
+         SNTEST_SYMS["_snd_define_instrument"]),
+        (SNTEST_SYMS["_snd_engine"],
+         SNTEST_SYMS["_snd_voice_install"]),
+    ]
+    if zvg:
+        ranges.append((SNTEST_SYMS["_snd_zvg_tick"],
+                       SNTEST_SYMS["_kos_idle_halt"]))
+    return any(start <= pc < end for start, end in ranges)
 
 CLOCK = 3579545
 
@@ -45,6 +67,7 @@ CHORD = dict(peak=255, gate=200, attack=0, decay=0, sustain=255,
              release=0)
 PLUCK = dict(peak=200, gate=200, attack=4, decay=3, sustain=120,
              release=3)
+TONE12 = (0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14)
 
 
 def a440_table():
@@ -134,10 +157,9 @@ def compile_release(from_level, release_ticks):
 
 
 class SndModel(object):
-    """The desired state, the shadow and the flush, mirroring
-    snd_out.asm and the engine (snd_voice.asm) exactly."""
+    """The descriptor walk and write-through shadow, in voice order."""
 
-    def __init__(self):
+    def __init__(self, pause_wait=False):
         self.desired_p = [[0, 0, 0] for _ in range(4)]
         self.desired_a = [[15, 15, 15, 15] for _ in range(4)]
         self.desired_n = [0xE0] * 4
@@ -151,6 +173,8 @@ class SndModel(object):
         self.cursor = [0] * 16
         self.level = [0] * 16
         self.programs = [None] * 16
+        self.pending_atten = [0] * 16
+        self.pause_wait = pause_wait
 
     def install(self, voice):
         self.cursor[voice] = 0
@@ -163,6 +187,7 @@ class SndModel(object):
         self.wait[voice] = 0
         self.level[voice] = 0
         self.desired_a[voice >> 2][voice & 3] = 15
+        self.pending_atten[voice] = 1
 
     def noise(self, voice, control):
         self.desired_n[voice >> 2] = 0xE0 | control
@@ -178,61 +203,86 @@ class SndModel(object):
         self.install(voice)
 
     def tick(self, elapsed):
+        writes = []
         for voice in range(16):
+            chip, sub = voice >> 2, voice & 3
+            touched_p = touched_a = touched_n = False
+            if self.pending_atten[voice]:
+                touched_a = True
+                self.pending_atten[voice] = 0
+            if sub == 3 and self.force[chip]:
+                touched_n = True
+                self.force[chip] = 0
             if not self.active[voice]:
-                continue
-            remaining = elapsed
-            if self.wait[voice]:
-                if self.wait[voice] <= remaining:
+                pass
+            else:
+                remaining = elapsed
+                had_wait = self.wait[voice] != 0
+                if self.wait[voice] > remaining:
+                    self.wait[voice] -= remaining
+                else:
                     remaining -= self.wait[voice]
                     self.wait[voice] = 0
-                else:
-                    self.wait[voice] -= remaining
-                    continue
-            program = self.programs[voice]
-            while True:
-                op = program[self.cursor[voice]]
-                if op == P_END:
-                    self.active[voice] = 0
-                    self.wait[voice] = 0
-                    break
-                if op == P_PERIOD:
-                    period = program[self.cursor[voice] + 1] | \
-                        (program[self.cursor[voice] + 2] << 8)
-                    self.desired_p[voice >> 2][voice & 3] = period
-                    self.cursor[voice] += 3
-                elif op == P_ATTEN:
-                    level = program[self.cursor[voice] + 1]
-                    self.level[voice] = level
-                    self.desired_a[voice >> 2][voice & 3] = \
-                        LEVEL[level]
-                    self.cursor[voice] += 2
-                elif op == P_NOISE:
-                    self.desired_n[voice >> 2] = \
-                        0xE0 | program[self.cursor[voice] + 1]
-                    self.force[voice >> 2] = 1
-                    self.cursor[voice] += 2
-                elif op == P_WAIT8:
-                    n = program[self.cursor[voice] + 1]
-                    self.cursor[voice] += 2
-                    if n > remaining:
-                        self.wait[voice] = n - remaining
-                        break
-                    remaining -= n
-                    break  # a WAIT ends the voice's tick
-                else:  # WAIT16
-                    n = program[self.cursor[voice] + 1] | \
-                        (program[self.cursor[voice] + 2] << 8)
-                    self.cursor[voice] += 3
-                    if n > remaining:
-                        self.wait[voice] = n - remaining
-                        break
-                    remaining -= n
-                    break  # a WAIT ends the voice's tick
-        return self.flush()
+                    if self.pause_wait and had_wait:
+                        continue
+                    program = self.programs[voice]
+                    while True:
+                        op = program[self.cursor[voice]]
+                        if op == P_END:
+                            self.active[voice] = 0
+                            break
+                        if op == P_PERIOD:
+                            self.desired_p[chip][sub] = \
+                                program[self.cursor[voice] + 1] | \
+                                (program[self.cursor[voice] + 2] << 8)
+                            self.cursor[voice] += 3
+                            touched_p = True
+                        elif op == P_ATTEN:
+                            level = program[self.cursor[voice] + 1]
+                            self.level[voice] = level
+                            self.desired_a[chip][sub] = LEVEL[level]
+                            self.cursor[voice] += 2
+                            touched_a = True
+                        elif op == P_NOISE:
+                            self.desired_n[chip] = \
+                                0xE0 | program[self.cursor[voice] + 1]
+                            self.cursor[voice] += 2
+                            touched_n = True
+                        else:
+                            width = 2 if op == P_WAIT8 else 3
+                            n = program[self.cursor[voice] + 1]
+                            if width == 3:
+                                n |= program[self.cursor[voice] + 2] << 8
+                            self.cursor[voice] += width
+                            if n > remaining:
+                                self.wait[voice] = n - remaining
+                                break
+                            remaining -= n
+                            if remaining == 0:
+                                break
+            if self.shadow_valid[chip]:
+                port = 0xE0 + chip
+                if touched_p and self.shadow_p[chip][sub] != \
+                        self.desired_p[chip][sub]:
+                    period = self.desired_p[chip][sub]
+                    writes += [(port, 0x80 | (sub << 5) | (period & 15)),
+                               (port, ((period >> 4) & 15) |
+                                (((period >> 8) & 15) << 4))]
+                    self.shadow_p[chip][sub] = period
+                if touched_n:
+                    writes.append((port, self.desired_n[chip]))
+                    self.shadow_n[chip] = self.desired_n[chip]
+                if touched_a and self.shadow_a[chip][sub] != \
+                        self.desired_a[chip][sub]:
+                    atten = self.desired_a[chip][sub]
+                    writes.append((port, 0x90 | (sub << 5) | atten))
+                    self.shadow_a[chip][sub] = atten
+        return writes + self.flush()
 
     def flush(self):
         writes = []
+        if all(self.shadow_valid):
+            return writes
         for chip in range(4):
             all_writes = 1 - self.shadow_valid[chip]
             for sub in range(3):
@@ -568,6 +618,53 @@ class TestSndClose(SndCase):
 
 
 @unittest.skipUnless(os.path.exists(SNTEST), "run make")
+class TestSndVoiceEngine(SndCase):
+    def test_coalesced_tick_matches_five_logical_ticks_and_writes_last(self):
+        inst = dict(peak=255, attack=8, decay=0, sustain=255, release=0)
+        coalesced = SndModel()
+        stepped = SndModel()
+        # Establish the same valid silent shadow that the target mode does.
+        coalesced.flush()
+        stepped.flush()
+        coalesced.note_on(0, 48, 20, inst)
+        stepped.note_on(0, 48, 20, inst)
+        want = coalesced.tick(5)
+        for _ in range(5):
+            stepped.tick(1)
+        self.assertEqual(coalesced.desired_p, stepped.desired_p)
+        self.assertEqual(coalesced.desired_a, stepped.desired_a)
+        self.assertEqual(coalesced.cursor, stepped.cursor)
+        z, since = self.run_mode("coalesce")
+        ticks, _marks, _orphans, _trailing = split_ticks(
+            self.collect(z, since))
+        self.assertEqual(ticks[0], want)
+
+    def test_staggered_voices_follow_descriptor_order_in_both_modes(self):
+        inst = dict(peak=255, attack=8, decay=7, sustain=96, release=8)
+        for batch in (False, True):
+            model = SndModel(pause_wait=True)
+            for i in range(12, 0, -1):
+                model.note_on(TONE12[i - 1], 48 + i - 1,
+                              20 + i * 3, inst)
+            expected = [model.tick(1) for _ in range(200)]
+            z, since = self.run_mode("stagger batch" if batch else
+                                     "stagger")
+            ticks, _marks, _orphans, _trailing = split_ticks(
+                self.collect(z, since))
+            actual = ticks[0::2]
+            self.assertEqual(len(actual), 200)
+            for index, want in enumerate(expected):
+                self.assertEqual(list(actual[index]), want,
+                                 "batch %d tick %d" % (batch, index))
+
+    def test_put_primitives_deduplicate_and_force_noise(self):
+        z, since = self.run_mode("primitive")
+        ticks, _marks, _orphans, _trailing = split_ticks(
+            self.collect(z, since))
+        self.assertEqual(ticks[0], [(0xE0, 0xE0)])
+
+
+@unittest.skipUnless(os.path.exists(SNTEST), "run make")
 class TestSndTiming(SndCase):
     def test_the_budgets(self):
         with open(SNTEST, "rb") as handle:
@@ -593,12 +690,11 @@ class TestSndTiming(SndCase):
         steps = 0
         while steps < 24000000:
             before = z.tstates
-            pc_before = z.pc
+            pc_before = z.pc if app_mapped(z) else -1
             self.skip_delay(z)
             self.feed(z)
             z.step()
-            if (0x17CA <= pc_before < 0x1D8A) or \
-                    (0x39DA <= pc_before < 0x3A06):
+            if in_tick_code(pc_before):
                 state["current"] += z.tstates - before
             if steps % 0x1FF == 0:
                 self.pump(z)
@@ -613,18 +709,23 @@ class TestSndTiming(SndCase):
         self.assertEqual(len(intervals), 52, "two markers per pair")
         idle = max(intervals[3:14:2])
         self.assertLessEqual(idle, 600, "nothing due: %d" % idle)
-        twelve = max(intervals[15:30:2])
-        self.assertLessEqual(twelve, 44000,
-                             "twelve attenuations: %d" % twelve)
+        # the phase's first pair also writes the twelve periods
+        first = intervals[15]
+        self.assertLessEqual(first, 20500,
+                             "twelve notes starting: %d" % first)
+        twelve = max(intervals[17:30:2])
+        self.assertLessEqual(twelve, 11000,
+                             "twelve attenuations (target 4,000): %d"
+                             % twelve)
         per_byte = max(intervals[33:46:2]) - idle
-        self.assertLessEqual(per_byte, 3500,
-                             "per changed byte: %d" % per_byte)
+        self.assertLessEqual(per_byte, 1950,
+                             "per changed byte (target 400): %d" % per_byte)
         refresh = intervals[47]
-        self.assertLessEqual(refresh, 29000,
+        self.assertLessEqual(refresh, 13600,
                              "full refresh: %d" % refresh)
-        print("snd budgets: idle %d, twelve %d, per-byte %d, "
-              "refresh %d, batch %d, compile %d"
-              % (idle, twelve, per_byte, refresh, intervals[49],
+        print("snd budgets: idle %d, twelve starting %d, twelve %d, "
+              "per-byte %d, refresh %d, batch %d, compile %d"
+              % (idle, first, twelve, per_byte, refresh, intervals[49],
                  intervals[51]))
 
 
@@ -779,6 +880,7 @@ class TestSndZvg(SndCase):
                               self.trace(z, since), name)
             else:
                 self.run_to_pattern(z, "zvg opcode", since=since)
+                self.run_to_pattern(z, "\n", since=len(z.glyphs))
                 transcript = self.trace(z, since)
                 self.assertIn("sndtest: zvg PASS state 4 ", transcript,
                               name)
@@ -837,12 +939,11 @@ class TestSndZvg(SndCase):
         steps = 0
         while steps < 24000000 and len(intervals) < 16:
             before = z.tstates
-            pc_before = z.pc
+            pc_before = z.pc if app_mapped(z) else -1
             self.skip_delay(z)
             self.feed(z)
             z.step()
-            if (0x17CA <= pc_before < 0x1D8A) or \
-                    (0x39DA <= pc_before < 0x3A06):
+            if in_tick_code(pc_before):
                 state["current"] += z.tstates - before
             if steps % 0x1FF == 0:
                 self.pump(z)
@@ -901,14 +1002,12 @@ class TestSndZvg(SndCase):
         steps = 0
         while steps < 24000000:
             before = z.tstates
-            pc_before = z.pc
+            pc_before = z.pc if app_mapped(z) else -1
             self.skip_delay(z)
             self.feed(z)
             z.step()
             note_reads()
-            if (0x17CA <= pc_before < 0x1D8A) or \
-                    (0x39DA <= pc_before < 0x3A06) or \
-                    (0x4B74 <= pc_before < 0x4C1E):
+            if in_tick_code(pc_before, zvg=True):
                 state["current"] += z.tstates - before
             if steps % 0x1FF == 0:
                 self.pump(z)
@@ -938,19 +1037,21 @@ class TestSndZvg(SndCase):
         # path; the 300-T-state target is the ZVG's incremental cost.
         wait_whole = max(wait_costs)
         wait_zvg = wait_whole - ENGINE_IDLE
-        self.assertLessEqual(wait_zvg, 300,
-                             "the ZVG's wait tick: %d" % wait_zvg)
+        self.assertLessEqual(wait_zvg, 255,
+                             "the ZVG's wait tick (target 300): %d"
+                             % wait_zvg)
         # A command tick's cost over the wait tick is the decoder's
-        # fixed command-loop entry; the marginal per written byte (the
-        # WORK.md budget) is the remainder divided by the run length.
+        # fixed command-loop entry; the marginal per written byte is the
+        # remainder divided by the run length.
         write_floor = min(cost for _k, cost in write_costs)
         per_byte = []
         for k, cost in write_costs:
             n = len(golden[k])
             if n > 1:
                 per_byte.append((cost - write_floor) // n)
-        self.assertLessEqual(max(per_byte), 50,
-                             "per written byte: %d" % max(per_byte))
+        self.assertLessEqual(max(per_byte), 30,
+                             "per written byte (target 50): %d" %
+                             max(per_byte))
         services = [intervals[2 * k + 2]
                     for k in range(len(intervals) // 2 - 1)]
         print("zvg budgets: whole tick %d (engine idle %d, zvg %d), "

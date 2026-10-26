@@ -64,54 +64,89 @@ SND_RUN_HI        = 0x90
 ; working bytes are module-local.
 _zvg_opcode::
 	.ds 1
-_zvg_writes_left::
-	.ds 1
+_zvg_port::
+	.ds 1			; the chip's port, loaded once per command tick
 
 	.area _CODE
 
 ; ---------------------------------------------------------------------------
-; One byte to the ZVG chip: A = value.  DIRECT: OUT (C),A with the
-; chip's port; BATCH: append {chip, value} to the tick's batch.
+; One byte to the ZVG chip, off the run loop (WRITE and the mute):
+; A = value.  DIRECT: OUT to the tick's port; BATCH: _zvg_append.
 ; ---------------------------------------------------------------------------
 _zvg_write:
-	ld	b, a			; the value
+	ld	b, a
 	ld	a, (_snd_output_mode)
 	or	a
-	jr	nz, _zvg_write_batch
-	ld	a, (_snd_zvg_chip)
-	ld	e, a
-	ld	d, #0
-	ld	hl, #_snd_ports
-	add	hl, de
-	ld	c, (hl)
-	ld	a, b
-	out	(c), a
+	jr	nz, _zvg_append
+	ld	a, (_zvg_port)
+	ld	c, a
+	out	(c), b
 	ret
-_zvg_write_batch:
-	; a full batch goes out first (catch-up can run 16 ticks at once)
+
+; B = value: append {chip, value} to the tick's batch; a full batch goes
+; out first (catch-up can run 16 ticks at once).  Clobbers A, DE, HL.
+_zvg_append:
 	ld	a, (_snd_batch_count)
 	cp	#SND_BATCH_MAX
-	jr	c, _zvg_batch_room
+	jr	c, 1$
 	push	bc
-	push	hl
 	call	snd_batch_send
-	pop	hl
 	pop	bc
-_zvg_batch_room:
 	ld	a, (_snd_batch_count)
-	add	a, a
+1$:
 	ld	e, a
+	inc	a
+	ld	(_snd_batch_count), a
 	ld	d, #0
 	ld	hl, #_snd_batch
+	add	hl, de
 	add	hl, de
 	ld	a, (_snd_zvg_chip)
 	ld	(hl), a
 	inc	hl
-	ld	a, b
+	ld	(hl), b
+	ret
+
+; (HL) += A, 32-bit.  Clobbers A, HL.
+_add32:
+	add	a, (hl)
 	ld	(hl), a
-	ld	a, (_snd_batch_count)
-	inc	a
-	ld	(_snd_batch_count), a
+	ret	nc
+	inc	hl
+	inc	(hl)
+	ret	nz
+	inc	hl
+	inc	(hl)
+	ret	nz
+	inc	hl
+	inc	(hl)
+	ret
+
+; One command's bookkeeping: B = its head, A = its bytes, E = the bytes
+; it wrote.  head, consumed and writes move once per command.  Keeps BC.
+_zvg_account:
+	ld	d, a
+	add	a, b
+	ld	(_snd_zvg_head), a
+	ld	a, d
+	ld	hl, #_snd_zvg_consumed
+	call	_add32
+	ld	a, e
+	or	a
+	ret	z
+	ld	hl, #_snd_zvg_writes
+	jp	_add32
+
+; error_offset = consumed + the header, 32-bit.
+_zvg_error_at_head:
+	ld	hl, (_snd_zvg_consumed)
+	ld	de, #SND_ZVG_HEADER
+	add	hl, de
+	ld	(_snd_zvg_error_offset), hl
+	ld	hl, (_snd_zvg_consumed + 2)
+	ld	de, #0
+	adc	hl, de
+	ld	(_snd_zvg_error_offset + 2), hl
 	ret
 
 ; The chip's mute: the three tone attenuators.  (The noise channel
@@ -134,19 +169,35 @@ _snd_zvg_tick::
 	cp	#SND_ZVG_UNDERRUN
 	ret	nz
 _zvg_run:
-	ld	hl, (_snd_zvg_ticks)
+	ld	hl, #_snd_zvg_ticks
+	inc	(hl)
+	jr	nz, 1$
 	inc	hl
-	ld	(_snd_zvg_ticks), hl
+	inc	(hl)
+	jr	nz, 1$
+	inc	hl
+	inc	(hl)
+	jr	nz, 1$
+	inc	hl
+	inc	(hl)
+1$:
 	ld	hl, (_snd_zvg_wait)
 	ld	a, h
 	or	l
-	jr	z, _zvg_cmd
+	jr	z, _zvg_first
 	dec	hl
 	ld	(_snd_zvg_wait), hl
 	ld	a, h
 	or	l
 	ret	nz
-	jp	_zvg_cmd		; the wait elapsed: continue this tick
+_zvg_first:				; the wait elapsed: continue this tick
+	ld	a, (_snd_zvg_chip)
+	ld	e, a
+	ld	d, #0
+	ld	hl, #_snd_ports
+	add	hl, de
+	ld	a, (hl)
+	ld	(_zvg_port), a
 
 ; The command loop: B = head, C = available, HL = &ring[head].
 _zvg_cmd:
@@ -187,16 +238,12 @@ _zvg_incomplete:
 	ld	a, (_snd_zvg_eof)
 	or	a
 	jr	nz, _zvg_truncated
-	call	_zvg_underrun
-	ret
+	jp	_zvg_underrun
 
 _zvg_truncated:
 	; the declared stream ended without completing the command at the
 	; head: report the head opcode, or FFh when the ring is empty
-	ld	hl, (_snd_zvg_consumed)
-	ld	de, #SND_ZVG_HEADER
-	add	hl, de
-	ld	(_snd_zvg_error_offset), hl
+	call	_zvg_error_at_head
 	ld	a, #0xFF
 	ld	(_snd_zvg_error_op), a
 	ld	a, (_snd_zvg_head)
@@ -219,29 +266,21 @@ _zvg_underrun:
 	ld	(_snd_zvg_underruns), hl
 	ld	a, #SND_ZVG_UNDERRUN
 	ld	(_snd_zvg_state), a
-	call	_zvg_mute
-	ret
+	jp	_zvg_mute
 
 _zvg_bad:
-	ld	hl, (_snd_zvg_consumed)
-	ld	de, #SND_ZVG_HEADER
-	add	hl, de
-	ld	(_snd_zvg_error_offset), hl
+	call	_zvg_error_at_head
 	ld	a, (_zvg_opcode)
 	ld	(_snd_zvg_error_op), a
 	ld	a, #SND_ZVG_ERROR
 	ld	(_snd_zvg_state), a
-	call	_zvg_mute
-	ret
+	jp	_zvg_mute
 
 ; --- END: done, like the reference (no writes on the END tick) ------------
 _zvg_end_op:
-	ld	a, b
-	inc	a
-	ld	(_snd_zvg_head), a
-	ld	hl, (_snd_zvg_consumed)
-	inc	hl
-	ld	(_snd_zvg_consumed), hl
+	ld	a, #1
+	ld	e, #0
+	call	_zvg_account
 	ld	a, #SND_ZVG_DONE
 	ld	(_snd_zvg_state), a
 	ret
@@ -252,20 +291,13 @@ _zvg_write_op:
 	cp	#2
 	jr	c, _zvg_incomplete
 	inc	l
-	ld	a, (hl)		; the byte
+	ld	a, (hl)			; the byte
 	push	bc
 	call	_zvg_write
 	pop	bc
-	ld	hl, (_snd_zvg_writes)
-	inc	hl
-	ld	(_snd_zvg_writes), hl
-	ld	a, b
-	add	a, #2
-	ld	(_snd_zvg_head), a
-	ld	hl, (_snd_zvg_consumed)
-	ld	de, #2
-	add	hl, de
-	ld	(_snd_zvg_consumed), hl
+	ld	a, #2
+	ld	e, #1
+	call	_zvg_account
 	jp	_zvg_cmd
 
 ; --- WAIT16 lo hi ---------------------------------------------------------
@@ -281,75 +313,61 @@ _zvg_wait16_op:
 	or	e
 	jr	z, _zvg_bad		; a zero wait is malformed
 	ld	(_snd_zvg_wait), de
-	ld	a, b
-	add	a, #3
-	ld	(_snd_zvg_head), a
-	ld	hl, (_snd_zvg_consumed)
-	ld	de, #3
-	add	hl, de
-	ld	(_snd_zvg_consumed), hl
-	ret
+	ld	a, #3
+	ld	e, #0
+	jp	_zvg_account
 
 ; --- WAIT n (40h-7Fh) -----------------------------------------------------
 _zvg_wait_short:
-	ld	a, (_zvg_opcode)
 	and	#0x3F
 	inc	a
-	ld	e, a
-	ld	d, #0
-	ld	(_snd_zvg_wait), de
-	ld	a, b
-	inc	a
-	ld	(_snd_zvg_head), a
-	ld	hl, (_snd_zvg_consumed)
-	inc	hl
-	ld	(_snd_zvg_consumed), hl
-	ret
+	ld	l, a
+	ld	h, #0
+	ld	(_snd_zvg_wait), hl
+	ld	a, #1
+	ld	e, #0
+	jp	_zvg_account
 
-; --- WRITE RUN (80h-8Fh) --------------------------------------------------
+; --- WRITE RUN (80h-8Fh): the bytes straight from the ring ----------------
 _zvg_run_op:
-	ld	a, (_zvg_opcode)
 	and	#0x0F
-	inc	a			; the write count
-	ld	(_zvg_writes_left), a
+	inc	a
+	ld	d, a			; D = the write count
 	inc	a			; needed = writes + 1
-	ld	d, a			; D = needed
+	ld	e, a
 	ld	a, c
-	cp	d
+	cp	e
 	jp	c, _zvg_incomplete
 	inc	l			; the first byte
-_zvg_run_loop:
+	push	bc
+	ld	a, (_snd_output_mode)
+	or	a
+	jr	nz, _zvg_run_batch
+	ld	a, (_zvg_port)
+	ld	c, a
+	ld	b, d
+1$:
 	ld	a, (hl)
 	inc	l
-	push	bc
-	push	de
+	out	(c), a
+	djnz	1$
+	jr	_zvg_run_done
+_zvg_run_batch:
+	ld	b, (hl)
 	push	hl
-	call	_zvg_write
-	pop	hl
+	push	de
+	call	_zvg_append
 	pop	de
+	pop	hl
+	inc	l
+	dec	d
+	jr	nz, _zvg_run_batch
+_zvg_run_done:
 	pop	bc
-	ld	a, (_zvg_writes_left)
-	dec	a
-	ld	(_zvg_writes_left), a
-	jr	nz, _zvg_run_loop
-	ld	hl, (_snd_zvg_writes)
 	ld	a, (_zvg_opcode)
 	and	#0x0F
 	inc	a
-	ld	e, a
-	ld	d, #0
-	add	hl, de
-	ld	(_snd_zvg_writes), hl
-	; consume the opcode plus its bytes
-	ld	a, (_zvg_opcode)
-	and	#0x0F
-	add	a, #2
-	ld	e, a
-	ld	d, #0
-	ld	a, b
-	add	a, e
-	ld	(_snd_zvg_head), a
-	ld	hl, (_snd_zvg_consumed)
-	add	hl, de
-	ld	(_snd_zvg_consumed), hl
+	ld	e, a			; written
+	inc	a			; with the opcode: consumed
+	call	_zvg_account
 	jp	_zvg_cmd

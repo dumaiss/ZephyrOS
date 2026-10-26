@@ -59,15 +59,10 @@ int snd_open(void)
 	/* The ports and the clock reach the assembly through the mirrored
 	 * bytes from here on. */
 	snd_load_ports(&info);
+	snd_voice_init();
 	snd_shadow_invalidate();
 	snd_output_mode = SND_OUTPUT_DIRECT;
 	snd_reserved_voices = 0u;
-	/* The scheduling state starts empty (BSS-zero would make voice 0
-	 * the head and time 0 the earliest due); snd_close unlinks every
-	 * voice on the way out. */
-	snd_voice_head = SND_VOICE_NONE;
-	snd_wait_head = SND_VOICE_NONE;
-	snd_min_due = 0xFFFFu;
 	if (snd_manual_rate == 0u) {
 		snd_manual_rate = 50u;
 	}
@@ -88,6 +83,9 @@ void snd_close(void)
 	for (i = 0u; i < SND_VOICE_COUNT; ++i) {
 		snd_voice_clear(i);
 	}
+	/* Close has no later application tick: consume the pending per-voice
+	 * silences through the same shadowed write-through path here. */
+	snd_engine(0u);
 	/* A lingering ZVG's state and reservation die with the session
 	 * (the card reset mutes it). */
 	snd_output_flush();

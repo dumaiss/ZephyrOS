@@ -1133,7 +1133,7 @@ all: $(EXE_USER_ROOT)/sndprobe.exe
 # after the program objects, before libkos; the private header names the
 # engine counters the catchup mode reports.
 $(eval $(call exe_program,sndtest,tests/snd,\
-	sndtest.c,STACK=384,LIBS=snd,INCLUDES=user/sdk/snd/src))
+	sndtest.c sndtest_put.asm,STACK=384,LIBS=snd,INCLUDES=user/sdk/snd/src))
 
 all: $(EXE_USER_ROOT)/sndtest.exe
 

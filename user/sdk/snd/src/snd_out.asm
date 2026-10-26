@@ -1,32 +1,21 @@
 ; -----------------------------------------------------------------------------
-; libsnd output engine (user/sdk/snd/src): the per-chip desired state, the
-; hardware shadow and the flush to the ports.
+; libsnd output engine. Manual voices write through their descriptors: the
+; put primitives update the desired state, compare the shadow and emit at
+; once (DIRECT: OUT (C),A to the descriptor's port; BATCH: an append).
+; Tick-end work is only an invalid-shadow rewrite and a BATCH send.
 ;
-; The C setup (snd_open) mirrors the card's ports into the bytes below;
-; every musical source writes the *desired* state (three tone periods,
-; four attenuations and the noise control per chip) and queues the
-; changed slot (0-7) into the chip's slot queue.  This module turns the
-; queue into register writes in the card's order: per chip, the tone
-; latch+data pairs 0-2, then the noise control (forced when the force
-; flag is set, so a phase reset writes even when the value matches),
-; then the four attenuations.
+; The descriptors are one 256-byte-aligned page (16 x 16 bytes, see
+; snd_voice.asm and snd_private.h); a voice's attenuation (desired,
+; shadow, latch) and port sit inside its descriptor, so the attenuation
+; write walks them with `inc l`.  Periods and the noise control keep
+; their per-chip arrays, reached through the descriptor's pointers.
 ;
-;   - DIRECT: OUT (C),A to the port sound_info reported;
-;   - BATCH: the writes accumulate in a static array and one sound_write
-;     sends them at the end of the tick.
-;
-; Both modes produce the same trace.  An invalidated shadow (open, or a
-; failed batch) makes the flush rewrite everything from the desired
-; state.  A failed sound_write marks the shadow uncertain and mutes;
-; the next flush rewrites everything.
-;
-; Call convention (sdcccall(1)):
-;   void snd_load_ports(const struct ksound_info *info)   HL = info
-;   void snd_shadow_invalidate(void)
-;   void snd_output_flush(void)
-;   void snd_noise_apply(uint8_t noise_voice, uint8_t control)
-;                                                         A = voice, L = ctrl
-;   void snd_queue_push(uint8_t chip, uint8_t slot)       A = chip, L = slot
+; Internal fast ABI (also used by the tracker renderer):
+;   HL = the voice's descriptor base (L = voice << 4)
+;   snd_put_period: DE = 10-bit period
+;   snd_put_atten:  A = hardware attenuation (0..15)
+;   snd_put_noise:  A = E0h control byte, B != 0 forces an equal write
+; Each clobbers A, BC, DE and L (H, the descriptor page, is kept).
 ; -----------------------------------------------------------------------------
 
 	.module snd_out
@@ -35,18 +24,32 @@
 	.globl _snd_shadow_invalidate
 	.globl _snd_output_flush
 	.globl _snd_noise_apply
-	.globl _snd_queue_push
+	.globl snd_put_period
+	.globl snd_put_atten
+	.globl snd_put_noise
 	.globl snd_batch_send
 	.globl _sound_write
 	.globl _snd_handle
 	.globl _snd_output_mode
 	.globl _snd_dirty
+	.globl _snd_voice_work
+	.globl _snd_due_work
+	.globl _snd_desc_page
+	.globl _snd_all_valid
 
-SND_CHIP_COUNT     = 4
-SND_BATCH_MAX      = 60
-; 60 pairs: a full rewrite (44) plus a ZVG tick's appended run (<= 16)
-SND_P_NOISE_BYTE   = 0xE0
-SND_QUEUE_STRIDE   = 16
+SND_CHIP_COUNT   = 4
+SND_BATCH_MAX    = 60
+SND_P_NOISE_BYTE = 0xE0
+
+; Descriptor fields (mirrored in snd_voice.asm and snd_private.h).
+VD_ATT_DESIRED   = 6
+VD_ATT_SHADOW    = 7
+VD_ATT_LATCH     = 8
+VD_PORT          = 9
+VD_REG_LATCH     = 10
+VD_CHIP          = 11
+VD_DESIRED_REG   = 12
+VD_SHADOW_REG    = 14
 
 	.area _DATA
 
@@ -54,69 +57,43 @@ _snd_ports::
 	.ds SND_CHIP_COUNT
 _snd_desired_period::
 	.ds SND_CHIP_COUNT * 3 * 2
-_snd_desired_atten::
-	.ds SND_CHIP_COUNT * 4
 _snd_desired_noise::
-	.ds SND_CHIP_COUNT
-_snd_noise_force::
 	.ds SND_CHIP_COUNT
 _snd_shadow_period::
 	.ds SND_CHIP_COUNT * 3 * 2
-_snd_shadow_atten::
-	.ds SND_CHIP_COUNT * 4
 _snd_shadow_noise::
 	.ds SND_CHIP_COUNT
 _snd_shadow_valid::
 	.ds SND_CHIP_COUNT
+_snd_all_valid::
+	.ds 1			; 1 while every chip's shadow is valid
 _snd_batch::
 	.ds SND_BATCH_MAX * 2
 _snd_batch_count::
 	.ds 1
-; The changed-slot queues: 16 bytes per chip (index = chip*16 | count),
-; the entries are the slots 0-7 (tone 0-2, noise 3, atten 4-7).
-_snd_slot_queue::
-	.ds SND_CHIP_COUNT * SND_QUEUE_STRIDE
-_snd_slot_count::
-	.ds SND_CHIP_COUNT
-; One bit per chip with queued slots: the flush skips empty chips.
-_snd_chip_mask::
-	.ds 1
-; The flush's working copy of the mask, consumed chip by chip.
-_snd_mask_work::
-	.ds 1
-; The flush's working state.
-_snd_flush_chip::
-	.ds 1
-; The current chip's DAC base port, cached for the direct emitters.
-_snd_port::
-	.ds 1
-_snd_tmp::
-	.ds 1
-_snd_tmp2::
-	.ds 2
-_snd_tmp3::
-	.ds 2
 _snd_dirty::
+	.ds 1
+
+; Full-rewrite working bytes are off the steady write-through path.
+_snd_rw_chip::
+	.ds 1
+_snd_rw_port::
+	.ds 1
+_snd_rw_latch::
 	.ds 1
 
 	.area _CODE
 
-; ---------------------------------------------------------------------------
-; void snd_load_ports(const struct ksound_info *info);  HL = info
-;   Mirror the four PSG ports into the fixed bytes (psg_ports is at
-;   offset 4 in struct ksound_info).
-; ---------------------------------------------------------------------------
 _snd_load_ports::
 	ld	de, #_snd_ports
-	ld	b, #SND_CHIP_COUNT
-	ld	c, #0x04
+	ld	bc, #0x0404		; B = four ports, C = info offset
 1$:
 	push	bc
 	push	hl
 	ld	a, l
 	add	a, c
 	ld	l, a
-	jp	nc, 2$
+	jr	nc, 2$
 	inc	h
 2$:
 	ld	a, (hl)
@@ -128,26 +105,31 @@ _snd_load_ports::
 	djnz	1$
 	ret
 
-; ---------------------------------------------------------------------------
-; void snd_shadow_invalidate(void);
-;   Unknown hardware state and a muted desired state: the next flush
-;   rewrites everything, and everything silent.
-; ---------------------------------------------------------------------------
+; Unknown hardware, a muted desired state: the next flush rewrites all.
 _snd_shadow_invalidate::
+	xor	a
+	ld	(_snd_all_valid), a
 	ld	hl, #_snd_shadow_valid
 	ld	b, #SND_CHIP_COUNT
-	xor	a
 1$:
 	ld	(hl), a
 	inc	hl
 	djnz	1$
-	ld	hl, #_snd_desired_atten
-	ld	b, #SND_CHIP_COUNT * 4
-	ld	a, #0x0F
+	; every descriptor: desired attenuation 15 (silent), no forced write
+	ld	a, (_snd_desc_page)
+	ld	h, a
+	ld	l, #0
 2$:
-	ld	(hl), a
-	inc	hl
-	djnz	2$
+	res	2, (hl)			; VF_FORCE
+	ld	a, l
+	or	#VD_ATT_DESIRED
+	ld	l, a
+	ld	(hl), #0x0F
+	ld	a, l
+	and	#0xF0
+	add	a, #16
+	ld	l, a
+	jr	nz, 2$
 	ld	hl, #_snd_desired_noise
 	ld	b, #SND_CHIP_COUNT
 	ld	a, #SND_P_NOISE_BYTE
@@ -155,404 +137,464 @@ _snd_shadow_invalidate::
 	ld	(hl), a
 	inc	hl
 	djnz	3$
-	ld	hl, #_snd_noise_force
-	ld	b, #SND_CHIP_COUNT
-	xor	a
-4$:
-	ld	(hl), a
-	inc	hl
-	djnz	4$
 	ld	a, #1
 	ld	(_snd_dirty), a
 	ret
 
-; ---------------------------------------------------------------------------
-; void snd_noise_apply(uint8_t noise_voice, uint8_t control);  A, L
-;   The desired noise byte for the chip (E0h | control) with the forced
-;   write flag, so a rate/mode change is always written.
-; ---------------------------------------------------------------------------
+; Foreground control publishes desired+force. The voice-order walk applies it
+; through the chip's noise descriptor inside the next tick.
 _snd_noise_apply::
-	ld	(_snd_tmp), a		; the voice
-	ld	a, l
-	or	#SND_P_NOISE_BYTE
-	ld	(_snd_tmp2), a		; the desired byte
-	ld	a, (_snd_tmp)
+	ld	c, l
 	srl	a
-	srl	a			; chip = voice >> 2
+	srl	a
 	ld	e, a
 	ld	d, #0
 	ld	hl, #_snd_desired_noise
 	add	hl, de
-	ld	a, (_snd_tmp2)
+	ld	a, c
+	or	#SND_P_NOISE_BYTE
 	ld	(hl), a
-	ld	hl, #_snd_noise_force
-	add	hl, de
-	ld	(hl), #1
-	ld	l, #3			; the noise slot
-	ld	a, e			; the chip
-	call	_snd_queue_push
-	ld	a, #1
-	ld	(_snd_dirty), a
-	ret
-
-; ---------------------------------------------------------------------------
-; void snd_queue_push(uint8_t chip, uint8_t slot);  A = chip, L = slot
-;   Append the changed slot to the chip's queue (16 slots per chip, one
-;   tick's writers never exceed the stride).
-; ---------------------------------------------------------------------------
-_snd_queue_push::		; A = chip, L = slot
-	ld	c, l			; C = the slot
-	ld	e, a
-	ld	d, #0			; DE = chip
-	ld	hl, #_snd_slot_count
-	add	hl, de
-	ld	b, (hl)		; B = the old count
-	inc	(hl)			; count++
-	ld	hl, #_snd_chip_bits
-	add	hl, de
-	ld	a, (_snd_chip_mask)
-	or	(hl)			; mask |= 1 << chip
-	ld	(_snd_chip_mask), a
+	; the chip's noise descriptor (voice chip*4+3) carries the force
 	ld	a, e
-	add	a, a
-	add	a, a
-	add	a, a
-	add	a, a			; chip * 16
-	or	b			; the queue index
-	ld	e, a
-	ld	hl, #_snd_slot_queue
-	add	hl, de
-	ld	(hl), c
+	rrca
+	rrca
+	or	#0x30
+	ld	l, a
+	ld	a, (_snd_desc_page)
+	ld	h, a
+	set	2, (hl)			; VF_FORCE
+	ld	a, #1
+	ld	(_snd_voice_work), a
+	ld	(_snd_due_work), a
 	ret
 
-_snd_chip_bits:
-	.db	0x01, 0x02, 0x04, 0x08
+; ---------------------------------------------------------------------------
+; The emit for a descriptor: A = the byte, L = any field of the
+; descriptor (its base is L & F0h).  DIRECT: OUT to the descriptor's
+; port; BATCH: an append, a full batch sent first.  Clobbers A, BC, DE;
+; keeps HL.
+; ---------------------------------------------------------------------------
+_desc_emit:
+	ld	b, a
+	ld	a, l
+	and	#0xF0
+	or	#VD_PORT
+	ld	e, l			; keep L
+	ld	l, a
+	ld	a, (_snd_output_mode)
+	or	a
+	jr	nz, _desc_batch
+	ld	c, (hl)			; the port
+	ld	l, e
+	out	(c), b
+	ret
+_desc_batch:
+	inc	l
+	inc	l			; VD_CHIP
+	ld	c, (hl)
+	ld	l, e
+	push	hl
+	ld	a, (_snd_batch_count)
+	cp	#SND_BATCH_MAX
+	jr	c, 1$
+	push	bc
+	call	snd_batch_send
+	pop	bc
+1$:
+	ld	a, (_snd_batch_count)
+	ld	e, a
+	inc	a
+	ld	(_snd_batch_count), a
+	ld	d, #0
+	ld	hl, #_snd_batch
+	add	hl, de
+	add	hl, de
+	ld	(hl), c			; the chip
+	inc	hl
+	ld	(hl), b			; the byte
+	pop	hl
+	ret
+
+; The slow validity check: Z when the descriptor's chip shadow is
+; invalid (L = any field).  Keeps BC, HL.
+_chip_invalid:
+	push	hl
+	ld	a, l
+	and	#0xF0
+	or	#VD_CHIP
+	ld	l, a
+	ld	e, (hl)
+	ld	d, #0
+	ld	hl, #_snd_shadow_valid
+	add	hl, de
+	ld	a, (hl)
+	pop	hl
+	or	a
+	ret
 
 ; ---------------------------------------------------------------------------
-; void snd_output_flush(void);
-;   A no-change tick leaves the dirty flag clear and returns in a dozen
-;   cycles.  Otherwise: an invalidated shadow rewrites everything; a
-;   clean shadow writes only the queued slots, chip by chip; the batch
-;   (BATCH mode) goes out last.
+; snd_put_atten: HL = descriptor base, A = attenuation 0..15.
 ; ---------------------------------------------------------------------------
+snd_put_atten::
+	ld	c, a
+	ld	a, l
+	and	#0xF0
+	or	#VD_ATT_DESIRED
+	ld	l, a
+	ld	(hl), c			; desired
+	inc	l			; shadow
+	ld	a, (_snd_all_valid)
+	or	a
+	jr	z, _atten_check
+_atten_valid:
+	ld	a, c
+	cp	(hl)
+	ret	z			; unchanged
+	ld	(hl), a			; shadow
+	inc	l			; latch
+	or	(hl)
+	ld	b, a
+	ld	a, (_snd_output_mode)
+	or	a
+	jr	nz, _atten_batch
+	inc	l			; port
+	ld	c, (hl)
+	out	(c), b
+	ret
+_atten_batch:
+	ld	a, b
+	jp	_desc_emit
+_atten_check:
+	call	_chip_invalid
+	ret	z
+	jr	_atten_valid
+
+; ---------------------------------------------------------------------------
+; snd_put_period: HL = descriptor base, DE = the 10-bit period.
+; ---------------------------------------------------------------------------
+snd_put_period::
+	ld	a, l
+	and	#0xF0
+	or	#VD_DESIRED_REG
+	ld	l, a
+	ld	c, (hl)
+	inc	l
+	ld	b, (hl)			; BC = &desired
+	ld	a, e
+	ld	(bc), a
+	inc	bc
+	ld	a, d
+	ld	(bc), a
+	ld	a, (_snd_all_valid)
+	or	a
+	jr	nz, 1$
+	push	de
+	call	_chip_invalid
+	pop	de
+	ret	z
+1$:
+	inc	l			; VD_SHADOW_REG
+	ld	c, (hl)
+	inc	l
+	ld	b, (hl)			; BC = &shadow
+	ld	a, (bc)
+	cp	e
+	jr	nz, 2$
+	inc	bc
+	ld	a, (bc)
+	cp	d
+	ret	z
+	dec	bc
+2$:
+	ld	a, e
+	ld	(bc), a
+	inc	bc
+	ld	a, d
+	ld	(bc), a
+	ld	a, l
+	and	#0xF0
+	or	#VD_PORT
+	ld	l, a
+	ld	a, (_snd_output_mode)
+	or	a
+	jr	nz, 3$
+	; DIRECT: the latch byte, then period bits 9..4, to the held port
+	ld	c, (hl)
+	inc	l			; VD_REG_LATCH
+	ld	a, e
+	and	#0x0F
+	or	(hl)
+	out	(c), a
+	ld	a, e
+	and	#0xF0
+	or	d
+	rrca
+	rrca
+	rrca
+	rrca
+	out	(c), a
+	ret
+3$:
+	; the latch byte: tone latch | period's low nibble
+	inc	l			; VD_REG_LATCH
+	ld	a, e
+	and	#0x0F
+	or	(hl)
+	push	de
+	call	_desc_emit
+	pop	de
+	; the data byte: period bits 9..4
+	ld	a, e
+	rrca
+	rrca
+	rrca
+	rrca
+	and	#0x0F
+	ld	e, a
+	ld	a, d
+	rlca
+	rlca
+	rlca
+	rlca
+	and	#0xF0
+	or	e
+	jp	_desc_emit
+
+; ---------------------------------------------------------------------------
+; snd_put_noise: HL = descriptor base, A = control byte, B != 0 forces.
+; ---------------------------------------------------------------------------
+snd_put_noise::
+	ld	c, a
+	ld	a, l
+	and	#0xF0
+	or	#VD_DESIRED_REG
+	ld	l, a
+	ld	e, (hl)
+	inc	l
+	ld	d, (hl)			; DE = &desired noise
+	ld	a, c
+	ld	(de), a
+	ld	a, (_snd_all_valid)
+	or	a
+	jr	nz, 1$
+	call	_chip_invalid
+	ret	z
+1$:
+	inc	l
+	ld	e, (hl)
+	inc	l
+	ld	d, (hl)			; DE = &shadow noise
+	ld	a, b
+	or	a
+	jr	nz, 2$
+	ld	a, (de)
+	cp	c
+	ret	z
+2$:
+	ld	a, c
+	ld	(de), a
+	jp	_desc_emit
+
 _snd_output_flush::
 	ld	a, (_snd_dirty)
 	or	a
-	jr	nz, _flush_go
-	ld	a, (_snd_batch_count)
-	or	a
-	ret	z			; nothing dirty and no batch to send
-_flush_go:
+	jp	z, _flush_batch
 	xor	a
 	ld	(_snd_dirty), a
-	; the batch count is kept: a ZVG tick appends before this flush
-	; and the pre-existing pairs ride the same sound_write (the
-	; success path below clears it)
-	ld	hl, #_snd_shadow_valid
-	ld	b, #SND_CHIP_COUNT
-1$:
-	ld	a, (hl)
+	ld	a, (_snd_all_valid)
 	or	a
 	jp	z, _flush_all
-	inc	hl
-	djnz	1$
-	xor	a
-	ld	(_snd_flush_chip), a
-	ld	a, (_snd_chip_mask)
-	ld	(_snd_mask_work), a
-	xor	a
-	ld	(_snd_chip_mask), a
-_chip_loop:
-	ld	a, (_snd_mask_work)
+	jp	_flush_batch
+
+; A=value, current chip/port in the rewrite working bytes.
+_rewrite_emit:
+	ld	b, a
+	ld	a, (_snd_output_mode)
 	or	a
-	jp	z, _flush_batch
-	rra			; this chip's bit into the carry
-	ld	(_snd_mask_work), a
-	jr	nc, _chip_next
-	ld	a, (_snd_flush_chip)
+	jr	nz, 1$
+	ld	a, (_snd_rw_port)
+	ld	c, a
+	out	(c), b
+	ret
+1$:
+	ld	a, (_snd_batch_count)
+	cp	#SND_BATCH_MAX
+	jr	c, 2$
+	push	bc
+	call	snd_batch_send
+	pop	bc
+2$:
+	ld	a, (_snd_batch_count)
+	add	a, a
 	ld	e, a
 	ld	d, #0
-	ld	hl, #_snd_slot_count
+	ld	hl, #_snd_batch
 	add	hl, de
-	ld	b, (hl)		; B = the count
+	ld	a, (_snd_rw_chip)
+	ld	(hl), a
+	inc	hl
+	ld	(hl), b
+	ld	a, (_snd_batch_count)
+	inc	a
+	ld	(_snd_batch_count), a
+	ret
+
+; DIRECT: the shadow copies the desired periods and noise in one block
+; (the arrays are contiguous), then each chip's eleven bytes go out in
+; card order with its port held in C.
+_flush_direct:
+	ld	hl, #_snd_desired_period
+	ld	de, #_snd_shadow_period
+	ld	bc, #SND_CHIP_COUNT * 7
+	ldir
+	ld	hl, #_snd_desired_period
 	xor	a
-	ld	(hl), a		; consumed
-	ld	a, (_snd_flush_chip)
-	add	a, a
-	add	a, a
-	add	a, a
-	add	a, a
-	ld	l, a
-	ld	h, #0
-	ld	de, #_snd_slot_queue
-	add	hl, de
-	; cache the chip's port for the direct emitters
-	ld	a, (_snd_flush_chip)
+	ld	(_snd_rw_chip), a
+_fd_chip:
+	push	hl
 	ld	e, a
 	ld	d, #0
-	push	hl
 	ld	hl, #_snd_ports
 	add	hl, de
-	ld	a, (hl)
-	ld	(_snd_port), a
+	ld	c, (hl)			; C = the chip's port
 	pop	hl
-_queue_entry:
-	ld	e, (hl)		; the slot
+	ld	b, #0x80		; the tone latch
+_fd_tone:
+	ld	e, (hl)
 	inc	hl
-	push	hl
-	push	bc
-	call	_slot_flush
-	pop	bc
-	pop	hl
-	djnz	_queue_entry
-_chip_next:
-	ld	a, (_snd_flush_chip)
-	inc	a
-	ld	(_snd_flush_chip), a
-	jp	_chip_loop
-
-; One queued slot: E = slot, _snd_flush_chip = chip.
-_slot_flush:
-	ld	a, (_snd_flush_chip)
-	ld	b, a			; B = chip
+	ld	d, (hl)			; DE = the period
+	inc	hl
 	ld	a, e
-	ld	(_snd_tmp), a		; the slot
-	cp	#3
-	jp	nc, _slot_high
-	; ---- a tone: chip*6 + slot*2 into the period pair ----
-	ld	a, b
-	add	a, a
-	ld	e, a			; chip * 2
-	add	a, a
-	add	a, e			; chip * 6
-	ld	e, a
-	ld	a, (_snd_tmp)
-	add	a, a
-	add	a, e			; chip*6 + slot*2
-	ld	e, a
-	ld	d, #0
-	ld	hl, #_snd_desired_period
-	add	hl, de
-	ld	c, (hl)		; plo
-	inc	hl
-	ld	b, (hl)		; phi
-	push	bc			; the period
-	ld	de, #(_snd_shadow_period - _snd_desired_period)
-	add	hl, de			; &shadow hi
-	ld	a, (hl)
-	dec	hl
-	cp	b
-	jr	nz, _tone_write
-	ld	a, (hl)
-	cp	c
-	jr	nz, _tone_write
-	pop	bc
-	ret
-_tone_write:
-	ld	(hl), c			; shadow lo
-	inc	hl
-	ld	(hl), b			; shadow hi
-	ld	a, c
-	ld	(_snd_tmp2), a		; the period rides the temps
-	ld	a, b
-	ld	(_snd_tmp3), a
-	ld	a, (_snd_tmp)
-	rrca
-	rrca
-	rrca
-	and	#0xE0
-	or	#0x80
-	ld	e, a
-	ld	a, c
 	and	#0x0F
-	or	e
-	call	_emit
-	ld	a, (_snd_tmp2)
-	rrca
-	rrca
-	rrca
-	rrca
-	and	#0x0F
-	ld	e, a
-	ld	a, (_snd_tmp3)
-	add	a, a
-	add	a, a
-	add	a, a
-	add	a, a
+	or	b
+	out	(c), a
+	ld	a, e
 	and	#0xF0
-	or	e
-	call	_emit
-	pop	bc
-	ret
-
-_slot_high:
-	ld	a, (_snd_tmp)
-	cp	#3
-	jr	nz, _slot_atten
-	; ---- the noise control ----
-	ld	a, (_snd_flush_chip)
+	or	d
+	rrca
+	rrca
+	rrca
+	rrca				; period bits 9..4
+	out	(c), a
+	ld	a, b
+	add	a, #0x20
+	ld	b, a
+	cp	#0xE0
+	jr	nz, _fd_tone
+	push	hl
+	ld	a, (_snd_rw_chip)
 	ld	e, a
 	ld	d, #0
 	ld	hl, #_snd_desired_noise
 	add	hl, de
-	ld	c, (hl)		; C = the desired byte
-	ld	hl, #_snd_noise_force
-	add	hl, de
 	ld	a, (hl)
-	or	a
-	jr	nz, _noise_write
-	ld	hl, #_snd_shadow_noise
-	add	hl, de
-	ld	a, (hl)
-	cp	c
-	ret	z
-_noise_write:
-	ld	hl, #_snd_shadow_noise
-	add	hl, de
-	ld	(hl), c
-	ld	hl, #_snd_noise_force
-	add	hl, de
-	ld	(hl), #0
-	ld	a, c
-	jp	_emit
+	out	(c), a
+	; the four attenuations from the chip's descriptors
+	ld	a, e
+	rrca
+	rrca				; chip * 64
+	or	#VD_ATT_DESIRED
+	ld	l, a
+	ld	a, (_snd_desc_page)
+	ld	h, a
+	ld	b, #4
+_fd_atten:
+	ld	a, (hl)			; desired
+	inc	l
+	ld	(hl), a			; shadow
+	inc	l
+	or	(hl)			; | the latch
+	out	(c), a
+	ld	a, l
+	add	a, #14
+	ld	l, a
+	djnz	_fd_atten
+	pop	hl
+	ld	a, (_snd_rw_chip)
+	inc	a
+	ld	(_snd_rw_chip), a
+	cp	#SND_CHIP_COUNT
+	jr	nz, _fd_chip
+	jp	_flush_valid
 
-_slot_atten:
-	ld	a, (_snd_flush_chip)
-	add	a, a
-	add	a, a			; chip * 4
-	ld	e, a
-	ld	a, (_snd_tmp)
-	sub	#4			; the attenuation sub-voice
-	add	a, e			; chip*4 + sub
-	ld	e, a
-	ld	d, #0
-	ld	hl, #_snd_desired_atten
-	add	hl, de
-	ld	c, (hl)		; C = the desired atten
-	ld	de, #(_snd_shadow_atten - _snd_desired_atten)
-	add	hl, de
-	ld	a, (hl)
-	cp	c
-	ret	z
-	ld	(hl), c
-	ld	a, (_snd_tmp)
-	sub	#4
-	rrca
-	rrca
-	rrca
-	and	#0xE0
-	or	#0x90
-	or	c
-	jp	_emit
-
-; The full rewrite after an invalidation: every register, in the card's
-; order, with no compare.
+; Complete 44-register card-order rewrite from desired state.
 _flush_all:
-	; a full rewrite consumes every queued slot
+	ld	a, (_snd_output_mode)
+	or	a
+	jr	z, _flush_direct
 	xor	a
-	ld	hl, #_snd_slot_count
-	ld	(hl), a
-	inc	hl
-	ld	(hl), a
-	inc	hl
-	ld	(hl), a
-	inc	hl
-	ld	(hl), a
-	ld	(_snd_chip_mask), a
-	ld	hl, #_snd_desired_period
-	ld	de, #_snd_shadow_period
-	xor	a
-	ld	(_snd_flush_chip), a
-_fa_chip:
-	; cache the chip's port for the emitters
-	push	hl
-	push	de			; the shadow pointer
-	ld	a, (_snd_flush_chip)
+	ld	(_snd_rw_chip), a
+_rw_chip_loop:
 	ld	e, a
 	ld	d, #0
 	ld	hl, #_snd_ports
 	add	hl, de
 	ld	a, (hl)
-	ld	(_snd_port), a
-	pop	de
-	pop	hl
-	ld	b, #3			; the tone counter (3, 2, 1)
-_fa_tone:
+	ld	(_snd_rw_port), a
+	; period desired/shadow bases: chip * 6
+	ld	a, e
+	add	a, a
+	ld	c, a
+	add	a, a
+	add	a, c
+	ld	c, a
+	ld	b, #0
+	ld	hl, #_snd_desired_period
+	add	hl, bc
+	ld	de, #_snd_shadow_period
+	ex	de, hl
+	add	hl, bc
+	ex	de, hl
+	ld	b, #3
+	xor	a
+	ld	(_snd_rw_latch), a
+_rw_tone:
 	push	bc
-	ld	a, #3
-	sub	b			; the sub-voice 0-2
-	ld	(_snd_tmp), a
-	ld	c, (hl)		; plo
+	ld	c, (hl)
+	ld	a, c
+	ld	(de), a
 	inc	hl
-	ld	b, (hl)		; phi
-	ex	de, hl
-	ld	(hl), c
+	inc	de
+	ld	b, (hl)
+	ld	a, b
+	ld	(de), a
 	inc	hl
-	ld	(hl), b
-	dec	hl
-	ex	de, hl
-	inc	hl			; past the period pair
+	inc	de
 	push	hl
 	push	de
-	ld	a, c
-	ld	(_snd_tmp2), a		; the period rides the temps
-	ld	a, b
-	ld	(_snd_tmp3), a
-	ld	a, (_snd_tmp)
-	rrca
-	rrca
-	rrca
-	and	#0xE0
+	ld	a, (_snd_rw_latch)
 	or	#0x80
 	ld	e, a
 	ld	a, c
 	and	#0x0F
 	or	e
-	call	_emit
-	ld	a, (_snd_tmp2)
+	push	bc
+	call	_rewrite_emit
+	pop	bc
+	ld	a, c
 	rrca
 	rrca
 	rrca
 	rrca
 	and	#0x0F
 	ld	e, a
-	ld	a, (_snd_tmp3)
-	add	a, a
-	add	a, a
-	add	a, a
-	add	a, a
+	ld	a, b
+	rlca
+	rlca
+	rlca
+	rlca
 	and	#0xF0
 	or	e
-	call	_emit
+	call	_rewrite_emit
 	pop	de
 	pop	hl
-	inc	de
-	inc	de
+	ld	a, (_snd_rw_latch)
+	add	a, #0x20
+	ld	(_snd_rw_latch), a
 	pop	bc
-	djnz	_fa_tone
-	; the noise/atten helpers clobber HL/DE: save the tone pointers
-	push	hl
-	push	de
-	call	_fa_noise
-	call	_fa_attens
-	pop	de
-	pop	hl
-	ld	a, (_snd_flush_chip)
-	inc	a
-	ld	(_snd_flush_chip), a
-	cp	#SND_CHIP_COUNT
-	jr	nz, _fa_chip
-	ld	hl, #_snd_shadow_valid
-	ld	b, #SND_CHIP_COUNT
-	ld	a, #1
-_fa_valid:
-	ld	(hl), a
-	inc	hl
-	djnz	_fa_valid
-	jp	_flush_batch
-
-_fa_noise:
-	ld	a, (_snd_flush_chip)
+	djnz	_rw_tone
+	; noise
+	ld	a, (_snd_rw_chip)
 	ld	e, a
 	ld	d, #0
 	ld	hl, #_snd_desired_noise
@@ -561,89 +603,52 @@ _fa_noise:
 	ld	hl, #_snd_shadow_noise
 	add	hl, de
 	ld	(hl), c
-	ld	hl, #_snd_noise_force
-	add	hl, de
-	ld	(hl), #0
 	ld	a, c
-	jp	_emit
-
-_fa_attens:
-	ld	a, (_snd_flush_chip)
-	add	a, a
-	add	a, a			; chip * 4
-	ld	e, a
-	ld	d, #0
-	ld	hl, #_snd_desired_atten
-	add	hl, de
-	ld	(_snd_tmp2), hl		; the desired base
-	ld	de, #(_snd_shadow_atten - _snd_desired_atten)
-	add	hl, de
-	ld	(_snd_tmp3), hl		; the shadow base
+	call	_rewrite_emit
+	; the four attenuations from the chip's descriptors (voice chip*4+sub)
+	ld	a, (_snd_rw_chip)
+	rlca
+	rlca
+	rlca
+	rlca
+	rlca
+	rlca			; chip * 64 = the chip's first descriptor
+	or	#VD_ATT_DESIRED
+	ld	l, a
+	ld	a, (_snd_desc_page)
+	ld	h, a
 	ld	b, #4
-	xor	a
-	ld	(_snd_tmp), a		; the sub-voice
-_fa_atten:
-	ld	a, (_snd_tmp)
-	ld	e, a
-	ld	d, #0
+_rw_atten:
 	push	bc
-	push	de
-	ld	hl, (_snd_tmp2)
-	add	hl, de
-	ld	c, (hl)		; the desired atten
-	ld	hl, (_snd_tmp3)
-	add	hl, de
-	ld	(hl), c			; the shadow
-	pop	de
-	ld	a, e
-	rrca
-	rrca
-	rrca
-	and	#0xE0
-	or	#0x90
+	ld	c, (hl)			; desired
+	inc	l
+	ld	(hl), c			; shadow
+	inc	l
+	ld	a, (hl)			; latch
 	or	c
-	call	_emit
+	push	hl
+	call	_rewrite_emit
+	pop	hl
+	ld	a, l
+	add	a, #14			; the next descriptor's desired
+	ld	l, a
 	pop	bc
-	ld	a, (_snd_tmp)
+	djnz	_rw_atten
+	ld	a, (_snd_rw_chip)
 	inc	a
-	ld	(_snd_tmp), a
-	djnz	_fa_atten
-	ret
-
-; One byte out: A = value.  DIRECT: OUT (C),A with the chip's port
-; cached in _snd_port by the walk.  BATCH: append {chip, value} to the
-; static array.  Preserves HL and DE; the callers keep their own
-; registers.
-_emit:
-	ld	b, a			; the value
-	ld	a, (_snd_output_mode)
-	or	a
-	jr	nz, _emit_batch
-	ld	a, (_snd_port)
-	ld	c, a
-	ld	a, b
-	out	(c), a
-	ret
-_emit_batch:
-	ld	a, (_snd_batch_count)
-	add	a, a
-	ld	e, a
-	ld	d, #0
-	ld	hl, #_snd_batch
-	add	hl, de
-	ld	a, (_snd_flush_chip)
+	ld	(_snd_rw_chip), a
+	cp	#SND_CHIP_COUNT
+	jp	nz, _rw_chip_loop
+_flush_valid:
+	ld	hl, #_snd_shadow_valid
+	ld	b, #SND_CHIP_COUNT
+	ld	a, #1
+_rw_valid:
 	ld	(hl), a
 	inc	hl
-	ld	a, b
-	ld	(hl), a
-	ld	a, (_snd_batch_count)
-	inc	a
-	ld	(_snd_batch_count), a
-	ret
+	djnz	_rw_valid
+	ld	(_snd_all_valid), a
 
-; The tick's batch: one sound_write (BATCH mode only; DIRECT never
-; queued).  A short or failed write marks the shadow uncertain and
-; mutes, so the next flush rewrites everything.
 _flush_batch:
 snd_batch_send::
 	ld	a, (_snd_batch_count)
@@ -655,7 +660,7 @@ snd_batch_send::
 	ld	hl, (_snd_handle)
 	ld	de, #_snd_batch
 	ld	a, (_snd_batch_count)
-	ld	c, a			; the count's low byte (PUSH stores B high)
+	ld	c, a
 	ld	b, #0
 	push	bc
 	call	_sound_write
@@ -674,6 +679,4 @@ _flush_failed:
 	xor	a
 	ld	(_snd_batch_count), a
 	call	_snd_shadow_invalidate
-	ld	a, #1
-	ld	(_snd_dirty), a
 	ret

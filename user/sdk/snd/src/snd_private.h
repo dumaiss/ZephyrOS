@@ -39,10 +39,6 @@
 #define SND_P_WAIT8   0x04u
 #define SND_P_WAIT16  0x05u
 
-/* The active-voice list's "no voice" link (BSS-zero would read as
- * voice 0, so the head must be initialized explicitly). */
-#define SND_VOICE_NONE 0xFFu
-
 /* The worst program: period (3), one noise (2), 16 ramp steps of
  * WAIT16+ATTEN (5 each = 80), end (1): 86 bytes. */
 #define SND_PROGRAM_BYTES 86u
@@ -54,9 +50,11 @@
  * never produce an unbounded write burst. */
 #define SND_TICK_CATCHUP_MAX 16u
 
-/* snd_tick's per-tick write batch (BATCH mode): four chips of at most
- * 3 tone pairs + 1 noise + 4 attenuations = 44 writes. */
-#define SND_BATCH_MAX 44u
+/* snd_tick's write batch (BATCH mode), in {chip, byte} pairs: one tick's
+ * worst manual output is 44 writes (four chips of 3 tone pairs, 1 noise,
+ * 4 attenuations); a full batch is sent before the next append, so a
+ * catch-up ZVG tick never overflows it. */
+#define SND_BATCH_MAX 60u
 
 /* --- C-owned state (snd.c, snd_manual.c) ------------------------------- */
 
@@ -72,18 +70,27 @@ extern const uint8_t snd_level_table[256];
 extern struct snd_instrument_simple snd_instruments[SND_INSTRUMENTS];
 extern uint8_t snd_instrument_defined[SND_INSTRUMENTS];
 
-/* The library-owned program buffers, one per voice, and the per-voice
- * state the C members share with the engine: the active flag (a note
- * is installed) and the current linear level (what snd_note_off's
- * release starts from).  The engine's own scheduling state - the run
- * and wait lists, the program cursors and the wait/due counters -
- * lives in snd_voice.asm's fixed bytes, not here. */
+/* The library-owned program buffers, one per voice, and the active flag
+ * (a note is installed) the C members share with the engine. */
 extern uint8_t snd_programs[SND_VOICE_COUNT][SND_PROGRAM_BYTES];
 extern uint8_t snd_voice_active[SND_VOICE_COUNT];
-extern uint8_t snd_voice_level[SND_VOICE_COUNT];
-extern uint8_t snd_voice_head;           /* SND_VOICE_NONE when idle  */
-extern uint8_t snd_wait_head;            /* the wait list's head      */
-extern uint16_t snd_min_due;             /* the earliest due time     */
+
+/* Assembly owns sixteen 16-byte descriptors in one 256-byte-aligned page
+ * (snd_desc_page; voice v's descriptor is page:(v << 4)), walked in voice
+ * order with HL, no IX/IY.  The next page is a copy of snd_level_table.
+ *
+ *   +0 flags (bit 0 active, bit 1 pending silence, bit 2 forced noise
+ *      write); 0 means nothing to do
+ *   +1..2 wait, +3..4 program cursor
+ *   +5 the current linear level (what snd_note_off's release starts from)
+ *   +6 desired attenuation, +7 shadow attenuation, +8 attenuation latch
+ *   +9 chip port, +10 register latch (80h|sub<<5; E0h for noise), +11 chip
+ *   +12..13 desired register pointer, +14..15 shadow register pointer
+ *
+ * The attenuation write walks +6..+9 with `inc l`; the register pointers
+ * address the chip's period pair or noise byte.  RAM: a 768-byte area
+ * holding the two aligned pages. */
+extern uint8_t snd_desc_page;
 
 /* The flush's change flag: every writer of desired state raises it and
  * snd_output_flush returns immediately (before any compare) while it
@@ -92,24 +99,34 @@ extern uint8_t snd_dirty;
 
 /* Assembly entry points the C members use. */
 void snd_load_ports(const void *info);
+void snd_voice_init(void);
 void snd_shadow_invalidate(void);
 void snd_output_flush(void);
+void snd_engine(uint16_t elapsed);
 void snd_voice_install(uint8_t voice);
 void snd_voice_clear(uint8_t voice);     /* idle + level 0, silent  */
+uint8_t snd_voice_level(uint8_t voice); /* the current linear level */
 void snd_noise_apply(uint8_t noise_voice, uint8_t control);
+
+/* Fast internal assembly ABI.  HL is the voice's descriptor base (any
+ * field of it: the primitives mask L).  PERIOD takes DE, ATTEN takes A,
+ * and NOISE takes A plus a nonzero B to force an equal-valued control
+ * write.  Each primitive updates the desired state, compares/updates the
+ * shadow and emits DIRECT or appends BATCH; each clobbers A, BC, DE and
+ * L (H is kept). */
+/* snd_put_period(HL, DE), snd_put_atten(HL, A), snd_put_noise(HL, A, B) */
 
 /* The per-chip desired state, the hardware shadow and the output
  * machinery, owned by snd_out.asm (the C members read the desired
  * noise control for the tone-2 coupling check). */
 extern uint16_t snd_desired_period[SND_CHIP_COUNT][3];
-extern uint8_t snd_desired_atten[SND_CHIP_COUNT][4];
 extern uint8_t snd_desired_noise[SND_CHIP_COUNT];
 
 /* The tick engine's counters. */
 extern unsigned int snd_overruns;
 
 /* The current effective rate: the active ZTR/ZVG's, else the manual
- * rate.  Package 98 implements the manual half. */
+ * rate. */
 extern uint16_t snd_active_rate;
 
 /* --- ZVG state, shared by snd_zvg.c and snd_zvg.asm -------------------- */

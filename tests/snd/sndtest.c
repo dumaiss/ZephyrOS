@@ -232,6 +232,72 @@ static int mode_close(void)
 	return 0;
 }
 
+extern void sndtest_put_primitives(void);
+
+static int mode_primitive(void)
+{
+	if (open_card() != 0) return 1;
+	/* Establish a valid silent shadow before the measured primitive calls. */
+	snd_tick(0u);
+	marker();
+	sndtest_put_primitives();
+	marker();
+	snd_close();
+	printf("sndtest: primitive PASS\r\n");
+	return 0;
+}
+
+static int mode_stagger(int batch)
+{
+	snd_instrument_simple_t ramp = {
+		.kind = SND_INSTR_TONE, .peak_level = 255,
+		.gate_ticks = 20, .attack_ticks = 8, .decay_ticks = 7,
+		.sustain_level = 96, .release_ticks = 8,
+		.noise_mode = 0, .noise_rate = 0,
+	};
+	unsigned int tick;
+	unsigned char i;
+
+	if (open_card() != 0) return 1;
+	if (batch != 0) snd_set_output(SND_OUTPUT_BATCH);
+	snd_define_instrument(2u, &ramp);
+	/* Reverse publication makes the trace distinguish a list walk from the
+	 * descriptor engine's fixed logical-voice order. */
+	for (i = 12u; i != 0u; --i) {
+		snd_note_for(tone12[i - 1u], (snd_note_t)(SND_C4 + i - 1u),
+			     (uint16_t)(20u + (unsigned int)i * 3u), 2u);
+	}
+	for (tick = 0u; tick < 200u; ++tick) {
+		marker();
+		snd_tick(1u);
+		marker();
+	}
+	snd_close();
+	printf("sndtest: stagger PASS\r\n");
+	return 0;
+}
+
+static int mode_coalesce(void)
+{
+	snd_instrument_simple_t ramp = {
+		.kind = SND_INSTR_TONE, .peak_level = 255,
+		.gate_ticks = 20, .attack_ticks = 8, .decay_ticks = 0,
+		.sustain_level = 255, .release_ticks = 0,
+		.noise_mode = 0, .noise_rate = 0,
+	};
+	if (open_card() != 0) return 1;
+	snd_define_instrument(2u, &ramp);
+	/* Validate the initial shadow separately, then measure one coalesced call. */
+	snd_tick(0u);
+	snd_note_on(0u, SND_C4, 2u);
+	marker();
+	snd_tick(5u);
+	marker();
+	snd_close();
+	printf("sndtest: coalesce PASS\r\n");
+	return 0;
+}
+
 static int mode_timing(void)
 {
 	unsigned char i;
@@ -604,9 +670,13 @@ int main(int argc, char **argv)
 	if (same(argv[0], "zvgnotes") != 0 && argc == 3) {
 		return mode_zvg_notes(argv[1], zvg_chip_from(argv[2]));
 	}
+	if (same(argv[0], "stagger") != 0 && argc <= 2) {
+		if (argc == 2 && same(argv[1], "batch") == 0) return 1;
+		return mode_stagger(argc == 2);
+	}
 	if (argc != 1) {
 		console_puts("sndtest: usage: sndtest tones|adsr|noise|modes|"
-			     "catchup|close|timing|zvg FILE CHIP [batch]\r\n");
+			     "catchup|close|timing|primitive|stagger [batch]|zvg FILE CHIP [batch]\r\n");
 		return 1;
 	}
 	if (same(argv[0], "tones") != 0) return mode_tones();
@@ -614,7 +684,9 @@ int main(int argc, char **argv)
 	if (same(argv[0], "noise") != 0) return mode_noise();
 	if (same(argv[0], "modes") != 0) return mode_modes();
 	if (same(argv[0], "catchup") != 0) return mode_catchup();
+	if (same(argv[0], "coalesce") != 0) return mode_coalesce();
 	if (same(argv[0], "close") != 0) return mode_close();
+	if (same(argv[0], "primitive") != 0) return mode_primitive();
 	if (same(argv[0], "timing") != 0) return mode_timing();
 	console_puts("sndtest: unknown mode\r\n");
 	return 1;

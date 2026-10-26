@@ -163,8 +163,18 @@ The sound SDK follows the same shape: `LIBS=snd` links `libsnd`, whose
 program includes `kos/snd.h` and calls `snd_open` to hold `/dev/sound`
 exclusively.  The design is [snd-sdk.md](snd-sdk.md).  Notes compile
 into per-voice bytecode programs at the call, the assembly tick engine
-steps them (one envelope step per tick, a 16-tick catch-up cap), and
-the assembly flush writes only the chip registers a tick changed.
+steps them through fixed per-voice descriptors (one envelope step per
+logical tick, a 16-tick catch-up cap). Each voice compares and writes its
+own changed registers in voice order; there is no changed-slot queue or
+second flush walk. The costs, in T-states on the emulated 10 MHz CPU
+with interrupts taken out (tests/test_snd.py pins them; the simulator
+charges a conditional branch its taken cost): a tick with 12 waiting
+voices about 207, 12 voices each stepping an attenuation about 9,990
+(about 830 per voice), 12 notes starting about 18,600, one active step
+plus one DIRECT byte about 1,770 over the idle tick, a four-chip
+invalid-shadow rewrite about 4,550 inside its tick, and a ZVG wait tick
+about 230 with about 27 per byte of a write run. The descriptors and the
+level table's copy use 768 bytes of RAM.
 Pre-rendered ZVGC v1/v2 streams (`snd_zvg_*`) play from a borrowed
 reader through a 256-byte ring: `snd_service` prefetches in the
 foreground, the assembly decoder consumes complete commands on the

@@ -21,7 +21,6 @@ struct snd_instrument_simple snd_instruments[SND_INSTRUMENTS];
 uint8_t snd_instrument_defined[SND_INSTRUMENTS];
 uint8_t snd_programs[SND_VOICE_COUNT][SND_PROGRAM_BYTES];
 uint8_t snd_voice_active[SND_VOICE_COUNT];
-uint8_t snd_voice_level[SND_VOICE_COUNT];
 uint8_t snd_releasing[SND_VOICE_COUNT];
 uint8_t snd_voice_instrument[SND_VOICE_COUNT];
 
@@ -268,7 +267,7 @@ int snd_note_off(snd_voice_t voice)
 	if (snd_voice_active[voice] == 0u || snd_releasing[voice] != 0u) {
 		return -KOS_EINVAL;
 	}
-	level = snd_voice_level[voice];
+	level = snd_voice_level(voice);
 	instrument = snd_voice_instrument[voice];
 	/* Idle the voice during the compile, exactly as note_start does;
 	 * the level was read first. */

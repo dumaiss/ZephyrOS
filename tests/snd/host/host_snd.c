@@ -36,16 +36,23 @@ void snd_output_flush(void)
 {
 }
 
+static uint8_t host_level[SND_VOICE_COUNT];
+
+uint8_t snd_voice_level(uint8_t voice)
+{
+	return host_level[voice];
+}
+
 void snd_voice_install(uint8_t voice)
 {
 	snd_voice_active[voice] = 1u;
-	snd_voice_level[voice] = 0u;
+	host_level[voice] = 0u;
 }
 
 void snd_voice_clear(uint8_t voice)
 {
 	snd_voice_active[voice] = 0u;
-	snd_voice_level[voice] = 0u;
+	host_level[voice] = 0u;
 	snd_desired_atten[voice >> 2][voice & 3u] = 15u;
 }
 
@@ -88,7 +95,7 @@ int main(void)
 	dump_program(0u);
 	result = snd_note_on(1u, SND_A4, 0u);
 	printf("note_on %d\n", result);
-	snd_voice_level[1u] = 150u;
+	host_level[1u] = 150u;
 	result = snd_note_off(1u);
 	printf("note_off %d\n", result);
 	dump_program(1u);

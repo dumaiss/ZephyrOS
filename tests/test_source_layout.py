@@ -238,6 +238,7 @@ OWNER_FILES = (
     "tests/snd/README.md",
     "tests/snd/sndprobe.c",
     "tests/snd/sndprobe_delay.asm",
+	"tests/snd/sndtest_put.asm",
     "tests/snd/fixtures/README.md",
     "tests/snd/fixtures/gen_fixtures.py",
     "tests/snd/fixtures/night-market.ztr",
