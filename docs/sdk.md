@@ -159,6 +159,31 @@ program includes `kos/gfx.h` and calls `gfx_open` to take `/dev/video`
 exclusively.  The design is [gfx-sdk.md](gfx-sdk.md); a program that
 uses no graphics pays no gfx code or data cost.
 
+The sound SDK follows the same shape: `LIBS=snd` links `libsnd`, whose
+program includes `kos/snd.h` and calls `snd_open` to hold `/dev/sound`
+exclusively.  The design is [snd-sdk.md](snd-sdk.md).  Notes compile
+into per-voice bytecode programs at the call, the assembly tick engine
+steps them (one envelope step per tick, a 16-tick catch-up cap), and
+the assembly flush writes only the chip registers a tick changed.
+Pre-rendered ZVGC v1/v2 streams (`snd_zvg_*`) play from a borrowed
+reader through a 256-byte ring: `snd_service` prefetches in the
+foreground, the assembly decoder consumes complete commands on the
+tick, and the application times ticks with `snd_timer_period`; a
+program that uses no sound pays no snd code or data cost.
+
+The shared read-at view is [kos/reader.h](include/kos/reader.h):
+`kos_reader_t` borrows a source and reads it absolutely (`read_at`,
+exact `size`, never closing it), and `kos_reader_read_full` retries
+short reads until a range is complete.  The four adapters are
+`kos_reader_from_handle`, `kos_reader_from_stdio`,
+`kos_reader_from_kres` and `kos_reader_from_memory` (the handle and
+memory constructors take a small caller-owned descriptor).  Each
+adapter is its own archive member: including the header links nothing,
+the memory member needs no other library, the handle member uses the
+native file wrappers, the stdio member uses the buffered streams, and
+the KRES member lives in `libkres` (`LIBS=kres`), so a program pays
+only for the sources it reads.
+
 The drawing pieces hang off the same library, and every routine that
 draws or moves pixels is assembly, from the entry point to the port
 (gfx-sdk.md 2.6).  `gfx_clear`, `gfx_fill_rect` and `gfx_copy_rect`

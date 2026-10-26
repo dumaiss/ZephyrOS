@@ -1121,6 +1121,35 @@ $(eval $(call exe_program,sound,tests/sound,\
 
 all: $(EXE_USER_ROOT)/sound.exe
 
+# The sound-series harness self-test (tests/snd): writes marker ticks
+# through sound_out that tests/snd_harness.py splits and times.
+$(eval $(call exe_program,sndprobe,tests/snd,\
+	sndprobe.c sndprobe_delay.asm,STACK=384))
+
+all: $(EXE_USER_ROOT)/sndprobe.exe
+
+# The libsnd outcome program: a card program the sound-series replays
+# run from the shell (tests/test_snd.py).  `LIBS=snd` links libsnd
+# after the program objects, before libkos; the private header names the
+# engine counters the catchup mode reports.
+$(eval $(call exe_program,sndtest,tests/snd,\
+	sndtest.c,STACK=384,LIBS=snd,INCLUDES=user/sdk/snd/src))
+
+all: $(EXE_USER_ROOT)/sndtest.exe
+
+# The reader outcome programs (tests/reader): readertest runs the four
+# adapters over a card fixture, readermap links the memory adapter
+# alone (tests/test_reader.py checks both maps).
+$(eval $(call exe_program,readertest,tests/reader,\
+	readertest.c,STACK=384,LIBS=kres))
+
+all: $(EXE_USER_ROOT)/readertest.exe
+
+$(eval $(call exe_program,readermap,tests/reader,\
+	readermap.c,STACK=384))
+
+all: $(EXE_USER_ROOT)/readermap.exe
+
 # The graphics foundation outcome program: a card program the graphics
 # replays run from the shell (tests/test_gfx.py), in no store.
 # `LIBS=gfx` links libgfx after the program objects, before libkos.
@@ -1327,6 +1356,7 @@ sdk: $(KOS_SDK_TARBALL)
 
 $(KOS_SDK_TARBALL): $(EXE_SDK_RELEASE_LIB) $(EXE_LIBTUI) $(EXE_LIBTUI_WIDE) \
 		$(EXE_LIBTUI_WIDGETS) $(EXE_LIBGFX) $(EXE_LIBKRES) \
+		$(EXE_LIBSND) \
 		$(EXE_CRT0) $(SDK_INPUTS)
 	$(PYTHON) tools/sdkpack.py --version $(KOS_SDK_VERSION) \
 		--libkos $(EXE_SDK_RELEASE_LIB) --libtui $(EXE_LIBTUI) \
@@ -1334,6 +1364,7 @@ $(KOS_SDK_TARBALL): $(EXE_SDK_RELEASE_LIB) $(EXE_LIBTUI) $(EXE_LIBTUI_WIDE) \
 		--libtui-widgets $(EXE_LIBTUI_WIDGETS) \
 		--libgfx $(EXE_LIBGFX) \
 		--libkres $(EXE_LIBKRES) \
+		--libsnd $(EXE_LIBSND) \
 		--crt0 $(EXE_CRT0) \
 		--out $(KOS_SDK_DIR) --tar $@
 

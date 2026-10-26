@@ -2,7 +2,7 @@
 
 This is the native KonaOS C port of `Code/HOST/VGMPlayer`. It plays the same
 compiled ZVGC v1/v2 streams on Afternoon Blend PSG0 and is built solely with
-the standalone KonaOS 0.1.0 application SDK supplied by ZephyrOS.
+the standalone KonaOS 0.2.0 application SDK supplied by ZephyrOS.
 
 ## Build
 
@@ -13,7 +13,7 @@ make
 ```
 
 The first build unpacks
-`../../build/kos-sdk-0.1.0.tar.gz` beneath the ignored local
+`../../build/kos-sdk-0.2.0.tar.gz` beneath the ignored local
 `build/` directory. The packed application is:
 
 ```text
@@ -45,36 +45,31 @@ vgmplay /fs/MUSIC.ZVG
 ```
 
 Press any key to stop. Every exit path stops and releases the timer event,
-closes the file and releases `/dev/sound`; the driver's release resets and
-silences all four PSG chips.
+stops the stream, closes the file and releases `/dev/sound`; the driver's
+release resets and silences all four PSG chips.
 
 ## Native runtime design
 
-- `/dev/timer` posts at the original player's approximately 180 Hz base rate.
-  A phase accumulator derives the ZVGC header's requested playback rate.
-- Two alternating 6144-byte buffers are filled through the SDK's `FILE`,
-  `fopen()` and `fread()` streaming interface. Runtime refills transfer only
-  512 bytes per foreground pass.
-- Each application refill is requested as two 256-byte `fread()` items so it
-  passes through the SDK's measured 512-byte stream buffer. The player enables
-  `fmeasure()`, reports `fstats()`, and feeds the measured mean/worst refill
-  times plus the ZVGC header's encoded-byte rate into `stream_plan()`.
-- Foreground code copies stream bytes into a 256-byte ring. Atomic byte-sized
-  head and tail indices let the event handler consume complete commands safely.
-- Timer events coalesce while a filesystem call is active. The handler replays
-  the delivered count, which is the KonaOS equivalent of the original
-  player's pending-CTC-tick mechanism.
-- The player takes `/dev/sound` exclusively. `sound_info()` supplies PSG0's
-  actual port and confirms direct-I/O support; the timer handler then uses
-  `sound_out()` for each already-packed VGM byte without paying for an IPC
-  round trip in the timing-sensitive path.
-- The handler performs no filesystem or console operations. Exclusive acquire
-  starts from the driver's reset state and release resets the complete card,
-  so unused PSGs cannot be left producing stray tones.
-- The foreground calls `idle()` after an empty console poll whenever no stream
-  refill is in progress. The CPU sleeps until the next interrupt instead of
-  busy-polling, while timer events continue to drive playback.
+- The player owns no decoder. The file is wrapped in a borrowed
+  `kos_reader_t` (`kos_reader_from_stdio`, absolute `fseek`/`fread` reads
+  through the stream's own buffer) and handed to libsnd's pre-rendered
+  stream player: `snd_zvg_open` validates the ZVGC header, reserves PSG0's
+  four voices and adopts the header's 1-180 Hz playback rate.
+- `/dev/timer` posts at the period `snd_timer_period()` derives from that
+  rate. The event handler feeds `snd_tick` the delivered event count;
+  coalesced events replay through libsnd's documented catch-up bound.
+- libsnd's tick path renders the stream from a 256-byte ring: whole commands
+  up to the next wait in one tick, the bytes to PSG0's actual port. No C
+  runs on the tick; the handler performs no filesystem or console operations.
+- The foreground loop tops the ring up with `snd_service()` (one bounded
+  read per pass, 64 bytes at most), then either reads a keypress or calls
+  `idle()` after an empty console poll. The CPU sleeps until the next
+  interrupt instead of busy-polling while timer events drive playback.
+- The stream's completion, malformed opcodes and reader errors all surface
+  through `snd_zvg_get_status`: the loop exits on the DONE/ERROR state, the
+  chip is muted, and the report prints the stream's ticks, consumed bytes,
+  writes and underruns.
 
-The port reports base timer events, playback ticks, PSG writes, ring underruns
-and missed events when playback ends. A clean run has zero underruns and zero
-missed events.
+The port reports timer events, playback ticks, stream bytes, PSG writes,
+ring underruns and missed events when playback ends. A clean run has zero
+underruns and zero missed events.

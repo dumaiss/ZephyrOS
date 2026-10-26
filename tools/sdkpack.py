@@ -131,7 +131,7 @@ def abi_headers(root, headers):
 
 
 def tree_files(root, headers, abi, libkos, libtui, libtui_wide,
-               libtui_widgets, libgfx, libkres, crt0):
+               libtui_widgets, libgfx, libkres, libsnd, crt0):
     """The complete (relative destination, source) list of the SDK tree."""
     files = []
     files += headers
@@ -143,6 +143,7 @@ def tree_files(root, headers, abi, libkos, libtui, libtui_wide,
         ("lib/libtui_widgets.lib", Path(libtui_widgets)),
         ("lib/libgfx.lib", Path(libgfx)),
         ("lib/libkres.lib", Path(libkres)),
+        ("lib/libsnd.lib", Path(libsnd)),
         ("lib/crt0.rel", Path(crt0)),
         ("mk/kos.mk", root / "mk" / "kos.mk"),
     ]
@@ -161,20 +162,20 @@ def tree_files(root, headers, abi, libkos, libtui, libtui_wide,
 
 
 def build_tree(root, out, version, libkos, libtui, libtui_wide,
-               libtui_widgets, libgfx, libkres, crt0):
+               libtui_widgets, libgfx, libkres, libsnd, crt0):
     """Lay out the SDK tree under `out`; returns the destination list."""
     root = Path(root)
     out = Path(out)
     for path in (root / "formats/include/exe.h", Path(libkos), Path(libtui),
                  Path(libtui_wide), Path(libtui_widgets), Path(libgfx),
-                 Path(libkres), Path(crt0)):
+                 Path(libkres), Path(libsnd), Path(crt0)):
         if not path.is_file():
             raise PackError("%s is missing" % path)
     abi = abi_version((root / "formats/include/exe.h").read_text())
     headers = sdk_headers(root)
     files = tree_files(root, headers, abi_headers(root, headers), libkos,
                        libtui, libtui_wide, libtui_widgets, libgfx, libkres,
-                       crt0)
+                       libsnd, crt0)
     for _dest, source in files:
         if not Path(source).is_file():
             raise PackError("%s is missing" % source)
@@ -238,6 +239,7 @@ def main(argv):
     parser.add_argument("--libtui-widgets", required=True)
     parser.add_argument("--libgfx", required=True)
     parser.add_argument("--libkres", required=True)
+    parser.add_argument("--libsnd", required=True)
     parser.add_argument("--crt0", required=True)
     parser.add_argument("--root", default=None,
                         help="the repository root (default: this tool's)")
@@ -255,7 +257,7 @@ def main(argv):
         dests = build_tree(root, out, args.version, args.libkos,
                            args.libtui, args.libtui_wide,
                            args.libtui_widgets, args.libgfx, args.libkres,
-                           args.crt0)
+                           args.libsnd, args.crt0)
         if args.tar:
             pack_tar(out, args.tar)
     except (PackError, OSError) as exc:

@@ -62,6 +62,7 @@ KOS_SDK_C_SRC := args.c fs.c truncate.c ipc.c exec.c console_io.c \
     xmem.c seg.c xload.c event.c \
     console_proto.c console_render.c console_info.c timer.c sound.c idle.c stream.c \
     stdio.c fread.c fwrite.c fseek.c feof.c \
+    reader.c reader_full.c reader_handle.c reader_stdio.c \
     klibc/strrchr.c klibc/strlcpy.c klibc/strlcat.c \
     klibc/utoa.c klibc/ultoa.c klibc/itoa.c klibc/ltoa.c \
     klibc/printf.c klibc/sdcc_arith.c klibc/sdcc_arith_signed.c
@@ -230,9 +231,10 @@ KOS_KRES_KONAOS    := $(KOS_SDK_ROOT)/kres/konaos
 KOS_KRES_PRIVATE   := $(KOS_KRES_SRC)/kres_internal.h \
 	$(KOS_KRES_SRC)/kres_layout.h $(KOS_KRES_KONAOS)/kona_internal.h
 KOS_KRES_PUBLIC    := $(KOS_INCLUDE)/kos/kres.h \
-	$(KOS_INCLUDE)/kos/kres_konaos.h
+	$(KOS_INCLUDE)/kos/kres_konaos.h \
+	$(KOS_INCLUDE)/kos/reader.h
 KOS_KRES_C_SRC     := kres_util.c kres_read.c kres_mut.c kres_build.c \
-	kres_compact.c kres_verify.c kres_extract.c
+	kres_compact.c kres_verify.c kres_extract.c kres_reader.c
 KOS_KRES_KONAOS_SRC := kres_adapter.c kres_adapter_mut.c kres_cache_xmem.c
 EXE_KRES_OBJS      := $(addprefix $(EXE_SDK_BUILD)/kres/,\
 	$(patsubst %.c,%.rel,$(KOS_KRES_C_SRC))) \
@@ -255,3 +257,38 @@ $(EXE_LIBKRES): $(EXE_KRES_OBJS) $(KOS_RULES)
 	@mkdir -p $(dir $@)
 	rm -f $@
 	sdar -rcD $@ $(EXE_KRES_OBJS)
+
+# --- libsnd -------------------------------------------------------------
+# The sound SDK is a separately linked archive: one member per function
+# group, so a manual-note program links no ZTR, ZVG, reader, stdio or
+# KRES member.  The public surface is kos/snd.h; the private state, the
+# voice-program format and the assembly interface stay in this directory.
+# Rendering is assembly: snd_tick, the voice engine, the shadow and the
+# flush.  Setup is C: the lifecycle and the note compiler.
+KOS_SND_SRC     := $(KOS_SDK_ROOT)/snd/src
+KOS_SND_PRIVATE := $(KOS_SND_SRC)/snd_private.h
+KOS_SND_C_SRC   := snd.c snd_manual.c snd_tables.c snd_zvg.c
+KOS_SND_ASM_SRC := snd_tick.asm snd_voice.asm snd_out.asm \
+	snd_zvg_dec.asm
+EXE_SND_OBJS    := $(addprefix $(EXE_SDK_BUILD)/snd/,\
+	$(patsubst %.c,%.rel,$(KOS_SND_C_SRC)) \
+	$(patsubst %.asm,%.rel,$(KOS_SND_ASM_SRC)))
+EXE_LIBSND      := $(EXE_SDK_BUILD)/libsnd.lib
+
+$(EXE_SDK_BUILD)/snd/%.rel: $(KOS_SND_SRC)/%.c $(EXE_HEADERS) \
+		$(KOS_SND_PRIVATE)
+	@mkdir -p $(dir $@)
+	$(SDCC) $(EXE_CFLAGS) -I $(KOS_SND_SRC) -c $< -o $@
+
+$(EXE_SDK_BUILD)/snd/%.rel: $(KOS_SND_SRC)/%.asm $(EXE_HEADERS) \
+		$(KOS_SND_PRIVATE)
+	@mkdir -p $(dir $@)
+	$(SDASZ80) $(EXE_ASFLAGS) -o $@ $<
+
+# `-D` zeroes the members' dates and ids.  The in-tree programs link
+# this archive and the standalone SDK ships it, so the library never
+# records when it was built.
+$(EXE_LIBSND): $(EXE_SND_OBJS) $(KOS_RULES)
+	@mkdir -p $(dir $@)
+	rm -f $@
+	sdar -rcD $@ $(EXE_SND_OBJS)

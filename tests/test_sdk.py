@@ -410,7 +410,10 @@ class TestSdkBoundary(unittest.TestCase):
         # source built with TUI_GRID=128x35, `tui_putwide` its put_text
         # equivalence mode on that capacity; `textbench` is the
         # direct-text measurement program a card copy carries
-        # (`tests/test_textbench.py`).
+        # (`tests/test_textbench.py`); `sndprobe` and `sndtest` are the
+        # sound-series card programs the production replays run
+        # (`tests/test_snd.py`); `readertest` and `readermap` are the
+        # reader outcome programs (`tests/test_reader.py`).
         self.assertEqual(sorted(name for name, _d, _s, _o in programs),
                          ["banks", "beat", "devtest", "events",
                           "exe2big", "exe2probe", "exe2seg", "exetest",
@@ -420,7 +423,8 @@ class TestSdkBoundary(unittest.TestCase):
                           "hwtest", "iobench", "iomix", "iomix_child",
                           "iostream", "ipc", "ipccopy",
                           "kresread", "krestest", "monitor", "ns",
-                          "nschild", "readphase", "shell", "sound",
+                          "nschild", "readermap", "readertest", "readphase",
+                          "shell", "sndprobe", "sndtest", "sound",
                           "textbench", "timer",
                           "tui_core_probe", "tui_demo", "tui_dialog",
                           "tui_keys", "tui_putwide", "tui_test", "tui_wide",
