@@ -1,5 +1,17 @@
 #include "sntracker.h"
 
+#ifdef ZTR_ROWS_DUMP
+/* The prepared-row dump (101's producer contract test): one event per
+ * decoded cell, in the host tool's record order. */
+void ztr_dump_event(unsigned char channel, unsigned char order,
+		    unsigned char row, unsigned char mask,
+		    unsigned char note, unsigned char instrument,
+		    unsigned char volume, unsigned char effect,
+		    unsigned char parameter, unsigned char modifiers,
+		    unsigned char arpeggio, signed char hairpin_rate,
+		    unsigned char hairpin_ceiling);
+#endif
+
 #define DIRTY_PITCH          0x01u
 #define DIRTY_VOLUME         0x02u
 #define DIRTY_NOISE          0x04u
@@ -188,6 +200,12 @@ static void decode_row(struct tracker_channel *channel)
 		}
 	}
 	channel->pattern_cursor = p;
+#ifdef ZTR_ROWS_DUMP
+	ztr_dump_event((unsigned char)(channel - player_channels),
+		       player_order, player_row, mask, note, instrument,
+		       volume, effect, parameter, modifiers, arpeggio,
+		       hairpin_rate, hairpin_ceiling);
+#endif
 	if ((mask & EVENT_MODIFIERS) != 0u)
 		process_modifiers(channel, modifiers, arpeggio,
 				  hairpin_rate, hairpin_ceiling);

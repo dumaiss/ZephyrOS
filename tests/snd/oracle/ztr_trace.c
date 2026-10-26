@@ -28,13 +28,38 @@
 #include "kos/sound.h"
 
 #define MAX_TICK_WRITES 48u
-#define MAX_TICKS       6000u
+#define MAX_TICKS       60000u
 
 static struct ksound_write recorded[MAX_TICK_WRITES];
 static unsigned int recorded_count;
 static FILE *state_file;
 static unsigned int tick_index;
 static unsigned int total_writes;
+static FILE *rows_file;
+
+void ztr_dump_event(unsigned char channel, unsigned char order,
+		    unsigned char row, unsigned char mask,
+		    unsigned char note, unsigned char instrument,
+		    unsigned char volume, unsigned char effect,
+		    unsigned char parameter, unsigned char modifiers,
+		    unsigned char arpeggio, signed char hairpin_rate,
+		    unsigned char hairpin_ceiling)
+{
+	if (rows_file == NULL) {
+		return;
+	}
+	fprintf(rows_file,
+		"row %u %u ch %u mask %02x note %02x instr %02x "
+		"vol %02x effect %u param %02x mod %02x arp %02x "
+		"rate %d ceil %u\n",
+		(unsigned int)order, (unsigned int)row,
+		(unsigned int)channel, (unsigned int)mask,
+		(unsigned int)note, (unsigned int)instrument,
+		(unsigned int)volume, (unsigned int)effect,
+		(unsigned int)parameter, (unsigned int)modifiers,
+		(unsigned int)arpeggio, (int)hairpin_rate,
+		(unsigned int)hairpin_ceiling);
+}
 
 int stat(const char *path, struct kfs_stat *info)
 {
@@ -145,23 +170,34 @@ int main(int argc, char **argv)
 	int result;
 
 	if (argc < 2 || argc > 4) {
-		fprintf(stderr, "usage: ztr_trace SONG.ZTR [TICKS [STATE]]\n");
+		fprintf(stderr, "usage: ztr_trace SONG.ZTR [TICKS [STATE|--rows FILE]]\n");
 		return 2;
 	}
 	path = argv[1];
 	if (argc >= 3) {
-		ticks = strtoul(argv[2], NULL, 10);
-		if (ticks == 0ul || ticks > MAX_TICKS) {
-			fprintf(stderr, "ztr_trace: ticks out of range\n");
-			return 2;
+		if (strncmp(argv[2], "--rows", 6) == 0) {
+			ticks = MAX_TICKS;
+		} else {
+			ticks = strtoul(argv[2], NULL, 10);
+			if (ticks == 0ul || ticks > MAX_TICKS) {
+				fprintf(stderr, "ztr_trace: ticks out of range\n");
+				return 2;
+			}
 		}
 	}
 	state_file = NULL;
+	rows_file = NULL;
 	if (argc >= 4) {
-		state_file = fopen(argv[3], "w");
-		if (state_file == NULL) {
+		FILE *out = fopen(argv[3], "w");
+
+		if (out == NULL) {
 			perror(argv[3]);
 			return 2;
+		}
+		if (argc >= 3 && strncmp(argv[2], "--rows", 6) == 0) {
+			rows_file = out;
+		} else {
+			state_file = out;
 		}
 	}
 	result = ztr_load(path);
@@ -201,6 +237,9 @@ int main(int argc, char **argv)
 	printf("# %u ticks, %u writes, ended=%s\n", tick_index, total_writes,
 	       player_playing != 0u ? "limit" : "song-end");
 	if (state_file != NULL && fclose(state_file) != 0) {
+		return 1;
+	}
+	if (rows_file != NULL && fclose(rows_file) != 0) {
 		return 1;
 	}
 	return 0;

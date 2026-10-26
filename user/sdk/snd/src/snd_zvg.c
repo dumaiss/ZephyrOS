@@ -21,6 +21,7 @@
 #define ZVG_VERSION_V2      2u
 
 /* snd_service reads at most this many bytes per call. */
+/* (snd_service itself lives in snd_ztr.c, beside the ZTR arm.) */
 #define ZVG_SERVICE_CHUNK   64u
 
 static uint8_t header[ZVG_HEADER_BYTES];
@@ -157,7 +158,7 @@ int snd_zvg_open(const kos_reader_t *source, uint8_t chip)
 /* One bounded read into the ring; the tail is published only after the
  * bytes are in.  Returns 0 when there is nothing more to produce, a
  * negative error, or the bytes moved. */
-static int zvg_refill(void)
+int snd_zvg_refill(void)
 {
 	uint8_t tail = snd_zvg_tail;
 	uint8_t head = snd_zvg_head;
@@ -220,7 +221,7 @@ int snd_zvg_prepare(void)
 		return -KOS_EINVAL;
 	}
 	while (snd_zvg_remaining != 0u) {
-		int result = zvg_refill();
+		int result = snd_zvg_refill();
 
 		if (result < 0) {
 			return result;
@@ -228,17 +229,6 @@ int snd_zvg_prepare(void)
 		if (result == 0) {
 			break; /* the ring is full */
 		}
-	}
-	return 0;
-}
-
-int snd_service(void)
-{
-	/* The ZVG arm: one bounded chunk per call. */
-	if (snd_zvg_state == SND_ZVG_PREPARED ||
-	    snd_zvg_state == SND_ZVG_PLAYING ||
-	    snd_zvg_state == SND_ZVG_UNDERRUN) {
-		(void)zvg_refill();
 	}
 	return 0;
 }

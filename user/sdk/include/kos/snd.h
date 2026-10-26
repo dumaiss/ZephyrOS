@@ -35,6 +35,10 @@
 #define SND_OUTPUT_DIRECT 0u /* sound_out to the reported port     */
 #define SND_OUTPUT_BATCH  1u /* one sound_write per tick           */
 
+/* snd_ztr_prepare's positive code while the start window is not yet
+ * resident: the caller repeats it (or snd_service) until 0. */
+#define SND_NEED_MORE 1u
+
 /* Notes C-0..B-7 as snd_note_t values (0 = C-0, 95 = B-7). */
 #define SND_C0 0u
 #define SND_C4 48u
@@ -266,5 +270,61 @@ int snd_zvg_stop(void);
 void snd_zvg_close(void);
 
 int snd_zvg_get_status(struct snd_zvg_status *out);
+
+/* --- ZTR songs ---------------------------------------------------------- */
+
+/* snd_ztr_get_status states. */
+#define SND_ZTR_EMPTY     0u /* no song (also after stop/close)     */
+#define SND_ZTR_PREPARING 1u /* open validated, the queue filling   */
+#define SND_ZTR_READY     2u /* the start window is resident        */
+#define SND_ZTR_PLAYING   3u /* the tick engine is consuming        */
+#define SND_ZTR_PAUSED    4u /* muted, the musical state held       */
+#define SND_ZTR_DONE      5u /* the stop effect or the song's end   */
+#define SND_ZTR_UNDERRUN  6u /* a due row was not resident; muted   */
+#define SND_ZTR_ERROR     7u /* open/reader error; nothing reserved */
+
+struct snd_ztr_status {
+	uint8_t state;
+	uint8_t order;           /* the row the engine will consume next */
+	uint8_t row;
+	uint8_t tick_in_row;
+	uint16_t rate;           /* the header's tick rate               */
+	uint16_t reserved_voices;
+	int last_error;          /* the last reader error, or 0          */
+	uint16_t overruns;       /* snd_tick catch-up excess             */
+	uint16_t underruns;      /* rows that were not resident          */
+};
+
+/* Validate the whole song through the borrowed reader (magic, header
+ * values, section bounds, strings, instruments and macros, the
+ * pattern streams and the note table - docs/ZTR-Format.md), keep the
+ * tick's tables resident and reserve the voices the orders use.  On
+ * failure nothing changes.  The source is borrowed; close forgets it
+ * and closes nothing. */
+int snd_ztr_open(const kos_reader_t *source);
+
+/* Fill the prepared-row queue from the reader until it is full (a
+ * documented number of rows, the start window snd_ztr_play needs). */
+int snd_ztr_prepare(void);
+
+/* Start at (0, 0): needs READY, then sets the ZTR voices' shadow to
+ * what the reference player assumes after its mute (attenuation 15,
+ * period 0, the noise written), so tick 0's writes equal the
+ * golden's. */
+int snd_ztr_play(void);
+
+/* Mute the ZTR's voices and hold the musical state. */
+int snd_ztr_pause(void);
+
+/* Re-render the ZTR's voices from the held state. */
+int snd_ztr_resume(void);
+
+/* Silence the ZTR's voices, forget the song and release the
+ * reservation. */
+int snd_ztr_stop(void);
+
+void snd_ztr_close(void);
+
+int snd_ztr_get_status(struct snd_ztr_status *out);
 
 #endif /* KOS_SND_H */

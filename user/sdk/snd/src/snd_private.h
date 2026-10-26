@@ -162,4 +162,154 @@ extern kos_reader_t snd_zvg_reader; /* the borrowed reader's copy */
  * invalidates it. */
 void snd_zvg_tick(void);
 
+/* snd_zvg.c's one bounded ring refill, also snd_service's ZVG arm
+ * (snd_service itself lives in snd_ztr.c). */
+int snd_zvg_refill(void);
+
+/* --- ZTR state, shared by snd_ztr.c and snd_ztr_dec.asm ---------------- */
+
+/* Resident capacities, sized for both fixture songs (136 orders, 398
+ * patterns, 6,612 macro bytes) with headroom; exceeding one is
+ * -KOS_ENOSPC at open. */
+#define SND_ZTR_MAX_ORDERS   140u
+#define SND_ZTR_MAX_PATTERNS 400u
+#define SND_ZTR_INSTRUMENTS  16u
+#define SND_ZTR_MACRO_BYTES  6656u
+#define SND_ZTR_QUEUE_ROWS   3u   /* rows of lookahead (2 usable)  */
+
+/* The prepared row record, 101's contract with the engine: fixed
+ * size, already decoded.  A record holds the row's position and one
+ * 10-byte slot per channel; a slot's first byte is the decoded
+ * presence mask, 0 when the channel has no event, so the consumer
+ * skips idle channels on one test and never parses.
+ *
+ *   +0 order, +1 row; slot at 2 + channel * 10:
+ *     +0 mask (0 = no event)
+ *     +1 note (FFh when absent)
+ *     +2 instrument (FFh when absent)
+ *     +3 volume (FFh when absent)
+ *     +4 effect (0 = none)
+ *     +5 effect parameter
+ *     +6 modifiers
+ *     +7 arpeggio (MOD_ARP_SET's payload)
+ *     +8 hairpin rate (MOD_HAIRPIN_SET's payload, signed)
+ *     +9 hairpin ceiling */
+#define SND_ZTR_ROW_BYTES  162u
+#define SND_ZTR_SLOT_BYTES 10u
+#define SND_ZTR_MACRO_SLOTS 5u
+
+/* The ZTR event and modifier bits and the native effects
+ * (docs/ZTR-Format.md), shared by the C producer and the engine. */
+#define ZTR_EVENT_NOTE       0x80u
+#define ZTR_EVENT_INSTRUMENT 0x40u
+#define ZTR_EVENT_VOLUME     0x20u
+#define ZTR_EVENT_EFFECT     0x10u
+#define ZTR_EVENT_OFF        0x08u
+#define ZTR_EVENT_RELEASE    0x04u
+#define ZTR_EVENT_LEGATO     0x02u
+#define ZTR_EVENT_MODIFIERS  0x01u
+
+#define ZTR_MOD_RESET        0x80u
+#define ZTR_MOD_ARP_SET      0x40u
+#define ZTR_MOD_ARP_CLEAR    0x20u
+#define ZTR_MOD_HAIRPIN_SET  0x10u
+#define ZTR_MOD_HAIRPIN_CLEAR 0x08u
+
+#define ZTR_EFFECT_ARPEGGIO  1u
+#define ZTR_EFFECT_VOL_SLIDE 2u
+#define ZTR_EFFECT_LEGATO    3u
+#define ZTR_EFFECT_VOL_DEC   4u
+#define ZTR_EFFECT_FAST_VOL  5u
+#define ZTR_EFFECT_STOP      6u
+
+extern uint8_t snd_ztr_state;        /* SND_ZTR_* from kos/snd.h    */
+extern uint16_t snd_ztr_rate;        /* the header's tick rate      */
+extern uint8_t snd_ztr_speed;        /* ticks per row               */
+extern uint16_t snd_ztr_pattern_length;
+extern uint16_t snd_ztr_order_count;
+
+/* The producer/consumer queue: record indices as single bytes; the
+ * producer publishes the tail only after the record is complete, the
+ * consumer advances the head only after the row is applied.  Record
+ * i lives at snd_ztr_queue_addrs[i] (a 16-bit table, so neither side
+ * multiplies by SND_ZTR_ROW_BYTES). */
+extern uint8_t snd_ztr_head;
+extern volatile uint8_t snd_ztr_tail;
+extern uint16_t snd_ztr_queue_addrs[SND_ZTR_QUEUE_ROWS];
+
+/* The engine's position (assembly-owned): the row to consume next and
+ * the row's tick. */
+extern uint8_t snd_ztr_order;
+extern uint8_t snd_ztr_row;
+extern uint8_t snd_ztr_tick_in_row;
+
+/* The voices the orders use (open reserves them in snd_reserved_voices)
+ * and the playback counters. */
+extern uint16_t snd_ztr_mask;
+extern uint16_t snd_ztr_underruns;
+extern int snd_ztr_last_error;
+
+/* The resident tables, page-aligned.  The divisor table splits into a
+ * lo page and the following hi page (`ld l,note / ld e,(hl) /
+ * inc h / ld d,(hl)`); the loudness page holds base<<4|macro ->
+ * base*macro/15; the instrument page holds one 16-byte entry per
+ * number, its macro offsets remapped into the resident macro area. */
+extern uint8_t snd_ztr_core_page;    /* 16 x 16-byte channel records */
+extern uint8_t snd_ztr_core2_page;   /* the effect/notation half     */
+extern uint8_t snd_ztr_macro_page[SND_ZTR_MACRO_SLOTS];
+extern uint8_t snd_ztr_div_lo_page;  /* the hi page follows          */
+extern uint8_t snd_ztr_loud_page;
+extern uint8_t snd_ztr_instr_page;
+extern uint16_t snd_ztr_macro_base;  /* the resident macro data     */
+
+/* Assembly entry points the C members use (snd_ztr_dec.asm). */
+uint8_t *snd_ztr_row_address(uint8_t index); /* the record at index i */
+void snd_ztr_tick(void);             /* one playback tick           */
+void snd_ztr_mute(void);             /* the mask's voices to atten 15 */
+void snd_ztr_restore(void);          /* re-render from the held state */
+void snd_ztr_reset_channels(void);   /* clear the engine's channels  */
+
+/* The engine's channel-state layout (snd_ztr_dec.asm owns it; the
+ * channel is page:(c << 4), field offsets below).  sndtest's ztrdump
+ * mode reads it for the debug export. */
+#define SND_ZTR_CHANNELS 16u
+
+#define ZC_WORK        0u /* bit7 dirty-any, bits2-6 the macro slots */
+#define ZC_DIRTY       1u
+#define ZC_FLAGS       2u /* bit0 active, bit1 released, bit2 legato,
+			   * bit3 notation arpeggio                  */
+#define ZC_NOTE        3u
+#define ZC_INSTRUMENT  4u
+#define ZC_BASE_VOL    5u
+#define ZC_MACRO_VOL   6u
+#define ZC_EFFECT      7u
+#define ZC_EFFECT_PARAM 8u
+#define ZC_ARP_LO      9u
+#define ZC_ARP_FLAGS   10u
+#define ZC_PITCH_LO    11u
+#define ZC_PITCH_HI    12u
+#define ZC_DUTY        13u
+#define ZC_PHASE       14u
+#define ZC_ARP_HI      15u
+
+/* The effect/notation half (the core2 page). */
+#define ZC2_EFFECT_PHASE 0u
+#define ZC2_NOT_ARP    1u
+#define ZC2_NOT_PHASE  2u
+#define ZC2_HAIR_RATE  3u
+#define ZC2_HAIR_OFF   4u
+#define ZC2_HAIR_CEIL  5u
+/* The oracle's register cache, as channel fields (psg.c). */
+#define ZC2_LAST_PER_LO 6u
+#define ZC2_LAST_PER_HI 7u
+#define ZC2_LAST_ATT   8u
+#define ZC2_LAST_NOISE 9u
+
+#define ZM_POS_LO      0u /* macro_position, an item index */
+#define ZM_POS_HI      1u
+#define ZM_TIMER       2u
+#define ZM_DELAY       3u
+#define ZM_MACRO_LO    4u
+#define ZM_MACRO_HI    5u
+
 #endif /* KOS_SND_PRIVATE_H */

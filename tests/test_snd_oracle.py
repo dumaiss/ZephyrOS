@@ -60,6 +60,7 @@ SNPROBE = os.path.join(ROOT, "build", "user", "sndprobe.exe")
 def build_tools():
     os.makedirs(HOST, exist_ok=True)
     command = ["cc", "-std=c99", "-Wall", "-Wextra", "-Werror",
+               "-DZTR_ROWS_DUMP",
                "-I%s/include" % ORACLE, "-I" + SNTRACKER]
     subprocess.run(command +
                    [os.path.join(ORACLE, "ztr_trace.c"),
