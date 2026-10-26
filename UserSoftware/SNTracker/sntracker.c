@@ -1,23 +1,25 @@
-/* Native KonaOS port of the Zephyr-80 assembly SNTracker player.
- * Timer callbacks publish work only. ZTR decoding, macros, UI and all PSG I/O
- * stay in foreground process context, matching the original's design. */
+/* SNTracker for KonaOS: a streamed libsnd ZTR client.
+ *
+ * The timer handler advances libsnd directly.  The foreground services the
+ * prepared-row queue, polls the UI and reports the player status.  The file
+ * and its stdio reader remain owned by this process for the whole playback.
+ */
 
-#include "sntracker.h"
+#include "kos.h"
 #include "kos/event.h"
+#include "kos/reader.h"
+#include "kos/snd.h"
 #include "kos/timer.h"
 
-#define TIMER_BASE_RATE       180u
-#define TIMER_BASE_PERIOD     217u
-
 static int timer_handle;
-static volatile unsigned char tick_produced;
-static volatile unsigned char tick_consumed;
-static volatile unsigned int tick_phase;
+static FILE *song_file;
+static kos_reader_t song_reader;
+static volatile unsigned char playing;
+static volatile unsigned char aborted;
 static volatile unsigned int timer_event_count;
 static volatile unsigned int missed_event_count;
-static volatile unsigned int queue_overrun_count;
-static unsigned char aborted;
-static unsigned int ui_refresh_wait;
+static unsigned char shown_order;
+static unsigned char shown_row;
 
 static unsigned char same(const char *left, const char *right)
 {
@@ -39,22 +41,19 @@ static void usage(void)
 static void on_timer_event(unsigned int count, unsigned int missed)
 {
 	missed_event_count = (unsigned int)(missed_event_count + missed);
-	while (count != 0u) {
-		--count;
-		++timer_event_count;
-		tick_phase = (unsigned int)(tick_phase + ztr_song.tick_rate);
-		if (tick_phase < TIMER_BASE_RATE) continue;
-		tick_phase = (unsigned int)(tick_phase - TIMER_BASE_RATE);
-		if ((unsigned char)(tick_produced + 1u) == tick_consumed)
-			++queue_overrun_count;
-		else
-			tick_produced = (unsigned char)(tick_produced + 1u);
+	if (count != 0u && playing != 0u) {
+		(void)snd_tick((uint16_t)count);
+		timer_event_count = (unsigned int)(timer_event_count + count);
 	}
 }
 
 static int start_timer(void)
 {
+	uint32_t period;
 	int result;
+
+	result = snd_timer_period(&period);
+	if (result < 0) return result;
 	timer_handle = timer_open();
 	if (timer_handle < 0) {
 		result = timer_handle;
@@ -67,7 +66,7 @@ static int start_timer(void)
 		timer_handle = 0;
 		return result;
 	}
-	result = timer_event(timer_handle, TIMER_BASE_PERIOD);
+	result = timer_event(timer_handle, (unsigned int)period);
 	if (result < 0) {
 		(void)notify(timer_handle, (kos_event_handler_t)0);
 		(void)unbind((unsigned char)timer_handle);
@@ -85,21 +84,23 @@ static void stop_timer(void)
 	timer_handle = 0;
 }
 
-static void refresh_ui(unsigned char force)
+static void refresh_ui(const struct snd_ztr_status *status,
+		       unsigned char force)
 {
-	if (player_row_changed == 0u || (force == 0u && ui_refresh_wait != 0u))
-		return;
-	player_row_changed = 0u;
-	printf("\rO%02x T%02u:%02u   ", (unsigned int)player_order,
-	       (unsigned int)player_minutes, (unsigned int)player_seconds);
-	ui_refresh_wait = (unsigned int)ztr_song.tick_rate << 2;
+	if (force == 0u && status->order == shown_order &&
+	    status->row == shown_row) return;
+	shown_order = status->order;
+	shown_row = status->row;
+	printf("\rO%02x R%03u U%u   ", (unsigned int)status->order,
+	       (unsigned int)status->row, (unsigned int)status->underruns);
 }
 
 int main(int argc, char **argv)
 {
 	const char *path;
+	struct snd_ztr_status status;
 	int result;
-	int status = 0;
+	int rc = 0;
 
 	if (argc != 1 || argv == (char **)0 || same(argv[0], "-h") != 0u ||
 	    same(argv[0], "--help") != 0u || same(argv[0], "/?") != 0u) {
@@ -107,85 +108,114 @@ int main(int argc, char **argv)
 		return argc == 1 ? 0 : 1;
 	}
 	path = argv[0];
-	console_puts("SNTRACK 0.2 - ZTR tracker player for KonaOS\r\n");
-	/* idle() probes /dev/timer through a temporary handle on its first call.
-	 * Do that before this process owns the timer's event subscription: release
-	 * of any timer handle currently stops the driver's single event source. */
+	console_puts("SNTRACK 0.2 - streamed ZTR player for KonaOS\r\n");
+	/* Prime idle() before this process subscribes to the timer source. */
 	idle();
-	result = psg_open();
-	if (result < 0) {
-		printf("sntrack: cannot acquire /dev/sound (%d)\r\n", result);
-		return 5;
-	}
-	result = ztr_load(path);
-	if (result < 0) {
-		printf("sntrack: cannot load %s: %s (%d)\r\n", path, ztr_error, result);
-		psg_close();
+
+	song_file = fopen(path, "rb");
+	if (song_file == (FILE *)0) {
+		printf("sntrack: cannot open %s\r\n", path);
 		return 2;
 	}
-	printf("Playing: %s", ztr_song.title);
-	if (ztr_song.author[0] != '\0') printf(" by %s", ztr_song.author);
-	printf("\r\n%u Hz, speed %u, %u orders, %u patterns, %u bytes\r\n",
-	       (unsigned int)ztr_song.tick_rate, (unsigned int)ztr_song.speed,
-	       (unsigned int)ztr_song.order_count, ztr_song.pattern_count, ztr_size);
-	console_puts("Q/Esc: stop; status updates are rate limited\r\n");
+	result = kos_reader_from_stdio(&song_reader, song_file);
+	if (result < 0) {
+		printf("sntrack: cannot size %s (%d)\r\n", path, result);
+		rc = 3;
+		goto cleanup;
+	}
+	result = snd_open();
+	if (result < 0) {
+		printf("sntrack: cannot acquire /dev/sound (%d)\r\n", result);
+		rc = 5;
+		goto cleanup;
+	}
+	result = snd_ztr_open(&song_reader);
+	if (result < 0) {
+		printf("sntrack: unsupported or damaged ZTR file (%d)\r\n",
+		       result);
+		rc = 4;
+		goto cleanup;
+	}
+	result = snd_ztr_prepare();
+	while (result == SND_NEED_MORE) {
+		(void)snd_service();
+		result = snd_ztr_prepare();
+	}
+	if (result < 0) {
+		printf("sntrack: initial read failed (%d)\r\n", result);
+		rc = 3;
+		goto cleanup;
+	}
+	printf("Playing: %s  %lu bytes  %u Hz\r\n", path,
+	       song_reader.size, (unsigned int)snd_tick_rate());
+	console_puts("Q/Esc: stop; the foreground keeps the row queue filled\r\n");
 
-	tick_produced = 0u;
-	tick_consumed = 0u;
-	tick_phase = 0u;
 	timer_event_count = 0u;
 	missed_event_count = 0u;
-	queue_overrun_count = 0u;
 	aborted = 0u;
-	ui_refresh_wait = 0u;
-	player_start();
-	refresh_ui(1u);
-	if (player_playing == 0u) {
-		status = 5;
+	shown_order = 0xFFu;
+	shown_row = 0xFFu;
+	result = snd_ztr_play();
+	if (result < 0) {
+		printf("sntrack: cannot start playback (%d)\r\n", result);
+		rc = 5;
 		goto cleanup;
 	}
+	playing = 1u;
 	result = start_timer();
 	if (result < 0) {
-		printf("\r\nsntrack: timer event unavailable (%d)\r\n", result);
-		status = 5;
+		printf("sntrack: timer event unavailable (%d)\r\n", result);
+		rc = 5;
 		goto cleanup;
 	}
 
-	while (player_playing != 0u) {
+	while (playing != 0u) {
 		char key;
 
-		if (tick_consumed != tick_produced) {
-			tick_consumed = (unsigned char)(tick_consumed + 1u);
-			player_tick();
-			if (ui_refresh_wait != 0u) --ui_refresh_wait;
-			refresh_ui(0u);
+		(void)snd_service();
+		(void)snd_ztr_get_status(&status);
+		refresh_ui(&status, 0u);
+		if (status.state != SND_ZTR_PLAYING &&
+		    status.state != SND_ZTR_UNDERRUN) {
+			playing = 0u;
+			break;
 		}
 		if (console_poll() > 0) {
 			(void)console_read(&key, 1u);
 			if (key == 'q' || key == 'Q' || key == 27) {
 				aborted = 1u;
-				player_stop();
+				playing = 0u;
 			}
-		} else if (tick_consumed == tick_produced && player_playing != 0u) {
+		} else {
 			idle();
 		}
 	}
 
 cleanup:
-	player_stop();
+	playing = 0u;
+	(void)snd_ztr_get_status(&status);
 	stop_timer();
-	(void)psg_mute_all();
-	psg_close();
-	if (player_psg_error != 0u) {
-		console_puts("\r\nPlayback stopped by PSG output error.\r\n");
-		status = 5;
-	} else if (aborted != 0u) {
+	(void)snd_ztr_stop();
+	snd_ztr_close();
+	snd_close();
+	if (song_file != (FILE *)0) {
+		if (fclose(song_file) < 0 && rc == 0) rc = 3;
+		song_file = (FILE *)0;
+	}
+	if (aborted != 0u) {
 		console_puts("\r\nPlayback aborted.\r\n");
-	} else if (status == 0) {
+	} else if (status.last_error < 0) {
+		printf("\r\nPlayback stopped by reader error %d.\r\n",
+		       status.last_error);
+		rc = 3;
+	} else if (status.state == SND_ZTR_ERROR) {
+		console_puts("\r\nMalformed ZTR stream.\r\n");
+		rc = 4;
+	} else if (rc == 0) {
 		console_puts("\r\nPlayback complete.\r\n");
 	}
-	printf("Timer %04x  PSG writes %04x  queue overruns %04x  missed %04x\r\n",
-	       timer_event_count, player_psg_writes,
-	       queue_overrun_count, missed_event_count);
-	return status;
+	printf("Timer events %04x  underruns %u  overruns %u  missed %04x\r\n",
+	       timer_event_count, (unsigned int)status.underruns,
+	       (unsigned int)status.overruns, missed_event_count);
+	return rc;
 }

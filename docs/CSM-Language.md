@@ -93,7 +93,7 @@ target Zephyr {
     transpose = 0;
 
     extension sn76489 {
-        max_ztr_bytes = 20480;
+        max_ztr_bytes = 65535;
     }
 
     routes {
@@ -607,7 +607,7 @@ specific hardware behavior:
 
 ```csm
 extension sn76489 {
-    max_ztr_bytes = 20480;
+    max_ztr_bytes = 65535;
 }
 ```
 
@@ -617,8 +617,9 @@ At target scope, the SN backend supports:
 | --- | --- |
 | `max_ztr_bytes` | Reject output larger than this size, 1–65535 bytes. |
 
-The Zephyr CP/M player has a 20 KiB buffer, so its target should not set this
-above 20480.
+The KonaOS `libsnd` player streams pattern data, so its default uses the full
+65,535-byte ZTR v1 format limit. A target with a smaller fixed buffer may set a
+lower value explicitly.
 
 Inside a noise realization, the backend also supports:
 

@@ -134,6 +134,24 @@ static int ztr_read(void *dst, uint32_t offset, uint16_t length)
 	return result;
 }
 
+/* Resident sections can exceed one filesystem request.  Keep their
+ * first-pass reads bounded and monotonic. */
+static int ztr_read_forward(void *dst, uint32_t offset, uint16_t length)
+{
+	uint16_t done = 0u;
+
+	while (done < length) {
+		uint16_t amount = (uint16_t)(length - done);
+		int result;
+
+		if (amount > 256u) amount = 256u;
+		result = ztr_read((uint8_t *)dst + done, offset + done, amount);
+		if (result < 0) return result;
+		done = (uint16_t)(done + amount);
+	}
+	return (int)length;
+}
+
 /* The stream walkers: three independent chunk walks over file ranges
  * (0 = the strings, 1 = the macros, 2 = the shared scan walker for
  * patterns, the note table and the divisor fill).  Flat statics and a
@@ -189,7 +207,6 @@ static int zs_get(uint8_t w, uint8_t *out)
 
 /* Shared scratch the validation reads into: a macro header and one
  * instrument entry. */
-static uint8_t ztr_macro_head[ZTR_MACRO_HEADER];
 static uint8_t ztr_instr_entry[ZTR_INSTRUMENT_BYTES];
 
 
@@ -204,48 +221,26 @@ static uint32_t u32_at(const uint8_t *p)
 	       ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
-static int string_ok(uint16_t offset, uint16_t pool_end)
+static int string_ref_ok(uint16_t offset, uint16_t pool_end)
 {
-	uint8_t byte;
-	int result;
-
-	if (offset < ZTR_HEADER_BYTES || offset >= pool_end) {
-		return 0;
-	}
-	zs_open(0u, offset, pool_end);
-	for (;;) {
-		result = zs_get(0u, &byte);
-		if (result < 0) {
-			return 0;
-		}
-		if (byte == 0u) {
-			return 1;
-		}
-	}
+	return offset >= ZTR_HEADER_BYTES && offset < pool_end;
 }
 
-static int macro_ok(uint16_t offset, uint8_t type, uint16_t macro_start,
-		    uint16_t macro_end_range)
+static int resident_macro_ok(uint16_t offset, uint8_t type,
+			     uint16_t macro_start, uint16_t macro_end_range)
 {
-	uint8_t *m = ztr_macro_head;
+	const uint8_t *m;
 	uint16_t end;
 	uint16_t count;
 	uint16_t loop;
 	uint16_t release;
 	uint16_t i;
-	int result;
 
 	if (offset < macro_start || offset >= macro_end_range ||
 	    offset + ZTR_MACRO_HEADER > macro_end_range) {
 		return 0;
 	}
-	zs_open(1u, offset, macro_end_range);
-	for (i = 0u; i < ZTR_MACRO_HEADER; ++i) {
-		result = zs_get(1u, &m[i]);
-		if (result < 0) {
-			return 0;
-		}
-	}
+	m = snd_ztr_macro_area + 1u + (uint16_t)(offset - macro_start);
 	count = u16_at(m + 10);
 	loop = u16_at(m + 6);
 	release = u16_at(m + 8);
@@ -258,19 +253,7 @@ static int macro_ok(uint16_t offset, uint8_t type, uint16_t macro_start,
 		return 0;
 	}
 	for (i = 0u; i < count; ++i) {
-		uint8_t flags;
-		uint8_t byte;
-
-		result = zs_get(1u, &flags);
-		if (result < 0 || (flags & 0xFEu) != 0u) {
-			return 0;
-		}
-		result = zs_get(1u, &byte);
-		if (result < 0) {
-			return 0;
-		}
-		result = zs_get(1u, &byte);
-		if (result < 0) {
+		if ((m[ZTR_MACRO_HEADER + i * 3u] & 0xFEu) != 0u) {
 			return 0;
 		}
 	}
@@ -280,7 +263,7 @@ static int macro_ok(uint16_t offset, uint8_t type, uint16_t macro_start,
 static int pattern_ok(uint16_t entry_index, uint16_t data_start,
 		      uint16_t data_end)
 {
-	uint8_t entry[ZTR_PATTERN_BYTES];
+	const uint8_t *entry = snd_ztr_patterns + entry_index * 8u;
 	uint16_t offset;
 	uint16_t end;
 	uint16_t expected;
@@ -289,11 +272,6 @@ static int pattern_ok(uint16_t entry_index, uint16_t data_start,
 	uint8_t first = 1u;
 	int result;
 
-	if (ztr_read(entry, (uint32_t)pattern_dir_offset +
-		     ((uint32_t)entry_index << 3),
-		     ZTR_PATTERN_BYTES) < 0) {
-		return 0;
-	}
 	offset = u16_at(entry + 2);
 	end = offset + u16_at(entry + 4);
 	expected = u16_at(entry + 6);
@@ -414,6 +392,7 @@ static int validate(void)
 	uint32_t macro_offset;
 	uint16_t i;
 	uint8_t seen_instruments[2];
+	uint8_t byte;
 	int result;
 
 	seen_instruments[0] = 0u;
@@ -461,11 +440,6 @@ static int validate(void)
 	    	    note_offset + ((uint32_t)ZTR_NOTE_COUNT << 1) != ztr_size) {
 		return -KOS_EINVAL;
 	}
-	if (!string_ok(u16_at(header + 28), (uint16_t)string_end) ||
-	    !string_ok(u16_at(header + 30), (uint16_t)string_end) ||
-	    !string_ok(u16_at(header + 32), (uint16_t)string_end)) {
-		return -KOS_EINVAL;
-	}
 	/* The header fields the engine and the producer keep. */
 	snd_ztr_rate = u16_at(header + 8);
 	snd_ztr_speed = header[10];
@@ -473,50 +447,113 @@ static int validate(void)
 	snd_ztr_order_count = u16_at(header + 14);
 	pattern_count = u16_at(header + 16);
 	instrument_count = (uint8_t)u16_at(header + 18);
-	/* Instruments and their macros. */
+	if (snd_ztr_order_count > SND_ZTR_MAX_ORDERS ||
+	    pattern_count > SND_ZTR_MAX_PATTERNS ||
+	    (uint32_t)(pattern_dir_offset - macro_offset) + 1u >
+	    SND_ZTR_MACRO_BYTES) {
+		return -KOS_ENOSPC;
+	}
+	/* Strings are one forward window.  The pool's final NUL guarantees
+	 * every in-range reference terminates without a seek back. */
+	if (!string_ref_ok(u16_at(header + 28), (uint16_t)string_end) ||
+	    !string_ref_ok(u16_at(header + 30), (uint16_t)string_end) ||
+	    !string_ref_ok(u16_at(header + 32), (uint16_t)string_end)) {
+		return -KOS_EINVAL;
+	}
+	zs_open(0u, ZTR_HEADER_BYTES, (uint16_t)string_end);
+	byte = 1u;
+	while ((uint16_t)(ws_pos[0u] + ws_at[0u]) < (uint16_t)string_end) {
+		result = zs_get(0u, &byte);
+		if (result < 0) return result;
+	}
+	if (byte != 0u) return -KOS_EINVAL;
+
+	/* Populate each resident section on its first encounter. */
+	result = ztr_read_forward(snd_ztr_orders, order_offset,
+			  (uint16_t)(snd_ztr_order_count * ZTR_CHANNELS));
+	if (result < 0) return result;
+	memset(snd_ztr_instr, 0, 256u);
 	for (i = 0u; i < instrument_count; ++i) {
 		uint8_t *entry = ztr_instr_entry;
 		uint8_t number;
-		uint8_t slot;
 
-		result = ztr_read(header, instrument_offset +
+		result = ztr_read(entry, instrument_offset +
 				  ((uint32_t)i << 4),
 				  ZTR_INSTRUMENT_BYTES);
 		if (result < 0) {
 			return result;
 		}
-		memcpy(entry, header, ZTR_INSTRUMENT_BYTES);
 		number = entry[0];
 		if (number >= ZTR_CHANNELS ||
 		    (seen_instruments[number >> 3] &
 		     (uint8_t)(1u << (number & 7u))) != 0u ||
 		    entry[14] != 0u || entry[15] != 0u ||
-		    !string_ok(u16_at(entry + 2), (uint16_t)string_end)) {
+		    !string_ref_ok(u16_at(entry + 2),
+				   (uint16_t)string_end)) {
 			return -KOS_EINVAL;
 		}
 		seen_instruments[number >> 3] |=
 			(uint8_t)(1u << (number & 7u));
-		for (slot = 0u; slot < SND_ZTR_MACRO_SLOTS; ++slot) {
-			uint32_t offset = u16_at(entry + 4u + slot * 2u);
+		memcpy(snd_ztr_instr + (uint16_t)number *
+		       ZTR_INSTRUMENT_BYTES, entry, ZTR_INSTRUMENT_BYTES);
+	}
+	macro_used = (uint32_t)(pattern_dir_offset - macro_offset) + 1u;
+	snd_ztr_macro_area[0] = 0u;
+	if (macro_used > 1u) {
+		result = ztr_read_forward(snd_ztr_macro_area + 1u, macro_offset,
+				  (uint16_t)(macro_used - 1u));
+		if (result < 0) return result;
+	}
+	/* Validate and remap the directory's absolute macro offsets to the
+	 * one-based resident macro area. */
+	for (i = 0u; i < ZTR_CHANNELS; ++i) {
+		uint8_t *entry;
+		uint8_t slot;
 
-			if (offset != 0u && !macro_ok((uint16_t)offset,
-						      (uint8_t)(slot + 1u),
-						      (uint16_t)macro_offset,
-						      (uint16_t)pattern_dir_offset)) {
-				return -KOS_EINVAL;
+		if ((seen_instruments[i >> 3] &
+		     (uint8_t)(1u << (i & 7u))) == 0u) continue;
+		entry = snd_ztr_instr + i * ZTR_INSTRUMENT_BYTES;
+		for (slot = 0u; slot < SND_ZTR_MACRO_SLOTS; ++slot) {
+			uint16_t offset = u16_at(entry + 4u + slot * 2u);
+			uint16_t resident = 0u;
+
+			if (offset != 0u) {
+				if (!resident_macro_ok(offset,
+						       (uint8_t)(slot + 1u),
+						       (uint16_t)macro_offset,
+						       (uint16_t)pattern_dir_offset)) {
+					return -KOS_EINVAL;
+				}
+				resident = (uint16_t)(1u + offset - macro_offset);
 			}
+			entry[4u + slot * 2u] = (uint8_t)resident;
+			entry[5u + slot * 2u] = (uint8_t)(resident >> 8);
 		}
 	}
+	result = ztr_read_forward(snd_ztr_patterns, pattern_dir_offset,
+			  (uint16_t)(pattern_count * ZTR_PATTERN_BYTES));
+	if (result < 0) return result;
 	/* Every pattern stream. */
 	for (i = 0u; i < pattern_count; ++i) {
-				if (!pattern_ok(i, (uint16_t)pattern_data_offset,
-						(uint16_t)note_offset)) {
+		uint16_t prior;
+		uint16_t offset = u16_at(snd_ztr_patterns + i * 8u + 2u);
+
+		if (i != 0u) {
+			const uint8_t *previous = snd_ztr_patterns + (i - 1u) * 8u;
+			prior = (uint16_t)(u16_at(previous + 2u) +
+					   u16_at(previous + 4u));
+			if (offset < prior) return -KOS_EINVAL;
+		}
+		if (!pattern_ok(i, (uint16_t)pattern_data_offset,
+				(uint16_t)note_offset)) {
 			return -KOS_EINVAL;
 		}
 	}
 	/* The note table. */
 	{
 		uint16_t note;
+		uint8_t *lo_page = snd_ztr_div_lo;
+		uint8_t *hi_page = lo_page + 256u;
 
 		zs_open(2u, (uint16_t)note_offset,
 			(uint16_t)(note_offset + 192u));
@@ -539,6 +576,8 @@ static int validate(void)
 				       				       ((uint16_t)hi << 8)) > 1023u) {
 				return -KOS_EINVAL;
 			}
+			lo_page[note] = lo;
+			hi_page[note] = hi;
 		}
 	}
 	return 0;
@@ -546,94 +585,9 @@ static int validate(void)
 
 /* --- resident loading --------------------------------------------------- */
 
-/* Remap one macro's file offset to its resident offset, copying it
- * once per source offset.  48 distinct macros: both fixture songs fit
- * (35 and 17), and exceeding the bound is -KOS_ENOSPC at open. */
-static uint16_t macro_remap[48u];
-static uint16_t macro_remap_source[48u];
-static uint8_t macro_remap_count;
-
-static int resident_macro(uint32_t source_offset, uint16_t *out_offset)
-{
-	uint8_t m[ZTR_MACRO_HEADER];
-	uint16_t count;
-	uint32_t bytes;
-	uint16_t i;
-	int result;
-
-	for (i = 0u; i < macro_remap_count; ++i) {
-		if ((uint32_t)macro_remap_source[i] == source_offset) {
-			*out_offset = macro_remap[i];
-			return 0;
-		}
-	}
-	if (macro_remap_count >= 48u) {
-		return -KOS_ENOSPC;
-	}
-	result = ztr_read(m, source_offset, ZTR_MACRO_HEADER);
-	if (result < 0) {
-		return result;
-	}
-	count = u16_at(m + 10);
-	bytes = ZTR_MACRO_HEADER + (uint32_t)count +
-		((uint32_t)count << 1);
-	if (macro_used + bytes > SND_ZTR_MACRO_BYTES) {
-		return -KOS_ENOSPC;
-	}
-	result = ztr_read(snd_ztr_macro_area + macro_used, source_offset,
-			  (uint16_t)bytes);
-	if (result < 0) {
-		return result;
-	}
-	macro_remap[macro_remap_count] = (uint16_t)macro_used;
-	macro_remap_source[macro_remap_count] =
-		(uint16_t)source_offset;
-	++macro_remap_count;
-	*out_offset = (uint16_t)macro_used;
-	macro_used += bytes;
-	return 0;
-}
-
 static int load_resident(void)
 {
-	uint8_t note;
 	uint16_t i;
-	int result;
-
-	if (snd_ztr_order_count > SND_ZTR_MAX_ORDERS ||
-	    pattern_count > SND_ZTR_MAX_PATTERNS) {
-		return -KOS_ENOSPC;
-	}
-	result = ztr_read(snd_ztr_orders, string_end,
-			  (uint16_t)(snd_ztr_order_count * ZTR_CHANNELS));
-	if (result < 0) {
-		return result;
-	}
-	result = ztr_read(snd_ztr_patterns, pattern_dir_offset,
-			  (uint16_t)(pattern_count * ZTR_PATTERN_BYTES));
-	if (result < 0) {
-		return result;
-	}
-	/* The divisor table: a lo page, then the hi page after it.  The
-	 * note values were already validated, so the pages are filled
-	 * in place. */
-	{
-		uint8_t *lo_page = snd_ztr_div_lo;
-		uint8_t *hi_page = lo_page + 256u;
-
-		zs_open(2u, (uint16_t)note_offset,
-			(uint16_t)(note_offset + 192u));
-		for (note = 0u; note < ZTR_NOTE_COUNT; ++note) {
-			result = zs_get(2u, &lo_page[note]);
-			if (result < 0) {
-				return -KOS_EIO;
-			}
-			result = zs_get(2u, &hi_page[note]);
-			if (result < 0) {
-				return -KOS_EIO;
-			}
-		}
-	}
 	/* The loudness page: base<<4|macro -> base*macro/15. */
 	{
 		uint8_t *loud = snd_ztr_loud;
@@ -655,46 +609,6 @@ static int load_resident(void)
 				}
 				loud[((uint16_t)base << 4) | macro] = value;
 			}
-		}
-	}
-	/* The instrument directory, remapped: one entry per number. */
-	{
-		uint8_t *instr = snd_ztr_instr;
-
-		memset(instr, 0, 256u);
-		for (i = 0u; i < instrument_count; ++i) {
-			uint8_t *entry = ztr_instr_entry;
-			uint8_t slot;
-
-			result = ztr_read(entry,
-					  string_end +
-					  ((uint32_t)snd_ztr_order_count
-					   << 4) +
-					  ((uint32_t)i << 4),
-					  ZTR_INSTRUMENT_BYTES);
-			if (result < 0) {
-				return result;
-			}
-			for (slot = 0u; slot < SND_ZTR_MACRO_SLOTS; ++slot) {
-				uint32_t offset = u16_at(entry + 4u +
-							 slot * 2u);
-				uint16_t resident = 0u;
-
-				if (offset != 0u) {
-					result = resident_macro(offset,
-							       &resident);
-					if (result < 0) {
-						return result;
-					}
-				}
-				entry[4u + slot * 2u] =
-					(uint8_t)(resident & 0xFFu);
-				entry[5u + slot * 2u] =
-					(uint8_t)(resident >> 8);
-			}
-			memcpy(instr + (uint16_t)entry[0] *
-			       ZTR_INSTRUMENT_BYTES,
-			       entry, ZTR_INSTRUMENT_BYTES);
 		}
 	}
 	/* The reserved mask: every channel used by any order. */
@@ -911,7 +825,6 @@ static void ztr_reset_state(void)
 	snd_ztr_speed = 0u;
 	snd_ztr_pattern_length = 0u;
 	snd_ztr_order_count = 0u;
-	macro_remap_count = 0u;
 	macro_used = 1u;	/* byte 0 reserved: a resident offset of
 				 * zero means "no macro" to the engine */
 	produce_done = 0u;
@@ -1007,7 +920,8 @@ int snd_ztr_open(const kos_reader_t *source)
 	}
 	ztr_size = source->size;
 	/* A file copied through CP/M may hold complete 128-byte records:
-	 * accept exactly that representation of the logical size. */
+	 * accept exactly that representation of the logical size.  Its
+	 * padding is checked after the logical song's forward pass. */
 	logical = u16_at(header + 46);
 	if (logical >= ZTR_HEADER_BYTES && logical < ztr_size) {
 		rounded = (logical + 127u) & 0xFF80u;
@@ -1015,19 +929,10 @@ int snd_ztr_open(const kos_reader_t *source)
 			result = -KOS_EINVAL;
 			goto fail;
 		}
-		for (position = logical; position < ztr_size; ++position) {
-			result = ztr_read(&byte, position, 1u);
-			if (result < 0) {
-				goto fail;
-			}
-			if (byte != 0x1Au) {
-				result = -KOS_EINVAL;
-				goto fail;
-			}
-		}
 		ztr_size = logical;
 	}
 	ztr_reset_state();
+	ztr_publish_pages();
 	result = validate();
 	if (result < 0) {
 		goto fail;
@@ -1038,10 +943,17 @@ int snd_ztr_open(const kos_reader_t *source)
 	}
 	produce_order = 0u;
 	produce_row = 0u;
-	ztr_publish_pages();
 	result = load_resident();
 	if (result < 0) {
 		goto fail;
+	}
+	for (position = ztr_size; position < source->size; ++position) {
+		result = ztr_read(&byte, position, 1u);
+		if (result < 0) goto fail;
+		if (byte != 0x1Au) {
+			result = -KOS_EINVAL;
+			goto fail;
+		}
 	}
 	snd_ztr_reset_channels();
 	setup_order();
@@ -1116,6 +1028,8 @@ int snd_service(void)
 
 				if (record[0] == snd_ztr_order &&
 				    record[1] == snd_ztr_row) {
+					snd_ztr_restore();
+					snd_output_flush();
 					snd_ztr_state = SND_ZTR_PLAYING;
 				}
 			}

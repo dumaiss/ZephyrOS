@@ -21,7 +21,7 @@ NOISE_RATES = {"low": 2, "medium": 1, "high": 0, "tone3": 3}
 # These fixed thresholds are the rounded half-step boundaries of the SN's
 # two-decibel attenuator. The compiler therefore needs no floating point.
 SN_LOUDNESS_THRESHOLDS = (9, 11, 14, 18, 23, 29, 36, 45, 57, 72, 90, 114, 143, 181, 227)
-ZEPHYR_PLAYER_LIMIT = 20 * 1024
+ZEPHYR_PLAYER_LIMIT = 65535
 
 
 class CsmCompileError(ValueError):

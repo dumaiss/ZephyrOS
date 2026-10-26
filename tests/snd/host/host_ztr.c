@@ -20,17 +20,40 @@
 
 struct file_reader {
 	FILE *file;
+	uint32_t last_offset;
+	unsigned int calls;
+	unsigned int short_reads;
+	unsigned int fail_call;
+	int decreased;
 };
 
 static int file_read_at(void *context, uint32_t offset, void *dst,
 			uint16_t requested)
 {
 	struct file_reader *reader = (struct file_reader *)context;
+	uint16_t amount = requested;
+
+	++reader->calls;
+	if (offset < reader->last_offset) {
+		reader->decreased = 1;
+#ifdef HOST_ZTR_TRACE
+		fprintf(stderr, "ztr: offset %lu after %lu at call %u\n",
+			(unsigned long)offset,
+			(unsigned long)reader->last_offset, reader->calls);
+#endif
+	}
+	reader->last_offset = offset;
+	if (reader->fail_call != 0u && reader->calls == reader->fail_call) {
+		return -KOS_EIO;
+	}
+	if (reader->short_reads != 0u && amount > 3u) {
+		amount = 3u;
+	}
 
 	if (fseek(reader->file, (long)offset, SEEK_SET) != 0) {
 		return -KOS_EIO;
 	}
-	return (int)fread(dst, 1u, requested, reader->file);
+	return (int)fread(dst, 1u, amount, reader->file);
 }
 
 int kos_reader_read_full(const kos_reader_t *reader, uint32_t offset,
@@ -86,10 +109,11 @@ int main(int argc, char **argv)
 	struct file_reader source;
 	kos_reader_t reader;
 	long size;
+	int open_decreased;
 	int result;
 
-	if (argc != 2) {
-		fprintf(stderr, "usage: host_ztr SONG.ZTR\n");
+	if (argc < 2 || argc > 3) {
+		fprintf(stderr, "usage: host_ztr SONG.ZTR [short|error]\n");
 		return 2;
 	}
 	file = fopen(argv[1], "rb");
@@ -103,6 +127,11 @@ int main(int argc, char **argv)
 		return 2;
 	}
 	source.file = file;
+	source.last_offset = 0u;
+	source.calls = 0u;
+	source.short_reads = argc == 3 && strcmp(argv[2], "short") == 0;
+	source.fail_call = argc == 3 && strcmp(argv[2], "error") == 0 ? 2u : 0u;
+	source.decreased = 0;
 	reader.context = &source;
 	reader.read_at = file_read_at;
 	reader.size = (uint32_t)size;
@@ -110,8 +139,13 @@ int main(int argc, char **argv)
 	if (result != 0) {
 		printf("ztr: refused %d\n", result);
 		(void)fclose(file);
-		return 0;
+		return source.decreased ? 3 : 0;
 	}
+	open_decreased = source.decreased;
+	/* The deferred acceptance is specifically the open pass.  Row
+	 * production follows 16 independent pattern cursors and is
+	 * intentionally random-access. */
+	source.decreased = 0;
 	result = snd_ztr_prepare();
 	if (result != 0 && result != SND_NEED_MORE) {
 		printf("ztr: prepare %d\n", result);
@@ -201,5 +235,9 @@ int main(int argc, char **argv)
 	}
 	snd_ztr_close();
 	(void)fclose(file);
+	if (open_decreased) {
+		fprintf(stderr, "ztr: reader offsets decreased\n");
+		return 3;
+	}
 	return 0;
 }

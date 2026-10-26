@@ -39,6 +39,7 @@
 	.globl _snd_shadow_noise
 	.globl _snd_output_mode
 	.globl _snd_all_valid
+	.globl _snd_fast
 	.globl snd_put_period
 	.globl snd_put_atten
 	.globl snd_put_noise
@@ -91,7 +92,7 @@ _snd_countdown:
 	.ds 2			; the earliest active wait at the last walk
 _snd_touched:
 	.ds 1			; the stepping voice's period/noise changes
-_snd_fast:
+_snd_fast::
 	.ds 1			; DIRECT and a valid shadow, for this walk
 _snd_voice_work::
 	.ds 1

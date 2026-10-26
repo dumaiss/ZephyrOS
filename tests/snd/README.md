@@ -9,7 +9,7 @@ against.
 
 | Path | What it is |
 | --- | --- |
-| `oracle/ztr_trace.c` | a host build of SNTracker's `ztr.c` + `player.c` + `psg.c` (unchanged, `UserSoftware/SNTracker`) with a recording `sound_write`. Prints the per-tick trace for N ticks and optionally the 16 channels' state. |
+| `oracle/ztr_trace.c` | a host build of the preserved `oracle/ztr.c` + `player.c` + `psg.c` with a recording `sound_write`. Prints the per-tick trace for N ticks and optionally the 16 channels' state. |
 | `oracle/zvg_trace.c` | a self-contained host reference of the ZVG decoder: the same header checks, command ring and per-tick `decoder_tick` the libsnd implementation and the goldens pin, fed whole files. Prints the per-tick byte sequence for PSG0. |
 | `oracle/make_malformed.py` | runs both oracles over `fixtures/malformed/` and prints the outcomes table. |
 | `tests/test_snd_oracle.py` | builds the tools, pins the goldens byte for byte, pins the malformed table and replays the harness self-test. |
@@ -21,9 +21,9 @@ The oracle tools build with the host compiler into `build/host/snd/`
 ```sh
 cc -std=c99 -Wall -Wextra -Werror -Itests/snd/oracle/include \
    -IUserSoftware/SNTracker \
-   tests/snd/oracle/ztr_trace.c \
-   UserSoftware/SNTracker/ztr.c UserSoftware/SNTracker/player.c \
-   UserSoftware/SNTracker/psg.c -o build/host/snd/ztr_trace
+   tests/snd/oracle/ztr_trace.c tests/snd/oracle/ztr.c \
+   tests/snd/oracle/player.c tests/snd/oracle/psg.c \
+   -o build/host/snd/ztr_trace
 cc -std=c99 -Wall -Wextra -Werror -Itests/snd/oracle/include \
    tests/snd/oracle/zvg_trace.c -o build/host/snd/zvg_trace
 ```

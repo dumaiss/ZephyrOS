@@ -1,6 +1,6 @@
 /* The ZTR behavioral oracle (tests/snd/oracle).
  *
- * Builds SNTracker's player unchanged - ztr.c (load and validate),
+ * Builds the preserved SNTracker player - ztr.c (load and validate),
  * player.c (rows, macros, effects) and psg.c (the channel-to-register
  * render with its register cache) - against a host sound_write that
  * records.  One run prints the per-tick trace:

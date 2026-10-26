@@ -1137,6 +1137,11 @@ $(eval $(call exe_program,sndtest,tests/snd,\
 
 all: $(EXE_USER_ROOT)/sndtest.exe
 
+$(eval $(call exe_program,ztrkres,tests/snd,\
+	ztrloadkres.c,STACK=384,LIBS=snd:kres,INCLUDES=user/sdk/snd/src))
+
+all: $(EXE_USER_ROOT)/ztrkres.exe
+
 # The reader outcome programs (tests/reader): readertest runs the four
 # adapters over a card fixture, readermap links the memory adapter
 # alone (tests/test_reader.py checks both maps).

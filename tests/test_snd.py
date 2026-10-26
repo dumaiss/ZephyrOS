@@ -15,8 +15,12 @@
 
 import json
 import os
+import re
+import shutil
+import statistics
 import subprocess
 import sys
+import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -27,6 +31,7 @@ from snd_harness import SndReplay, STEP_BUDGET, split_ticks  # noqa: E402
 from z80sim import SoundPeer, read_symbols  # noqa: E402
 
 SND = os.path.join(ROOT, "tests", "snd")
+sys.path.insert(0, SND)
 SND_SRC = os.path.join(ROOT, "user", "sdk", "snd", "src")
 SDK_INC = os.path.join(ROOT, "user", "sdk", "include")
 ABI = os.path.join(ROOT, "abi")
@@ -34,6 +39,9 @@ HOST_INC = os.path.join(SND, "host", "include")
 HOST = os.path.join(ROOT, "build", "host", "snd")
 COMPILER = os.path.join(HOST, "snd_compiler")
 SNTEST = os.path.join(ROOT, "build", "user", "sndtest.exe")
+ZTRKRES = os.path.join(ROOT, "build", "user", "ztrkres.exe")
+HOST_ZTR = os.path.join(HOST, "host_ztr")
+KRES_TOOL = os.path.join(ROOT, "build", "host", "kres")
 SNTEST_MAP = os.path.join(ROOT, "build", "user", "sndtest", "sndtest.map")
 SOUND_REPORT = os.path.join(ROOT, "build", "modules", "sound.report.json")
 SNTEST_SYMS = read_symbols(SNTEST_MAP) if os.path.exists(SNTEST_MAP) else {}
@@ -732,6 +740,225 @@ class TestSndTiming(SndCase):
 ZVG_GOLDEN = os.path.join(ROOT, "tests", "snd", "golden")
 ZVG_FIXTURES = os.path.join(ROOT, "tests", "snd", "fixtures")
 ZVG_MALFORMED = os.path.join(ZVG_FIXTURES, "malformed")
+
+
+@unittest.skipUnless(os.path.exists(SNTEST) and os.path.exists(ZTRKRES),
+                     "run make")
+class TestSndZtrLoad(SndCase):
+    """The deferred producer acceptance: oracle rows and all reads."""
+
+    SONGS = ("night-market", "RunawayCircuit")
+
+    @classmethod
+    def setUpClass(cls):
+        os.makedirs(HOST, exist_ok=True)
+        subprocess.run(
+            ["cc", "-std=c99", "-Wall", "-Wextra", "-Werror",
+             "-DHOST_ZTR", "-I" + HOST_INC, "-I" + SND_SRC,
+             "-I" + SDK_INC, "-I" + ABI,
+             os.path.join(SND, "host", "host_ztr.c"), "-o", HOST_ZTR],
+            check=True, cwd=ROOT)
+        if not os.path.exists(KRES_TOOL):
+            subprocess.run(["make", "kres-host"], check=True, cwd=ROOT)
+        import test_snd_oracle
+        test_snd_oracle.build_tools()
+
+    @staticmethod
+    def host_output(song, mode=None):
+        command = [HOST_ZTR, os.path.join(ZVG_FIXTURES, song + ".ztr")]
+        if mode is not None:
+            command.append(mode)
+        return subprocess.run(command, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, check=True,
+                              cwd=ROOT, text=True)
+
+    @staticmethod
+    def checksums(text):
+        return [(int(order), int(value, 16))
+                for order, value in re.findall(
+                    r"(?:order |checksum )(\d+)(?: checksum)? ([0-9A-Fa-f]{4})",
+                    text)]
+
+    def test_host_rows_short_reads_transient_error_and_forward_open(self):
+        import test_snd_oracle
+
+        for song in self.SONGS:
+            normal = self.host_output(song)
+            short = self.host_output(song, "short")
+            self.assertEqual(short.stdout, normal.stdout, song)
+            self.assertNotIn("offsets decreased", normal.stderr)
+            error = self.host_output(song, "error")
+            self.assertEqual(error.stdout, "ztr: refused -10\n", song)
+            with tempfile.NamedTemporaryFile() as rows:
+                subprocess.run(
+                    [test_snd_oracle.ZTR_TRACE,
+                     os.path.join(ZVG_FIXTURES, song + ".ztr"),
+                     "--rows", rows.name], stdout=subprocess.DEVNULL,
+                    check=True, cwd=ROOT)
+                rows.seek(0)
+                oracle = rows.read().decode("ascii")
+            produced = "\n".join(
+                line for line in normal.stdout.splitlines()
+                if line.startswith("row ")) + "\n"
+            self.assertEqual(produced, oracle, song)
+
+    def test_sdk_loader_refuses_every_malformed_ztr(self):
+        directory = os.path.join(ZVG_MALFORMED)
+        for name in sorted(item for item in os.listdir(directory)
+                           if item.endswith(".ztr")):
+            result = subprocess.run(
+                [HOST_ZTR, os.path.join(directory, name)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                check=True, cwd=ROOT, text=True)
+            self.assertTrue(result.stdout.startswith("ztr: refused "),
+                            "%s was accepted: %s" %
+                            (name, result.stdout.splitlines()[:1]))
+
+    def target_output(self, program_path, files, command, done):
+        with open(program_path, "rb") as handle:
+            files = dict(files, **{os.path.basename(program_path).upper():
+                                   handle.read()})
+        z, since = self.start(files, command.encode())
+        self.run_to_pattern(z, done, since=since, budget=500_000_000)
+        self.run_to_pattern(z, "\n", since=len(z.glyphs))
+        return self.trace(z, since)
+
+    def test_card_and_kres_checksums_equal_the_host(self):
+        for song in self.SONGS:
+            with open(os.path.join(ZVG_FIXTURES, song + ".ztr"), "rb") \
+                    as handle:
+                data = handle.read()
+            want = self.checksums(self.host_output(song).stdout)
+            card = self.target_output(
+                SNTEST, {"RUN.ZTR": data},
+                "/fs/sndtest.exe ztrload /fs/run.ztr\r",
+                "ztrload PASS")
+            self.assertEqual(self.checksums(card), want, song + " card")
+            with tempfile.TemporaryDirectory() as directory:
+                source = os.path.join(directory, "source")
+                os.mkdir(source)
+                shutil.copyfile(os.path.join(ZVG_FIXTURES, song + ".ztr"),
+                                os.path.join(source, "SONG.ZTR"))
+                packed = os.path.join(directory, "SONG.KPR")
+                subprocess.run([KRES_TOOL, "pack", source, packed],
+                               check=True, stdout=subprocess.DEVNULL,
+                               cwd=ROOT)
+                with open(packed, "rb") as handle:
+                    bundle = handle.read()
+            kres = self.target_output(
+                ZTRKRES, {"SONG.KPR": bundle},
+                "/fs/ztrkres.exe /fs/song.kpr SONG.ZTR\r",
+                "ztrloadkres: PASS")
+            self.assertEqual(self.checksums(kres), want, song + " KRES")
+
+
+@unittest.skipUnless(os.path.exists(SNTEST), "run make")
+class TestSndZtr(SndCase):
+    """The streamed tracker engine against the preserved C oracle."""
+
+    SONGS = ("night-market", "RunawayCircuit")
+
+    @classmethod
+    def setUpClass(cls):
+        import test_snd_oracle
+        test_snd_oracle.build_tools()
+
+    def run_ztr_mode(self, mode, song="night-market", done="ztr PASS"):
+        with open(SNTEST, "rb") as handle:
+            program = handle.read()
+        with open(os.path.join(ZVG_FIXTURES, song + ".ztr"), "rb") \
+                as handle:
+            fixture = handle.read()
+        z, since = self.start(
+            {"SNDTEST.EXE": program, "RUN.ZTR": fixture},
+            ("/fs/sndtest.exe %s /fs/run.ztr\r" % mode).encode())
+        self.run_to_pattern(z, done, since=since, budget=400_000_000)
+        self.run_to_pattern(z, "\n", since=len(z.glyphs))
+        return z, since
+
+    def test_both_songs_match_state_and_writes_for_3000_ticks(self):
+        from ztr_state_diff import oracle_state
+        from ztr_validate import engine_run, golden_writes, state_diff
+
+        for batch in (False, True):
+            for song in self.SONGS:
+                fixture = os.path.join(ZVG_FIXTURES, song + ".ztr")
+                oracle = oracle_state(fixture, 3000)
+                if batch:
+                    writes, marks, state = engine_run(
+                        song + ".ztr", 3000, batch=True)
+                else:
+                    writes, marks, state, costs, depths = engine_run(
+                        song + ".ztr", 3000, profile=True)
+                bad_writes, first_write = golden_writes(song, writes)
+                bad_state, first_state = state_diff(state, oracle)
+                label = "%s %s" % (song, "BATCH" if batch else "DIRECT")
+                self.assertEqual(len(marks), 6000, label)
+                self.assertEqual((bad_writes, first_write), (0, None), label)
+                self.assertEqual((bad_state, first_state), (0, None), label)
+                if not batch:
+                    median = statistics.median(costs)
+                    worst = max(costs)
+                    print("ztr budgets: %s median %d worst %d at tick %d, "
+                          "tick stack %d bytes"
+                          % (song, median, worst, costs.index(worst),
+                             max(depths)))
+
+    def test_pause_resume_stop_and_voice_ownership(self):
+        z, since = self.run_ztr_mode("ztrpause")
+        transcript = self.trace(z, since)
+        self.assertIn("sndtest: ztr PASS state 3 order 0 row 3 tick 2",
+                      transcript)
+        ticks, _marks, _orphans, _trailing = split_ticks(
+            self.collect(z, since))
+        pairs = ticks[0::2]
+        self.assertGreaterEqual(len(pairs), 10)
+        self.assertEqual(list(pairs[4]), [], "first paused tick")
+        self.assertEqual(list(pairs[5]), [], "second paused tick")
+
+        z, since = self.run_ztr_mode("ztrnotes", done="ztrnotes other")
+        transcript = self.trace(z, since)
+        self.assertIn("sndtest: ztrnotes busy -4", transcript)
+        self.assertIn("sndtest: ztrnotes other 0", transcript)
+
+    def test_stalled_reader_mutes_and_resumes_the_due_row(self):
+        z, since = self.run_ztr_mode("ztrstall", done="ztrstall served")
+        transcript = self.trace(z, since)
+        self.assertIn("sndtest: ztr PASS state 3 ticks 7 underruns 1 "
+                      "order 0 row 3", transcript)
+        self.assertIn("sndtest: ztrstall served 6", transcript)
+        ticks, _marks, _orphans, _trailing = split_ticks(
+            self.collect(z, since))
+        pairs = ticks[0::2]
+        values = [[value for port, value in tick if port == 0xE0]
+                  for tick in pairs]
+        muted = next(index for index, tick in enumerate(values)
+                     if tick == [0x9F])
+        self.assertEqual(values[muted + 1], [0x9D],
+                         "the due row restores the audible voice")
+
+    def test_stop_effect_ends_a_short_generated_song(self):
+        tools = os.path.join(ROOT, "UserSoftware", "SNTracker", "tools")
+        if tools not in sys.path:
+            sys.path.insert(0, tools)
+        import fur2ztr
+
+        song = fur2ztr.Song(
+            name="stop-effect", author="tests", system="SN76489",
+            tick_rate=60, speed=2, pattern_length=4, source_channels=1,
+            orders=[[0] + [0xFF] * 15],
+            patterns={(0, 0): [fur2ztr.Event(row=1, effect=(6, 1))]})
+        fixture = fur2ztr.encode_ztr(song)
+        with open(SNTEST, "rb") as handle:
+            program = handle.read()
+        z, since = self.start(
+            {"SNDTEST.EXE": program, "STOP.ZTR": fixture},
+            b"/fs/sndtest.exe ztr /fs/stop.ztr\r")
+        self.run_to_pattern(z, "ztr PASS", since=since)
+        transcript = self.trace(z, since)
+        self.assertIn("sndtest: ztr PASS state 5 ticks 3 underruns 0 "
+                      "order 0 row 1", transcript)
+
 
 
 def zvg_golden(name):

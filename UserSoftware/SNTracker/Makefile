@@ -1,12 +1,11 @@
 # SNTrackerKos for KonaOS.  The SDK archive is the build input: replacing it
 # automatically refreshes the private extracted copy before relinking.
 
-KOS_SDK_ARCHIVE ?= ../../build/kos-sdk-0.1.0.tar.gz
-KOS_SDK_ROOT ?= build/kos-sdk-0.1.0
+KOS_SDK_ARCHIVE ?= ../../build/kos-sdk-0.2.0.tar.gz
+KOS_SDK_ROOT ?= build/kos-sdk-0.2.0
 KOS_SDK_HASH := $(shell sha256sum "$(KOS_SDK_ARCHIVE)" 2>/dev/null | cut -c1-64)
 KOS_SDK_STORED_HASH := $(shell sed -n '1p' build/.kos-sdk-sha256 2>/dev/null)
 KOS_SDK_READY := $(and $(wildcard $(KOS_SDK_ROOT)/mk/kos.mk),$(filter $(KOS_SDK_HASH),$(KOS_SDK_STORED_HASH)))
-REFERENCE_SONGS ?= ../../../Zephyr-80/Code/HOST/SNTracker/songs
 
 ifeq ($(KOS_SDK_READY),)
 
@@ -36,7 +35,7 @@ else
 
 include $(KOS_SDK_ROOT)/mk/kos.mk
 
-$(eval $(call exe_program,sntrack,.,sntracker.c ztr.c player.c psg.c,STACK=1024,INCLUDES=$(KOS_SDK_ROOT)/include/kos))
+$(eval $(call exe_program,sntrack,.,sntracker.c,STACK=1024,LIBS=snd))
 
 .PHONY: all clean test
 .DEFAULT_GOAL := all
@@ -44,11 +43,6 @@ $(eval $(call exe_program,sntrack,.,sntracker.c ztr.c player.c psg.c,STACK=1024,
 all: sntrack
 
 test: sntrack
-	mkdir -p build/tests
-	cc -std=c99 -Wall -Wextra -Werror -Itests/include -I. \
-		tests/test_ztr_host.c ztr.c -o build/tests/test_ztr
-	build/tests/test_ztr $(REFERENCE_SONGS)/night-market.ztr 60 30 120 16
-	build/tests/test_ztr $(REFERENCE_SONGS)/RunawayCircuit.ztr 62 136 398 11
 	python3 -m unittest discover -s tests -p 'test_*.py' -v
 	$(KOS_PYTHON) $(KOS_TOOLS)/exepack.py validate build/user/sntrack.exe
 

@@ -412,8 +412,9 @@ class TestSdkBoundary(unittest.TestCase):
         # direct-text measurement program a card copy carries
         # (`tests/test_textbench.py`); `sndprobe` and `sndtest` are the
         # sound-series card programs the production replays run
-        # (`tests/test_snd.py`); `readertest` and `readermap` are the
-        # reader outcome programs (`tests/test_reader.py`).
+        # (`tests/test_snd.py`); `ztrkres` is the KRES-backed ZTR loader
+        # exercised there; `readertest` and `readermap` are the reader
+        # outcome programs (`tests/test_reader.py`).
         self.assertEqual(sorted(name for name, _d, _s, _o in programs),
                          ["banks", "beat", "devtest", "events",
                           "exe2big", "exe2probe", "exe2seg", "exetest",
@@ -432,7 +433,7 @@ class TestSdkBoundary(unittest.TestCase):
                           "vblank",
                           "xmem_child",
                           "xmem_far",
-                          "xmem_selftest"])
+                          "xmem_selftest", "ztrkres"])
         for name, directory, _sources, _options in programs:
             count = sum(_read(path).count("exe_program,%s," % name)
                         for path in ("Makefile",

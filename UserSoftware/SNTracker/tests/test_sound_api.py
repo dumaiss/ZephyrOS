@@ -1,4 +1,3 @@
-import re
 import unittest
 from pathlib import Path
 
@@ -7,33 +6,30 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class SoundApiTests(unittest.TestCase):
-    def test_tracker_batches_one_tick_through_sound_driver(self):
-        source = (ROOT / "psg.c").read_text()
-        self.assertIn('#include "kos/sound.h"', source)
-        self.assertNotIn("diag_io_out", source)
-        self.assertIn("sound_open(1u)", source)
-        self.assertIn("sound_write(sound_handle, psg_batch, psg_batch_count)",
-                      source)
-        self.assertIn("sound_reset(sound_handle)", source)
-        self.assertIn("sound_close(sound_handle)", source)
-        capacity = int(re.search(r"#define PSG_BATCH_WRITES\s+(\d+)u",
-                                 source).group(1))
-        # Twelve tone channels can emit pitch+volume (3 writes each), and
-        # four noise channels control+volume (2 each): 44 maximum per tick.
-        self.assertGreaterEqual(capacity, 44)
+    def setUp(self):
+        self.source = (ROOT / "sntracker.c").read_text()
+        self.makefile = (ROOT / "Makefile").read_text()
 
-    def test_each_logical_chip_maps_to_a_sound_target(self):
-        source = (ROOT / "psg.c").read_text()
-        self.assertGreaterEqual(source.count("unsigned char target = number >> 2;"),
-                                3)
-        self.assertNotIn("PSG_FIRST_PORT", source)
-        self.assertNotIn("diag_io_out", source)
+    def test_tracker_is_a_streamed_libsnd_client(self):
+        self.assertIn("kos_reader_from_stdio(&song_reader, song_file)",
+                      self.source)
+        self.assertIn("snd_ztr_open(&song_reader)", self.source)
+        self.assertIn("snd_ztr_prepare()", self.source)
+        self.assertIn("snd_ztr_play()", self.source)
+        self.assertIn("snd_service()", self.source)
+
+    def test_timer_handler_advances_libsnd(self):
+        self.assertIn("snd_tick((uint16_t)count)", self.source)
+        self.assertIn("snd_timer_period(&period)", self.source)
+
+    def test_build_uses_sdk_020_and_only_the_client_source(self):
+        self.assertIn("kos-sdk-0.2.0", self.makefile)
+        self.assertIn("sntracker.c,STACK=1024,LIBS=snd", self.makefile)
+        self.assertNotIn("ztr.c player.c psg.c", self.makefile)
 
     def test_empty_console_poll_idles_until_an_interrupt(self):
-        source = (ROOT / "sntracker.c").read_text()
-        self.assertIn("if (console_poll() > 0)", source)
-        self.assertIn("idle();", source)
-        self.assertNotIn("key_poll_count", source)
+        self.assertIn("if (console_poll() > 0)", self.source)
+        self.assertIn("idle();", self.source)
 
 
 if __name__ == "__main__":

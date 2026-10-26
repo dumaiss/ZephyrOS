@@ -712,9 +712,10 @@ static void ztr_play_loop(void)
 	       (unsigned int)status.order, (unsigned int)status.row);
 }
 
-/* The stall mode: prepare, then stall every service call after the
- * queue has drained, so the engine underruns exactly once and resumes
- * at the due row when the source recovers. */
+/* The stall mode: prepare, then stall every service read until the
+ * queue has drained.  As soon as the engine reports the underrun the
+ * source recovers, service publishes the due row, and one resumed
+ * tick consumes that exact row. */
 static int mode_ztr(const char *path, unsigned int batch, unsigned int step,
 		    unsigned int stall, unsigned int pause_mode)
 {
@@ -756,7 +757,7 @@ static int mode_ztr(const char *path, unsigned int batch, unsigned int step,
 	 * window itself needs are served, then two service calls fail. */
 	if (stall != 0u) {
 		fake.at = 120u;
-		fake.left = 2u;
+		fake.left = 0xFFFFu;
 	}
 	result = snd_ztr_play();
 	if (result != 0) {
@@ -772,6 +773,7 @@ static int mode_ztr(const char *path, unsigned int batch, unsigned int step,
 			marker();
 			(void)snd_tick(1u);
 			marker();
+			(void)snd_service();
 		}
 		(void)snd_ztr_pause();
 		for (ticks = 0u; ticks < 2u; ++ticks) {
@@ -784,6 +786,7 @@ static int mode_ztr(const char *path, unsigned int batch, unsigned int step,
 			marker();
 			(void)snd_tick(1u);
 			marker();
+			(void)snd_service();
 		}
 		(void)snd_ztr_get_status(&status);
 		printf("sndtest: ztr PASS state %u order %u row %u "
@@ -796,9 +799,35 @@ static int mode_ztr(const char *path, unsigned int batch, unsigned int step,
 		snd_close();
 		return 0;
 	}
-	ztr_play_loop();
 	if (stall != 0u) {
+		unsigned char saw_underrun = 0u;
+		unsigned char recovered = 0u;
+
+		for (ticks = 0u; ticks < 64u; ++ticks) {
+			marker();
+			(void)snd_tick(1u);
+			marker();
+			(void)snd_ztr_get_status(&status);
+			if (recovered != 0u) break;
+			if (status.state == SND_ZTR_UNDERRUN) {
+				saw_underrun = 1u;
+				fake.left = 0u;
+			}
+			(void)snd_service();
+			(void)snd_ztr_get_status(&status);
+			if (saw_underrun != 0u &&
+			    status.state == SND_ZTR_PLAYING) {
+				recovered = 1u;
+			}
+		}
+		printf("sndtest: ztr PASS state %u ticks %u underruns %u "
+		       "order %u row %u\r\n",
+		       (unsigned int)status.state, ticks,
+		       (unsigned int)status.underruns,
+		       (unsigned int)status.order, (unsigned int)status.row);
 		printf("sndtest: ztrstall served %u\r\n", fake.served);
+	} else {
+		ztr_play_loop();
 	}
 	snd_ztr_stop();
 	snd_close();
@@ -812,29 +841,19 @@ static uint16_t ztr_checksum_byte(uint16_t sum, uint8_t byte)
 	return sum;
 }
 
-static int mode_ztrload(const char *path)
+static int ztrload_reader(kos_reader_t *reader)
 {
-	kos_reader_t reader;
 	int result;
 
-	if (open_card() != 0) return 1;
-	result = ztr_open_source(path, &reader, (struct ztr_stall *)0);
-	if (result < 0) {
-		printf("sndtest: ztrload open %d\r\n", result);
-		snd_close();
-		return 1;
-	}
-	result = snd_ztr_open(&reader);
+	result = snd_ztr_open(reader);
 	if (result != 0) {
 		printf("sndtest: ztrload refused %d\r\n", result);
-		snd_close();
 		return 1;
 	}
 	result = snd_ztr_prepare();
 	if (result != 0 && result != SND_NEED_MORE) {
 		printf("sndtest: ztrload prepare %d\r\n", result);
 		snd_ztr_close();
-		snd_close();
 		return 1;
 	}
 	/* Drain the queue in the foreground, service refilling it, and
@@ -887,9 +906,53 @@ static int mode_ztrload(const char *path)
 		       (unsigned int)order, (unsigned int)sum);
 		printf("sndtest: ztrload PASS\r\n");
 		snd_ztr_close();
-		snd_close();
 		return 0;
 	}
+}
+
+static int mode_ztrload(const char *path)
+{
+	kos_reader_t reader;
+	int result;
+
+	if (open_card() != 0) return 1;
+	result = ztr_open_source(path, &reader, (struct ztr_stall *)0);
+	if (result < 0) {
+		printf("sndtest: ztrload open %d\r\n", result);
+		snd_close();
+		return 1;
+	}
+	result = ztrload_reader(&reader);
+	snd_close();
+	return result;
+}
+
+/* Marker windows for the deferred producer budgets: open/validate, then
+ * one foreground service call after making one queue slot available. */
+static int mode_ztrbudget(const char *path)
+{
+	kos_reader_t reader;
+	int result;
+
+	if (open_card() != 0) return 1;
+	result = ztr_open_source(path, &reader, (struct ztr_stall *)0);
+	if (result < 0) return 1;
+	marker();
+	result = snd_ztr_open(&reader);
+	marker();
+	if (result != 0) return 1;
+	result = snd_ztr_prepare();
+	if (result != 0 && result != SND_NEED_MORE) return 1;
+	if (snd_ztr_head != snd_ztr_tail) {
+		if (++snd_ztr_head == SND_ZTR_QUEUE_ROWS) snd_ztr_head = 0u;
+	}
+	marker();
+	(void)snd_service();
+	marker();
+	console_puts("sndtest: ztrbudget PASS\r\n");
+	snd_ztr_close();
+	snd_close();
+	return 0;
 }
 
 static int mode_ztrdump(const char *path, unsigned int ticks)
@@ -1082,6 +1145,9 @@ int main(int argc, char **argv)
 	}
 	if (same(argv[0], "ztrload") != 0 && argc == 2) {
 		return mode_ztrload(argv[1]);
+	}
+	if (same(argv[0], "ztrbudget") != 0 && argc == 2) {
+		return mode_ztrbudget(argv[1]);
 	}
 	if (same(argv[0], "ztrdump") != 0 && argc == 3) {
 		return mode_ztrdump(argv[1], zvg_chip_from(argv[2]));

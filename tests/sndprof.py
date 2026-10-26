@@ -168,6 +168,8 @@ def main():
             hist[window][names[i] if i >= 0 else "?"] += cost
             if opt.pc:
                 per_pc[pc] += cost
+        if opt.window is not None and window > opt.window:
+            break
         if steps % 0x1FF == 0:
             p.pump(z)
             text = p.trace(z, since)

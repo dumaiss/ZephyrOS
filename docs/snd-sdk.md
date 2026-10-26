@@ -92,7 +92,7 @@ The sound card has four SN76489 PSGs (three tone and one noise voice each) and a
 ```
 
 - **Application:** source lifetime, choosing a song, timer subscription, polling/foreground loop, buffer budgets, and UI.
-- **`libsnd`:** ZTR validation/interpretation, per-channel musical state, basic note/envelope state, register shadow, direct/batched hardware writes, the ZTR row producer and the ZVG ring.
+- **`libsnd`:** ZTR validation/interpretation, per-channel musical state, basic note/envelope state, register shadow, direct/batched hardware writes, the ZTR order refill and the ZVG ring.
 - **KRES / `klibc` / `libkos`:** source access, existing file buffering and physical I/O. A KRES resource is a **logical descriptor** and not automatically a `FILE *`.
 - **SOUND driver:** `/dev/sound` publication, exclusive acquire/reset/release, `sound_info`, `sound_write`, card recovery.
 - **Timer:** event notification and timestamps. There is no tempo clock in the SOUND protocol.
@@ -216,7 +216,7 @@ int  snd_service(void);                   /* foreground refill */
 
 ```c
 int  snd_ztr_open(const kos_reader_t *source);  /* validate, initialize */
-int  snd_ztr_prepare(void);                     /* fill the start window */
+int  snd_ztr_prepare(void);                     /* load the first order */
 int  snd_ztr_play(void);
 int  snd_ztr_pause(void);
 int  snd_ztr_resume(void);
@@ -225,12 +225,12 @@ void snd_ztr_close(void);                       /* forget source only */
 int  snd_ztr_get_status(struct snd_ztr_status *out);
 ```
 
-Proposed status contains at least: state (`EMPTY`, `PREPARING`, `READY`, `PLAYING`, `PAUSED`, `DONE`, `ERROR`), current order, row, tick-in-row, header tick rate, reserved channel mask, last error, tick overrun count and row-underrun count. `snd_ztr_close` does **not** call `kres_rclose`, `fclose`, or `close`; the borrowed source remains the caller's property.
+The status reports state (`EMPTY`, `PREPARING`, `READY`, `PLAYING`, `PAUSED`, `DONE`, `UNDERRUN`, `ERROR`), current order, row, tick-in-row, header tick rate, reserved channel mask, last reader error, tick overrun count and order-underrun count. `snd_ztr_close` does **not** call `kres_rclose`, `fclose`, or `close`; the borrowed source remains the caller's property.
 
 Loading a song is two distinct steps:
 
 1. **Open/validate:** one forward pass over the file (section 6), keeping everything but the pattern data resident. Malformed source fails *before* playing registers.
-2. **Prepare:** decode the start window of rows into the prepared-row queue. `snd_ztr_play` requires it and never blocks on storage.
+2. **Prepare:** load order 0's pattern streams into an order buffer. `snd_ztr_play` requires it and never blocks on storage.
 
 `pause` holds a documented muted state rather than leaving an uncontrolled note stuck; `resume` restores the current musical state from the engine shadow. `stop` silences ZTR-owned channels. The ZTR `stop song` effect (ID 6) terminates playback deterministically. Looping is **not** implied by ZTR v1; an application may explicitly replay a finished song.
 
@@ -376,36 +376,39 @@ ZTR is **not a raw PSG-register recording**: it has order lists, sparse channel-
 - the header; the strings; the orders, the instrument directory, the macro data and the pattern directory, each kept resident as it is checked; the pattern streams, each checked (rows, masks, payloads, references, length and count); the divisor table, kept resident;
 - references are checked against what is already resident, or when their target arrives: instrument numbers against the header's count, macro offsets against the instrument directory, stream offsets against the pattern directory, and each order's pattern numbers against the directory once it is read.
 
-**Play: the prepared-row queue.**
+**Play: the order double buffer** (the ZVG model: the foreground copies raw bytes, the tick decodes). Rows never cross an order, so the unit of streaming is the order: its 16 channel-pattern streams, each read whole at the offset and length its directory entry gives.
 
 ```text
 Normal/foreground application execution       Timer-delivered tick
 ---------------------------------------       --------------------
-snd_service(): follow the order list and       snd_tick(elapsed)
-  the per-channel stream cursors (the          at each row's first tick, take
-  reference's setup_order and decode_row),       the due record and apply its
-  decode the next row into a fixed-size          events (begin_row)
-  record, then publish it (one byte)           advance effects and macros
-                                               render -> shadowed PSG writes
-(NO card writes needed during the refill)      (NO I/O / KRES / malloc)
+snd_service(): when the back buffer is free,   snd_tick(elapsed)
+  read order n+1's streams into it, one         at each row's start, decode the
+  read_at per stream, then publish it           row from the channel cursors
+  (one byte)                                    into the current buffer
+                                                (the reference decode_row)
+                                              advance effects and macros
+                                              render -> shadowed PSG writes
+(NO card writes needed during the refill)     at the order's end: swap to the
+                                                published buffer
+                                              (NO I/O / KRES / malloc)
 ```
 
-A record is one row: order, row, then a fixed 10-byte event slot per channel (presence mask, note, instrument, volume, effect and parameter, modifiers and their values; a zero mask is no event), 162 bytes in all. The records equal the reference player's `decode_row` output event for event. Publication is a byte tail index written after the record is complete; the consumer's head is a byte too, and the tick never follows a partially written record. `snd_service` decodes a bounded number of rows per call and returns promptly; the caller repeats it from its main loop.
+The tick decodes raw stream bytes exactly as the reference player does over its whole-file buffer (`player.asm`, `player.c`); nothing decodes ahead. `snd_service` does at most one order refill per call and otherwise returns at once; the caller repeats it from its main loop. The handshake is two bytes (the published order, the consumed order), each written after the data it covers; the tick never follows a partially written buffer.
 
 ### 6.2 Work-space and memory policy
 
 - **Resident:** the header fields, the orders, the instrument directory, the macro data, the pattern directory and the 96 divisors, in library storage sized by compile-time capacities (`SND_ZTR_*`); exceeding one refuses the song at open (`-KOS_ENOSPC`).
-- **The queue:** `SND_ZTR_QUEUE_ROWS` records (3, two rows of lookahead), 162 bytes each. The lookahead is the foreground's slack: at speed 5 and 60 Hz, two rows are about 170 ms. Raise it for programs whose main loop can stall longer.
-- The two fixture songs: night-market keeps 8,500 bytes resident, RunawayCircuit 6,334. The pattern data never sits in RAM whole.
+- **Order buffers:** two, each `SND_ZTR_ORDER_BYTES`; the validation pass records the largest order's total stream bytes, and a larger order refuses the song at open.
+- The two fixture songs: night-market keeps 8,500 bytes resident and its largest order is 871 bytes; RunawayCircuit 6,334 and 370. The pattern data never sits in RAM whole.
 - Data the tick reads is directly visible during the tick: no far-mapped pointers retained across callbacks.
 
 ### 6.3 Underrun behavior
 
-An underrun is a row that is due but not yet published.
+An underrun can only occur at an order change: the next order is not yet published. The refill has the whole current order's duration (rows × speed ticks, seconds of music) to complete.
 
-- The tick never blocks for I/O. It mutes the ZTR's voices, enters `UNDERRUN`, counts it, and holds; it resumes at that row once `snd_service` publishes it.
+- The tick never blocks for I/O and runs only while `PLAYING`. At the order change it mutes the ZTR's voices, enters `UNDERRUN`, counts it, and holds; `snd_service` resumes playback at that order's first row once the buffer is published.
 - A reader error during a refill is kept as the last error; playback stays in `UNDERRUN` (never a bogus song end).
-- Test a stalled reader and a reader that fails.
+- Test a reader stalled across an order change and a reader that fails.
 
 ### 6.4 Interaction with the timer/event system
 
@@ -436,7 +439,7 @@ Manual voice state ---+                |
                                       +-- batch via sound_write OR direct sound_out
 ```
 
-The shadow must correctly model SN76489's latch/data write protocol, including two-byte tone divisor updates, 4-bit attenuation, and noise control/phase reset (where the control write must be forced even when a prior value matches). Manual voices compare and update the shadow as they run and emit directly (or append to the bounded BATCH array); there is no changed-slot queue or per-tick flush pass. With DIRECT output and a valid shadow the walk compares and writes a voice's attenuation inline; the write-through primitives (`snd_put_period`, `snd_put_atten`, `snd_put_noise`; HL = the descriptor) cover BATCH, the period and noise, and the other sources. An invalid shadow is restored by one card-order walk over all 44 register bytes; DIRECT copies the desired state into the shadow in one block and writes each chip's eleven bytes to its port. On acquire/reset, invalidate/reinitialize the shadow so the first frame does not assume hardware state inherited from a prior process.
+The shadow must correctly model SN76489's latch/data write protocol, including two-byte tone divisor updates, 4-bit attenuation, and noise control/phase reset (where the control write must be forced even when a prior value matches). Manual voices compare and update the shadow as they run and emit directly (or append to the bounded BATCH array); there is no changed-slot queue or per-tick flush pass. The ZTR engine takes the DIRECT/valid test once per tick and compares/writes period, noise and attenuation inline. BATCH or an invalid shadow uses the write-through primitives (`snd_put_period`, `snd_put_atten`, `snd_put_noise`; HL = the descriptor). An invalid shadow is restored by one card-order walk over all 44 register bytes; DIRECT copies the desired state into the shadow in one block and writes each chip's eleven bytes to its port. On acquire/reset, invalidate/reinitialize the shadow so the first frame does not assume hardware state inherited from a prior process.
 
 The DAC exists on the card and in `kos/sound.h`, but **sample playback is outside v1**; don't introduce an 8-kHz event consumer or reserve DAC work-space in the player.
 
@@ -456,7 +459,7 @@ Manual writes are ordered by logical voice 0 through 15. Within one voice, its p
 
 ## 8. Example application workflows
 
-**These are illustrative usage patterns**, not already implemented buildable examples.
+These patterns use the implemented public API.
 
 ### 8.1 Play a ZTR in a KRES resource
 
@@ -467,7 +470,7 @@ kos_reader_t song_reader;
 
 kres_get(&container, "music/theme.ztr", &song_res, 0);
 /* Adapter creates a borrowed reader over song_res. */
-kos_reader_from_kres(&song_reader, &song_res);  /* proposed helper */
+kos_reader_from_kres(&song_reader, &song_res);
 
 snd_open();
 snd_ztr_open(&song_reader);
@@ -491,7 +494,7 @@ Ordering of cleanup matters: stop the player before closing the borrowed resourc
 FILE *file = fopen("/fs/THEME.ZTR", "rb");
 kos_reader_t song_reader;
 
-kos_reader_from_stdio(&song_reader, file); /* proposed helper */
+kos_reader_from_stdio(&song_reader, file);
 snd_open();
 snd_ztr_open(&song_reader);
 /* same prepare / play / timer / service sequence as above */
@@ -531,7 +534,7 @@ For an actual phrase, parse a small notation string once into a caller-owned arr
 
 ## 9. Packaging, headers, and dependencies
 
-Proposed source tree (adjust names to existing repository conventions; **do not introduce `libztr`**):
+Implemented source layout (**do not introduce `libztr`**):
 
 ```text
 user/sdk/
@@ -541,13 +544,13 @@ user/sdk/
     src/snd_manual.c            note/instrument compile to voice programs (C)
     src/snd_phrase.c            optional tokenizer + phrase compile (C)
     src/snd_zvg.c               ZVG validate / prefetch (C)
-    src/snd_ztr.c               ZTR validate, resident tables, row producer (C)
+    src/snd_ztr.c               ZTR validate, resident tables, order refill (C)
     src/snd_private.h           private shared state
     src/snd_tick.asm            snd_tick dispatch, catch-up bound
     src/snd_out.asm             register shadow, latch encoding, direct/batch flush
     src/snd_voice.asm           voice-program engine
     src/snd_zvg_dec.asm         ZVG command decoder
-    src/snd_ztr_engine.asm      ZTR rows, macros, effects (the extracted player)
+    src/snd_ztr_dec.asm         ZTR rows, macros, effects and render
 
   include/kos/reader.h          shared reader contract (only if absent)
   src/reader_*.c                separate tiny adapters for file/stdio/KRES/RAM
@@ -575,7 +578,7 @@ Host authoring tools ship in the SDK's `tools/snd/`: `csmc.py` (CSM score to ZTR
 
 ## 10. Implementation work packages and acceptance
 
-The work packages: 97 oracles (SND-0), 98 core and manual notes (SND-1), 99 readers (SND-2), 100 ZVG, 101 ZTR validation, resident tables and row producer (SND-3/4, the C side), 102 ZTR engine (SND-3/4, the assembly tick side), 103 phrases, clients and examples (SND-5).
+The work packages: 97 oracles (SND-0), 98 core and manual notes (SND-1), 99 readers (SND-2), 100 ZVG, 101 ZTR validation, resident tables and order refill (SND-3/4, the C side), 102 ZTR engine (SND-3/4, the assembly tick side), 103 phrases, clients and examples (SND-5).
 
 ### SND-0 — Inventory and freeze behavioral oracles
 
@@ -601,11 +604,11 @@ Move the working shell-tracker ZTR playback into `libsnd`. Implement strict v1 v
 
 **Acceptance:** valid CSM- and Furnace-generated ZTR fixtures play with reference traces; invalid headers, lengths, offsets, rows, events, macros, references and unsupported effects fail without hardware side effects. Song completion and release behavior agree with the reference.
 
-### SND-4 — Foreground row prefetch and bounded event execution
+### SND-4 — Foreground order refill and bounded event execution
 
-Support ZTRs from borrowed readers without a full-song RAM buffer: the forward validation pass, the resident tables, the prepared-row queue refilled by `snd_service`, single-byte publication and safe underrun. Integrate timer event `count/missed` and measured processing budget.
+Support ZTRs from borrowed readers without a full-song RAM buffer: the forward validation pass, the resident tables, the order double buffer refilled by `snd_service`, single-byte publication and safe underrun at an order change. Integrate timer event `count/missed` and measured processing budget.
 
-**Acceptance:** instrumented tick path has zero source reads/seeks/allocations; a stalled reader causes a safe underrun and exact resumption; same song plays from RAM, raw file, `FILE *`, and KRES; resident, queue and stack sizes recorded; no unbounded tick replay.
+**Acceptance:** instrumented tick path has zero source reads/seeks/allocations; a reader stalled across an order change causes a safe underrun and exact resumption; same song plays from RAM, raw file, `FILE *`, and KRES; resident, buffer and stack sizes recorded; no unbounded tick replay.
 
 ### SND-5 — Tiny notation helper and integration
 
@@ -623,7 +626,7 @@ Optional `snd_phrase_parse` and `snd_phrase_start`; replace the shell tracker's 
 | ZTR | Header, orders, sparse patterns, all documented v1 macros/effects |
 | File abstraction | Byte-identical playback from file, `FILE *`, KRES, RAM |
 | File discipline | KRES one backing handle; no redundant 512-byte cache |
-| Streaming | No source I/O on tick path; prepared-row queue and underrun |
+| Streaming | No source I/O on tick path; order double buffer and underrun |
 | Performance | Timer, event, processing, and write T-states measured |
 | Lifecycle | Exclusive open/reset/release; safe close on errors/exit |
 | Isolation | No libztr, no CSM runtime, no new bank-6/7 code |
@@ -640,7 +643,7 @@ Host tests should use an output-capture backend with **deterministic per-tick tr
 
 1. **Actual shell-player extraction seams:** inspect existing code, preserve behavior, and avoid reimplementing a correct parser to suit the proposed file structure.
 2. **Reader API names:** use an already present SDK abstraction if one exists; only the read-at + size *contract* matters.
-3. **Resident capacities and queue depth:** derive from real ZTR sizes and available application RAM. Do not hard-code a 20 KiB song limit from a legacy player into the SDK.
+3. **Resident capacities and order-buffer size:** derive from real ZTR sizes and available application RAM. Do not hard-code a 20 KiB song limit from a legacy player into the SDK.
 4. **Exact API typedefs and error constants:** assign consistently with KonaOS SDK conventions after inspecting the public headers; examples above are proposed, not ABI-frozen.
 5. **Catch-up and underrun limits:** choose measurable bounded values via simulator fault tests and an audible hardware trial.
 6. **Audibly equivalent write deduplication:** preserve reference traces first; optimize only with regression evidence.

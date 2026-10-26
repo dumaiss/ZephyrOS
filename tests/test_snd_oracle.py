@@ -33,7 +33,6 @@ FIXTURES = os.path.join(SND, "fixtures")
 MALFORMED = os.path.join(FIXTURES, "malformed")
 GOLDEN = os.path.join(SND, "golden")
 ORACLE = os.path.join(SND, "oracle")
-SNTRACKER = os.path.join(ROOT, "UserSoftware", "SNTracker")
 Z80 = os.path.normpath(os.path.join(ROOT, "..", "Zephyr-80"))
 Z80_SONGS = os.path.join(Z80, "Code", "HOST", "SNTracker", "songs")
 
@@ -61,12 +60,12 @@ def build_tools():
     os.makedirs(HOST, exist_ok=True)
     command = ["cc", "-std=c99", "-Wall", "-Wextra", "-Werror",
                "-DZTR_ROWS_DUMP",
-               "-I%s/include" % ORACLE, "-I" + SNTRACKER]
+               "-I%s/include" % ORACLE, "-I" + ORACLE]
     subprocess.run(command +
                    [os.path.join(ORACLE, "ztr_trace.c"),
-                    os.path.join(SNTRACKER, "ztr.c"),
-                    os.path.join(SNTRACKER, "player.c"),
-                    os.path.join(SNTRACKER, "psg.c"),
+                    os.path.join(ORACLE, "ztr.c"),
+                    os.path.join(ORACLE, "player.c"),
+                    os.path.join(ORACLE, "psg.c"),
                     "-o", ZTR_TRACE], check=True, cwd=ROOT)
     subprocess.run(command +
                    [os.path.join(ORACLE, "zvg_trace.c"),

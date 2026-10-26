@@ -181,6 +181,29 @@ foreground, the assembly decoder consumes complete commands on the
 tick, and the application times ticks with `snd_timer_period`; a
 program that uses no sound pays no snd code or data cost.
 
+ZTR songs use the same borrowed-reader model through `snd_ztr_*`.
+Call `snd_ztr_open`, repeat `snd_ztr_prepare` until it returns zero,
+then call `snd_ztr_play`.  Deliver elapsed timer counts to `snd_tick`
+and call `snd_service` only from the foreground.  A missing due row
+mutes the song and enters `SND_ZTR_UNDERRUN`; foreground service
+automatically restores playback at that exact row when it becomes
+available.  Pause/resume holds and restores musical state, while stop
+silences the reserved voices and releases their mask.  The source is
+borrowed and must remain open until `snd_ztr_close`.
+
+The ZTR tick is assembly from queue consumption through PSG output and
+makes no reader call.  Focused DIRECT samples put ordinary active ticks
+at about 3,400-6,000 T-states, event-heavy row ticks at about
+6,700-8,500, and the initial bind/reset ticks at 15,757 (Night Market)
+and 15,670 (RunawayCircuit).  Across the complete 3,000-tick validation
+windows, including idle/due-macro work, the medians are 17,123 and
+10,433 T-states and the worst ticks are 54,861 and 100,522.  These
+exceed the 6,000 median and 15,000 worst targets; the validation record
+contains the profiles and preserves oracle semantics.
+The resident ZTR state includes bounded orders, instruments/macros,
+pattern directory, divisor/loudness/channel pages and a three-row
+prepared queue; pattern streams remain in the source.
+
 The shared read-at view is [kos/reader.h](include/kos/reader.h):
 `kos_reader_t` borrows a source and reads it absolutely (`read_at`,
 exact `size`, never closing it), and `kos_reader_read_full` retries
