@@ -1,0 +1,723 @@
+// Night Market — Electric Keet
+// converted from a Furnace text export by fur2csm.py
+//
+// source: 60 Hz tick, speed 3, pattern length 128
+//         -> 150 BPM at 8 rows/quarter, 32 rows/bar,
+//            4 bars per Furnace pattern, 30 orders
+// tuning: A4 = 440 Hz
+// TRANSPOSED +24 semitones. The source targets a TI-99/4A PSG at
+//   447443 Hz; at 3579545 Hz the floor is 109.35 Hz and the
+//   original bass will not fit. Set --transpose 0 to see the raw score.
+// WARNING: 342 effect-column entries were NOT carried over.
+
+song NightMarket {
+    tick_rate        = 60;
+    ticks_per_row    = 3;
+    rows_per_quarter = 8;
+    tuning           = 440;
+    meter            = meter(4, 4);
+
+    roles = [
+        role(ch0, 32),
+        role(ch1, 32),
+        role(ch2, 32),
+        role(perc, 32)
+    ];
+    play = main;
+
+    pattern ch0.b00 = | c4@36 _ _ _ _ _ _ _ _ _ _ _ c5@36 _ _ _ _ _ _ _ _ _ _ _ c5@36 _ _ _ _ _ _ _ |;
+    pattern ch0.b01 = | _ _ _ _ g#4@36 _ _ _ _ _ _ _ _ _ _ _ d#5@36 _ _ _ _ _ _ _ _ _ _ _ d#5@36 _ _ _ |;
+    pattern ch0.b02 = | _ _ _ _ _ _ _ _ b4@36 _ _ _ _ _ _ _ _ _ _ _ g4@36 _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch0.b03 = | d#5@36 _ _ _ _ _ _ _ _ _ _ _ d#5@36 _ _ _ _ _ _ _ _ _ _ _ g4@24 _ _ _ _ _ _ _ |;
+    pattern ch0.b04 = | c4@24 _ _ _ _ _ _ _ g4@24 _ _ _ _ _ _ _ d#5@24 _ _ _ _ _ _ _ c5@24 _ _ _ _ _ _ _ |;
+    pattern ch0.b05 = | f4@24 _ _ _ _ _ _ _ c5@24 _ _ _ _ _ _ _ d#5@24 _ _ _ _ _ _ _ c5@24 _ _ _ _ _ _ _ |;
+    pattern ch0.b06 = | d5@24 _ _ _ _ _ _ _ b4@24 _ _ _ _ _ _ _ d#5@24 _ _ _ _ _ _ _ b4@24 _ _ _ _ _ _ _ |;
+    pattern ch0.b07 = | d#5@24 _ _ _ _ _ _ _ c5@24 _ _ _ _ _ _ _ d5@24 _ _ _ _ _ _ _ g4@24 _ _ _ _ _ _ _ |;
+    pattern ch0.b08 = | c4@24 _ _ _ _ _ _ _ g4@12 _ _ _ c5@12 _ _ _ d#5@12 _ _ _ d5@12 _ _ _ c5@12 _ _ _ g4@12 _ _ _ |;
+    pattern ch0.b09 = | f4@12 _ _ _ g#4@12 _ _ _ c5@12 _ _ _ f5@12 _ _ _ d#5@12 _ _ _ d5@12 _ _ _ c5@12 _ _ _ d#5@12 _ _ _ |;
+    pattern ch0.b0a = | d5@12 _ _ _ g4@12 _ _ _ b4@12 _ _ _ d5@12 _ _ _ d#5@12 _ _ _ g4@12 _ _ _ b4@12 _ _ _ f5@12 _ _ _ |;
+    pattern ch0.b0b = | d#5@12 _ _ _ g4@12 _ _ _ c5@12 _ _ _ d#5@12 _ _ _ d5@12 _ _ _ b4@12 _ _ _ g4@24 _ _ _ _ _ _ _ |;
+    pattern ch0.b0c = | ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ |;
+    pattern ch0.b0d = | c4@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch0.b0e = | g#3@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch0.b0f = | b3@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch0.b10 = | c4@24 _ _ _ _ _ _ _ g4@12 _ _ _ c5@12 _ _ _ d#5@12 _ _ _ d5@12 _ _ _ c5@120 _ _ _ _ _ _ _ |;
+    pattern ch0.b11 = | _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch0.b12 = | d5@24 _ _ _ _ _ _ _ b4@12 _ _ _ d5@12 _ _ _ d#5@12 _ _ _ g4@12 _ _ _ b4@12 _ _ _ f5@12 _ _ _ |;
+    pattern ch0.b13 = | c3@24 _ _ _ _ _ _ _ g4@24 _ _ _ _ _ _ _ d#5@24 _ _ _ _ _ _ _ c5@24 _ _ _ _ _ _ _ |;
+    pattern ch0.b14 = | f6@24 _ _ _ _ _ _ _ c5@24 _ _ _ _ _ _ _ d#5@24 _ _ _ _ _ _ _ c5@24 _ _ _ _ _ _ _ |;
+    pattern ch0.b15 = | d6@24 _ _ _ _ _ _ _ b4@24 _ _ _ _ _ _ _ d#5@24 _ _ _ _ _ _ _ b4@24 _ _ _ _ _ _ _ |;
+    pattern ch0.b16 = | d#6@24 _ _ _ _ _ _ _ c5@24 _ _ _ _ _ _ _ d5@24 _ _ _ _ _ _ _ g4@24 _ _ _ _ _ _ _ |;
+    pattern ch0.b17 = | c7@24 _ _ _ _ _ _ _ g4@24 _ _ _ _ _ _ _ d#5@24 _ _ _ _ _ _ _ c5@24 _ _ _ _ _ _ _ |;
+    pattern ch0.b18 = | g#6@24 _ _ _ _ _ _ _ c5@24 _ _ _ _ _ _ _ d#5@24 _ _ _ _ _ _ _ c5@24 _ _ _ _ _ _ _ |;
+    pattern ch0.b19 = | d7@24 _ _ _ _ _ _ _ b4@24 _ _ _ _ _ _ _ d#5@24 _ _ _ _ _ _ _ b4@24 _ _ _ _ _ _ _ |;
+    pattern ch0.b1a = | c7@24 _ _ _ _ _ _ _ c5@24 _ _ _ _ _ _ _ d5@24 _ _ _ _ _ _ _ g4@24 _ _ _ _ _ _ _ |;
+    pattern ch0.b1b = | ~ ~ ~ ~ g5@18 _ _ _ _ _ ~ ~ a#5@6 _ ~ ~ g#5@6 _ ~ ~ g5@6 _ ~ ~ g#5@6 _ ~ ~ a#5@6 _ ~ ~ |;
+    pattern ch0.b1c = | c6@6 _ ~ ~ d6@6 _ ~ ~ d#6@6 _ ~ ~ f6@6 _ ~ ~ d#6@3 f6@3 d#6@3 ~ d6@6 _ ~ ~ c6@6 _ ~ ~ d#6@6 _ ~ ~ |;
+    pattern ch0.b1d = | f6@27 _ _ _ _ _ _ _ _ ~ ~ ~ d#6@9 _ _ ~ d6@9 _ _ ~ d#6@9 _ _ ~ f6@9 _ _ ~ g#6@9 _ _ ~ |;
+    pattern ch0.b1e = | g6@3 g#6@3 g6@90 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch0.b1f = | ~ ~ ~ ~ c7@6 _ ~ ~ c7@9 _ _ ~ d7@9 _ _ ~ d#7@9 _ _ ~ f7@6 _ d#7@6 _ d7@9 _ _ ~ c7@6 _ ~ ~ |;
+    pattern ch0.b20 = | g#6@30 _ _ _ _ _ _ _ _ _ ~ ~ a#6@27 _ _ _ _ _ _ _ _ ~ ~ ~ g#6@9 _ _ ~ g6@9 _ _ ~ |;
+    pattern ch0.b21 = | f6@3 ~ ~ ~ g6@3 ~ ~ ~ g#6@3 ~ ~ ~ b6@3 ~ ~ ~ c7@3 ~ ~ ~ d7@3 ~ ~ ~ d#7@3 f7@3 d#7@3 d7@3 d#7@3 d7@3 c7@3 b6@3 |;
+    pattern ch0.b22 = | c7@6 _ d7@6 _ d#7@6 _ f7@3 ~ g7@6 _ g#7@3 ~ g7@3 g#7@3 g7@54 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch0.b23 = | d#5@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch0.b24 = | f5@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch0.b25 = | d5@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch0.b26 = | g#5@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch0.b27 = | g5@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch0.b28 = | d5@9 _ _ ~ c5@3 d5@3 c5@6 _ b4@9 _ _ ~ c5@9 _ _ ~ d5@9 _ _ ~ d#5@6 _ ~ ~ f5@9 _ _ ~ g5@12 _ _ _ |;
+    pattern ch0.b29 = | ~ ~ ~ ~ ~ ~ ~ ~ g4@24 _ _ _ _ _ _ _ d#5@24 _ _ _ _ _ _ _ c5@24 _ _ _ _ _ _ _ |;
+    pattern ch0.b2a = | ~ ~ ~ ~ d#4@12 _ _ _ g4@12 _ _ _ c5@12 _ _ _ d#5@12 _ _ _ d5@12 _ _ _ c5@12 _ _ _ g4@12 _ _ _ |;
+    pattern ch0.b2b = | c3@384 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch0.b2c = | ~ d#4@9 _ _ ~ g4@9 _ _ ~ c5@12 _ _ _ d#5@9 _ _ ~ g5@12 _ _ _ f5@3 g5@3 f5@6 _ d#5@9 _ _ ~ a#4@12 _ _ |;
+    pattern ch0.b2d = | _ g#4@9 _ _ ~ c5@9 _ _ ~ d#5@9 _ _ ~ g#5@9 _ _ ~ g5@3 g#5@3 g5@6 _ d#5@6 _ f5@3 ~ d#5@9 _ _ ~ g5@12 _ _ |;
+    pattern ch0.b2e = | _ f5@9 _ _ ~ b4@9 _ _ ~ d5@9 _ _ ~ g5@9 _ _ ~ g#5@9 _ _ ~ b4@9 _ _ ~ d5@9 _ _ ~ g#5@12 _ _ |;
+    pattern ch0.b2f = | _ g5@9 _ _ ~ c5@12 _ _ _ d#5@12 _ _ _ g5@9 _ _ ~ f5@6 _ ~ ~ d5@6 _ ~ ~ b4@6 _ ~ ~ ~ ~ ~ |;
+
+    pattern ch1.b00 = | ~ ~ ~ ~ d#4@36 _ _ _ _ _ _ _ _ _ _ _ d#5@36 _ _ _ _ _ _ _ _ _ _ _ g4@36 _ _ _ |;
+    pattern ch1.b01 = | _ _ _ _ _ _ _ _ c5@36 _ _ _ _ _ _ _ _ _ _ _ d5@36 _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch1.b02 = | d5@36 _ _ _ _ _ _ _ _ _ _ _ d5@36 _ _ _ _ _ _ _ _ _ _ _ b4@36 _ _ _ _ _ _ _ |;
+    pattern ch1.b03 = | _ _ _ _ g4@36 _ _ _ _ _ _ _ _ _ _ _ d5@36 _ _ _ _ _ _ _ _ _ _ _ d#4@12 _ _ _ |;
+    pattern ch1.b04 = | ~ ~ ~ ~ d#4@24 _ _ _ _ _ _ _ c5@24 _ _ _ _ _ _ _ d5@24 _ _ _ _ _ _ _ g4@24 _ _ _ |;
+    pattern ch1.b05 = | _ _ _ _ g#4@24 _ _ _ _ _ _ _ f5@24 _ _ _ _ _ _ _ d5@24 _ _ _ _ _ _ _ d#5@24 _ _ _ |;
+    pattern ch1.b06 = | _ _ _ _ g4@24 _ _ _ _ _ _ _ d5@24 _ _ _ _ _ _ _ g4@24 _ _ _ _ _ _ _ f5@24 _ _ _ |;
+    pattern ch1.b07 = | _ _ _ _ g4@24 _ _ _ _ _ _ _ d#5@24 _ _ _ _ _ _ _ b4@24 _ _ _ _ _ _ _ d#4@12 _ _ _ |;
+    pattern ch1.b08 = | ~ ~ ~ ~ d#4@24 _ _ _ _ _ _ _ d#6@6 _ d6@6 _ d#6@18 _ _ _ _ _ ~ ~ c6@18 _ _ _ _ _ ~ ~ |;
+    pattern ch1.b09 = | f6@24 _ _ _ _ _ _ _ ~ ~ ~ ~ d#6@3 f6@3 d#6@6 _ d6@18 _ _ _ _ _ ~ ~ c6@18 _ _ _ _ _ ~ ~ |;
+    pattern ch1.b0a = | b5@24 _ _ _ _ _ _ _ ~ ~ ~ ~ c6@12 _ _ _ d6@18 _ _ _ _ _ ~ ~ g#5@15 _ _ _ _ ~ g5@3 g#5@3 |;
+    pattern ch1.b0b = | g5@60 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ ~ ~ ~ ~ ~ ~ ~ ~ d#4@12 _ _ _ |;
+    pattern ch1.b0c = | ~ ~ ~ ~ d#4@24 _ _ _ _ _ _ _ d#6@6 _ d6@6 _ d#6@9 _ _ ~ d6@6 _ ~ ~ c6@18 _ _ _ _ _ ~ ~ |;
+    pattern ch1.b0d = | f6@24 _ _ _ _ _ _ _ ~ ~ ~ ~ d#6@9 _ _ ~ d6@18 _ _ _ _ _ d#6@3 d6@3 c6@12 _ _ _ a5@6 _ ~ ~ |;
+    pattern ch1.b0e = | b5@12 _ _ _ c6@12 _ _ _ d6@12 _ _ _ d#6@12 _ _ _ d6@18 _ _ _ _ _ ~ ~ c6@12 _ _ _ b5@12 _ _ _ |;
+    pattern ch1.b0f = | c6@3 d6@3 c6@54 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ ~ ~ ~ ~ ~ ~ ~ ~ d#4@12 _ _ _ |;
+    pattern ch1.b10 = | ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ |;
+    pattern ch1.b11 = | ~ ~ ~ ~ c4@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch1.b12 = | _ _ _ _ g#3@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch1.b13 = | _ _ _ _ b3@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch1.b14 = | _ _ _ _ c4@84 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch1.b15 = | ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ d#6@9 _ _ ~ d6@18 _ _ _ _ _ d#6@3 d6@3 c6@36 _ _ _ _ _ _ _ |;
+    pattern ch1.b16 = | _ _ _ _ ~ ~ ~ ~ ~ ~ ~ ~ g#5@9 _ _ ~ g5@18 _ _ _ _ _ ~ ~ g#5@24 _ _ _ _ _ _ _ |;
+    pattern ch1.b17 = | g5@3 g#5@3 g5@54 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ ~ ~ ~ ~ ~ ~ ~ ~ d#4@12 _ _ _ |;
+    pattern ch1.b18 = | f6@132 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch1.b19 = | _ _ _ _ _ _ _ _ _ _ _ _ d#6@12 _ _ _ d6@18 _ _ _ _ _ ~ ~ c6@12 _ _ _ b5@12 _ _ _ |;
+    pattern ch1.b1a = | ~ ~ ~ ~ d#4@24 _ _ _ _ _ _ _ d#6@6 _ d6@6 _ d#6@15 _ _ _ _ ~ ~ ~ c6@12 _ _ _ f6@72 _ _ _ |;
+    pattern ch1.b1b = | _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ |;
+    pattern ch1.b1c = | ~ ~ ~ ~ g4@24 _ _ _ _ _ _ _ c6@9 _ _ ~ b5@9 _ _ ~ c6@9 _ _ ~ d6@9 _ _ ~ d#6@6 _ ~ ~ |;
+    pattern ch1.b1d = | g6@60 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ ~ ~ ~ ~ ~ ~ ~ ~ d#4@12 _ _ _ |;
+    pattern ch1.b1e = | ~ ~ ~ ~ d#4@24 _ _ _ _ _ _ _ d#6@6 _ d6@6 _ d#6@33 _ _ _ _ _ _ _ _ _ _ ~ d6@9 _ _ ~ |;
+    pattern ch1.b1f = | f6@3 g6@3 f6@66 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ ~ ~ ~ ~ ~ ~ ~ ~ |;
+    pattern ch1.b20 = | ~ ~ ~ ~ f6@24 _ _ _ _ _ _ _ c6@3 d6@3 c6@3 ~ b5@9 _ _ ~ c6@9 _ _ ~ d6@9 _ _ ~ d#6@9 _ _ ~ |;
+    pattern ch1.b21 = | c6@60 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ |;
+    pattern ch1.b22 = | ~ ~ ~ ~ g4@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch1.b23 = | _ _ _ _ g#4@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch1.b24 = | _ _ _ _ d4@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch1.b25 = | _ _ _ _ d#4@18 _ _ _ _ _ d4@6 _ c#4@6 _ c4@6 _ b3@6 _ a#3@6 _ a3@6 _ g#3@6 _ g3@6 _ f#3@6 _ f3@6 _ e3@6 _ |;
+    pattern ch1.b26 = | d#4@9 _ _ ~ g4@9 _ _ ~ c5@12 _ _ _ d#5@9 _ _ ~ g5@12 _ _ _ f5@3 g5@3 f5@6 _ d#5@9 _ _ ~ a#4@12 _ _ _ |;
+    pattern ch1.b27 = | g#4@9 _ _ ~ c5@9 _ _ ~ d#5@9 _ _ ~ g#5@9 _ _ ~ g5@12 _ _ _ f5@9 _ _ ~ d#5@9 _ _ ~ g5@12 _ _ _ |;
+    pattern ch1.b28 = | f5@9 _ _ ~ b4@9 _ _ ~ d5@9 _ _ ~ g5@9 _ _ ~ g#5@9 _ _ ~ b4@9 _ _ ~ d5@9 _ _ ~ g#5@12 _ _ _ |;
+    pattern ch1.b29 = | g5@9 _ _ ~ c5@12 _ _ _ d#5@12 _ _ _ g5@9 _ _ ~ f5@6 _ ~ ~ d5@6 _ ~ ~ b4@6 _ ~ ~ ~ ~ ~ ~ |;
+    pattern ch1.b2a = | f5@9 _ _ ~ b4@3 ~ ~ ~ d5@3 ~ ~ ~ g5@3 ~ ~ ~ g#5@3 ~ ~ ~ b4@3 ~ ~ ~ d5@9 _ _ ~ g#5@12 _ _ _ |;
+    pattern ch1.b2b = | ~ ~ ~ d#5@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch1.b2c = | _ _ _ f5@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch1.b2d = | _ _ _ d#5@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch1.b2e = | _ _ _ d5@87 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch1.b2f = | ~ ~ ~ ~ d#5@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch1.b30 = | _ _ _ _ d5@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch1.b31 = | _ _ _ _ a#4@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch1.b32 = | _ _ _ _ b4@84 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch1.b33 = | ~ ~ ~ ~ g5@9 _ _ ~ c6@9 _ _ ~ d6@6 _ ~ ~ d#6@12 _ _ _ d6@3 d#6@3 d6@6 _ c6@132 _ _ _ _ _ _ _ |;
+    pattern ch1.b34 = | _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch1.b35 = | _ _ _ _ g5@12 _ _ _ g#5@12 _ _ _ b5@9 _ _ ~ c6@12 _ _ _ b5@6 _ ~ ~ d#6@12 _ _ _ d6@108 _ _ _ |;
+    pattern ch1.b36 = | ~ ~ ~ ~ c6@9 _ _ ~ d6@9 _ _ ~ d#6@6 _ ~ ~ d6@18 _ _ _ _ _ d#6@3 d6@3 c6@6 _ g#5@3 ~ g5@72 _ _ _ |;
+    pattern ch1.b37 = | _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ c6@9 _ _ ~ d6@3 d#6@3 d6@6 _ c6@9 _ _ ~ |;
+    pattern ch1.b38 = | d6@84 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ d#6@108 _ _ _ |;
+    pattern ch1.b39 = | ~ ~ ~ ~ c6@9 _ _ ~ d6@9 _ _ ~ c6@6 _ ~ ~ d#6@9 _ _ ~ c6@12 _ _ _ f6@12 _ _ _ g6@72 _ _ _ |;
+    pattern ch1.b3a = | _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ a6@3 a#6@6 _ ~ g6@6 _ f6@6 _ d#6@6 _ c6@3 ~ |;
+    pattern ch1.b3b = | a#5@9 _ _ ~ g5@12 _ _ _ g#5@12 _ _ _ b5@9 _ _ ~ c6@12 _ _ _ b5@6 _ ~ ~ d#6@12 _ _ _ d6@3 d#6@3 d6@102 _ |;
+    pattern ch1.b3c = | ~ ~ ~ ~ c6@9 _ _ ~ d6@9 _ _ ~ d#6@6 _ ~ ~ d6@18 _ _ _ _ _ d#6@3 d6@3 c6@12 _ _ _ g#5@9 _ _ ~ |;
+    pattern ch1.b3d = | g5@60 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ c6@9 _ _ ~ d6@3 d#6@3 d6@6 _ c6@9 _ _ ~ |;
+    pattern ch1.b3e = | d6@84 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ c6@12 _ _ _ |;
+    pattern ch1.b3f = | d6@9 _ _ ~ c6@3 d6@3 c6@6 _ b5@12 _ _ _ c6@9 _ _ ~ d6@9 _ _ ~ d#6@6 _ ~ ~ f6@9 _ _ ~ g6@12 _ _ _ |;
+    pattern ch1.b40 = | _ _ _ _ g4@24 _ _ _ _ _ _ _ d5@24 _ _ _ _ _ _ _ g4@24 _ _ _ _ _ _ _ f5@108 _ _ _ |;
+    pattern ch1.b41 = | ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ d#6@3 ~ d6@3 ~ d#6@9 _ _ ~ d6@6 _ ~ ~ c6@18 _ _ _ _ _ ~ ~ |;
+    pattern ch1.b42 = | ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ g5@9 _ _ ~ g#5@6 _ a#5@3 ~ g#5@6 _ g5@6 _ f5@36 _ _ _ _ _ _ _ |;
+    pattern ch1.b43 = | _ _ _ _ ~ ~ ~ ~ ~ ~ ~ ~ f5@9 _ _ ~ g5@18 _ _ _ _ _ ~ ~ g#5@18 _ _ _ _ _ ~ ~ |;
+    pattern ch1.b44 = | ~ ~ ~ ~ d#4@24 _ _ _ _ _ _ _ d#6@6 _ f6@6 _ d#6@9 _ _ ~ d6@6 _ ~ ~ c6@6 _ d6@6 _ d#6@6 _ f6@3 ~ |;
+    pattern ch1.b45 = | g6@33 _ _ _ _ _ _ _ _ _ _ ~ g#6@6 _ ~ ~ f6@84 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch1.b46 = | _ _ _ _ _ _ _ _ _ _ _ _ d#6@6 _ ~ ~ d6@9 _ _ ~ c6@6 _ ~ ~ b5@6 _ c6@3 ~ d6@6 _ d#6@3 ~ |;
+    pattern ch1.b47 = | c6@24 _ _ _ _ _ _ _ d#6@3 f6@3 g6@3 a#6@3 c7@36 _ _ _ _ _ _ _ _ _ _ _ ~ ~ ~ ~ d#4@12 _ _ _ |;
+    pattern ch1.b48 = | d#3@6 _ ~ ~ ~ ~ ~ d#4@9 _ _ ~ g4@12 _ _ _ c5@9 _ _ ~ d#5@12 _ _ _ d5@3 d#5@3 d5@6 _ c5@9 _ _ ~ g4@12 |;
+    pattern ch1.b49 = | _ _ _ f4@9 _ _ ~ g#4@9 _ _ ~ c5@9 _ _ ~ f5@9 _ _ ~ d#5@12 _ _ _ d5@9 _ _ ~ c5@9 _ _ ~ d#5@12 |;
+    pattern ch1.b4a = | _ _ _ d5@9 _ _ ~ g4@9 _ _ ~ b4@9 _ _ ~ d5@9 _ _ ~ d#5@9 _ _ ~ g4@9 _ _ ~ b4@9 _ _ ~ f5@12 |;
+    pattern ch1.b4b = | _ _ _ d#5@9 _ _ ~ g4@12 _ _ _ c5@12 _ _ _ d#5@9 _ _ ~ d5@6 _ ~ ~ b4@6 _ ~ ~ g4@6 _ ~ ~ ~ |;
+    pattern ch1.b4c = | g#4@9 _ _ ~ c5@9 _ _ ~ d#5@9 _ _ ~ g#5@9 _ _ ~ g5@3 g#5@3 g5@6 _ d#5@6 _ f5@3 ~ d#5@9 _ _ ~ g5@12 _ _ _ |;
+
+    pattern ch2.b00 = | ~ ~ ~ ~ ~ ~ ~ ~ g4@36 _ _ _ _ _ _ _ _ _ _ _ d5@36 _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch2.b01 = | f4@36 _ _ _ _ _ _ _ _ _ _ _ f5@36 _ _ _ _ _ _ _ _ _ _ _ c5@36 _ _ _ _ _ _ _ |;
+    pattern ch2.b02 = | _ _ _ _ g4@36 _ _ _ _ _ _ _ _ _ _ _ d#5@36 _ _ _ _ _ _ _ _ _ _ _ f5@36 _ _ _ |;
+    pattern ch2.b03 = | _ _ _ _ _ _ _ _ c5@36 _ _ _ _ _ _ _ _ _ _ _ b4@36 _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch2.b04 = | c3@72 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ c3@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b05 = | f3@72 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ f3@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b06 = | g3@72 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ d3@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b07 = | c3@48 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ g3@48 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch2.b08 = | c3@36 _ _ _ _ _ _ _ _ _ _ _ g6@6 _ f6@6 _ g6@21 _ _ _ _ _ _ ~ c3@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b09 = | f3@36 _ _ _ _ _ _ _ _ _ _ _ g#6@3 a#6@3 g#6@6 _ g6@12 _ _ _ f6@9 _ _ ~ f3@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b0a = | g3@24 _ _ _ _ _ _ _ g6@6 _ f6@6 _ d#6@9 _ _ ~ f6@18 _ _ _ _ _ ~ ~ d3@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b0b = | c3@24 _ _ _ _ _ _ _ d#6@3 d6@3 d#6@12 _ _ _ ~ ~ g3@24 _ _ _ _ _ _ _ d6@12 _ _ _ c6@6 _ ~ ~ |;
+    pattern ch2.b0c = | c3@36 _ _ _ _ _ _ _ _ _ _ _ a#6@6 _ g#6@6 _ g6@9 _ _ ~ ~ ~ ~ ~ c3@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b0d = | f3@27 _ _ _ _ _ _ _ _ g#6@3 a#6@3 g#6@3 g6@30 _ _ _ _ _ _ _ _ _ ~ ~ f3@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b0e = | g3@24 _ _ _ _ _ _ _ f6@12 _ _ _ g6@12 _ _ _ g#6@24 _ _ _ _ _ _ _ d3@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b0f = | c3@24 _ _ _ _ _ _ _ g6@6 _ ~ ~ g6@6 _ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ c7@6 _ ~ ~ ~ ~ ~ ~ |;
+    pattern ch2.b10 = | c3@18 _ _ _ _ _ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ |;
+    pattern ch2.b11 = | ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ |;
+    pattern ch2.b12 = | ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ g3@24 _ _ _ _ _ _ _ ~ ~ ~ ~ ~ ~ ~ ~ |;
+    pattern ch2.b13 = | c3@18 _ _ _ _ _ ~ ~ ~ ~ ~ ~ c7@156 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch2.b14 = | _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch2.b15 = | c3@18 _ _ _ _ _ b6@126 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch2.b16 = | _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ g3@24 _ _ _ _ _ _ _ ~ ~ ~ ~ ~ ~ ~ ~ |;
+    pattern ch2.b17 = | c3@18 _ _ _ _ _ ~ ~ c7@24 _ _ _ _ _ _ _ d#5@144 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch2.b18 = | c3@18 _ _ _ _ _ ~ ~ b6@24 _ _ _ _ _ _ _ d5@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch2.b19 = | _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ g3@24 _ _ _ _ _ _ _ c7@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b1a = | c3@24 _ _ _ _ _ _ _ d#7@48 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ c3@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b1b = | f3@24 _ _ _ _ _ _ _ g#6@48 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ f3@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b1c = | g3@24 _ _ _ _ _ _ _ b6@48 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ d3@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b1d = | c3@24 _ _ _ _ _ _ _ c7@24 _ _ _ _ _ _ _ g3@24 _ _ _ _ _ _ _ d7@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b1e = | c3@24 _ _ _ _ _ _ _ c7@48 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ c3@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b1f = | c3@36 _ _ _ _ _ _ _ _ _ _ _ g6@6 _ f6@6 _ g6@12 _ _ _ ~ ~ ~ ~ d#6@9 _ _ ~ g#6@66 _ _ _ |;
+    pattern ch2.b20 = | _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ |;
+    pattern ch2.b21 = | g3@24 _ _ _ _ _ _ _ b6@42 _ _ _ _ _ _ _ _ _ _ _ _ _ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ |;
+    pattern ch2.b22 = | c3@24 _ _ _ _ _ _ _ c7@72 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch2.b23 = | c3@24 _ _ _ _ _ _ _ c7@36 _ _ _ _ _ _ _ _ _ _ _ a#6@6 _ g#6@6 _ g6@15 _ _ _ _ ~ ~ ~ |;
+    pattern ch2.b24 = | f3@24 _ _ _ _ _ _ _ g#6@3 ~ ~ ~ a#6@3 ~ ~ ~ c7@12 _ _ _ ~ ~ ~ ~ f3@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b25 = | g3@24 _ _ _ _ _ _ _ f6@12 _ _ _ g6@9 _ _ ~ g#6@12 _ _ _ g6@9 _ _ ~ b6@9 _ _ ~ d7@9 _ _ ~ |;
+    pattern ch2.b26 = | c3@24 _ _ _ _ _ _ _ d#7@18 _ _ _ _ _ d7@6 _ c7@48 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch2.b27 = | c4@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch2.b28 = | g#3@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch2.b29 = | b3@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch2.b2a = | g4@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch2.b2b = | g#4@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch2.b2c = | d4@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch2.b2d = | d#4@30 _ _ _ _ _ _ _ _ _ d4@6 _ c#4@6 _ c4@6 _ b3@6 _ a#3@6 _ a3@6 _ g#3@6 _ g3@6 _ f#3@6 _ f3@6 _ e3@6 _ |;
+    pattern ch2.b2e = | c4@9 _ _ ~ d#4@9 _ _ ~ g4@12 _ _ _ c5@9 _ _ ~ d#5@12 _ _ _ d5@3 d#5@3 d5@6 _ c5@9 _ _ ~ g4@12 _ _ _ |;
+    pattern ch2.b2f = | f4@9 _ _ ~ g#4@9 _ _ ~ c5@9 _ _ ~ f5@9 _ _ ~ d#5@12 _ _ _ d5@9 _ _ ~ c5@9 _ _ ~ d#5@12 _ _ _ |;
+    pattern ch2.b30 = | d5@9 _ _ ~ g4@9 _ _ ~ b4@9 _ _ ~ d5@9 _ _ ~ d#5@9 _ _ ~ g4@9 _ _ ~ b4@9 _ _ ~ f5@12 _ _ _ |;
+    pattern ch2.b31 = | d#5@9 _ _ ~ g4@12 _ _ _ c5@12 _ _ _ d#5@9 _ _ ~ d5@6 _ ~ ~ b4@6 _ ~ ~ g4@6 _ ~ ~ ~ ~ ~ ~ |;
+    pattern ch2.b32 = | d5@3 ~ ~ ~ g4@3 ~ ~ ~ b4@3 ~ ~ ~ d5@3 ~ ~ ~ d#5@3 ~ ~ ~ g4@3 ~ ~ ~ b4@9 _ _ ~ f5@12 _ _ _ |;
+    pattern ch2.b33 = | c3@18 _ _ _ _ _ ~ ~ ~ ~ ~ ~ c7@132 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch2.b34 = | _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ g3@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b35 = | c3@24 _ _ _ _ _ _ _ c7@120 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch2.b36 = | c3@18 _ _ _ _ _ ~ ~ c7@24 _ _ _ _ _ _ _ c5@144 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch2.b37 = | c3@18 _ _ _ _ _ ~ ~ d#7@24 _ _ _ _ _ _ _ d5@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch2.b38 = | _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ g3@24 _ _ _ _ _ _ _ d7@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b39 = | c3@24 _ _ _ _ _ _ _ c7@3 c7@3 c7@3 c7@3 c7@6 _ c7@6 _ c7@12 _ _ _ c7@12 _ _ _ c3@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b3a = | f3@24 _ _ _ _ _ _ _ f6@6 _ f6@6 _ f6@6 _ f6@6 _ g#6@12 _ _ _ g6@12 _ _ _ g3@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b3b = | d#3@24 _ _ _ _ _ _ _ b6@12 _ _ _ b6@3 b6@3 b6@6 _ b6@12 _ _ _ b6@12 _ _ _ f3@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b3c = | g3@24 _ _ _ _ _ _ _ g6@3 g6@3 g6@3 g6@3 g#6@6 _ g6@6 _ g6@12 _ _ _ g6@12 _ _ _ d7@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b3d = | f3@24 _ _ _ _ _ _ _ f6@6 _ f6@6 _ f6@6 _ f6@6 _ f6@12 _ _ _ f6@12 _ _ _ f3@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b3e = | g#3@24 _ _ _ _ _ _ _ c7@3 c7@3 c7@3 c7@3 c7@3 c7@3 c7@6 _ c7@12 _ _ _ c7@6 _ c7@6 _ a#2@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b3f = | b2@24 _ _ _ _ _ _ _ d6@12 _ _ _ d6@12 _ _ _ g6@3 g6@3 g6@3 g6@3 g6@6 _ g6@6 _ g#6@12 _ _ _ g6@12 _ _ _ |;
+    pattern ch2.b40 = | f3@24 _ _ _ _ _ _ _ f6@6 _ f6@6 _ f6@6 _ f6@6 _ c7@12 _ _ _ c7@12 _ _ _ c7@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b41 = | d#3@24 _ _ _ _ _ _ _ d#6@12 _ _ _ d#6@3 d#6@3 d#6@6 _ d#7@12 _ _ _ d#7@12 _ _ _ d#3@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b42 = | g3@24 _ _ _ _ _ _ _ g6@3 g6@3 g6@3 g6@3 g6@6 _ g6@6 _ f6@12 _ _ _ g6@12 _ _ _ d7@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b43 = | g#3@24 _ _ _ _ _ _ _ b6@3 b6@3 b6@3 b6@3 b6@3 b6@3 b6@6 _ b6@6 _ b6@6 _ b6@6 _ b6@6 _ b3@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b44 = | g3@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch2.b45 = | c3@24 _ _ _ _ _ _ _ c7@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch2.b46 = | _ _ _ _ _ _ _ _ d7@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch2.b47 = | _ _ _ _ _ _ _ _ d#7@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch2.b48 = | _ _ _ _ _ _ _ _ g7@48 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ g3@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b49 = | c3@24 _ _ _ _ _ _ _ g7@48 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ c3@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b4a = | f3@24 _ _ _ _ _ _ _ f7@48 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ f3@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b4b = | g3@24 _ _ _ _ _ _ _ d7@48 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ d3@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b4c = | c3@96 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch2.b4d = | f3@24 _ _ _ _ _ _ _ d#7@48 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ f3@24 _ _ _ _ _ _ _ |;
+    pattern ch2.b4e = | c3@24 _ _ _ _ _ _ _ c7@24 _ _ _ _ _ _ _ g3@48 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern ch2.b4f = | d#3@6 _ ~ ~ d#4@9 _ _ ~ g4@12 _ _ _ c5@9 _ _ ~ d#5@12 _ _ _ d5@3 d#5@3 d5@6 _ c5@9 _ _ ~ g4@12 _ _ _ |;
+    pattern ch2.b50 = | f4@9 _ _ ~ g#4@9 _ _ ~ c5@9 _ _ ~ f5@9 _ _ ~ d#5@3 f5@3 d#5@6 _ c5@6 _ d5@3 ~ c5@9 _ _ ~ d#5@12 _ _ _ |;
+
+    pattern perc.b00 = | ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ |;
+    pattern perc.b01 = | ~ ~ ~ ~ c4@18 _ _ _ _ _ c5@6 _ c5@6 _ c5@6 _ c5@24 _ _ _ _ _ _ _ c5@36 _ _ _ _ _ _ _ |;
+    pattern perc.b02 = | _ _ _ _ c4@24 _ _ _ _ _ _ _ c5@6 _ c5@6 _ c5@24 _ _ _ _ _ _ _ c5@36 _ _ _ _ _ _ _ |;
+    pattern perc.b03 = | _ _ _ _ c#4@12 _ _ _ c5@12 _ _ _ c5@12 _ _ _ c5@24 _ _ _ _ _ _ _ c5@36 _ _ _ _ _ _ _ |;
+    pattern perc.b04 = | _ _ _ _ c4@24 _ _ _ _ _ _ _ c5@3 c5@3 c5@3 c5@3 c5@12 _ _ _ c#4@12 _ _ _ c5@12 _ _ _ c5@12 _ _ _ |;
+    pattern perc.b05 = | ~ ~ ~ ~ c4@18 _ _ _ _ _ c5@3 c5@3 c5@6 _ c5@6 _ c5@24 _ _ _ _ _ _ _ c5@36 _ _ _ _ _ _ _ |;
+    pattern perc.b06 = | _ _ _ _ c4@12 _ _ _ c5@6 _ c5@6 _ c5@12 _ _ _ c5@24 _ _ _ _ _ _ _ c5@36 _ _ _ _ _ _ _ |;
+    pattern perc.b07 = | _ _ _ _ c4@12 _ _ _ c5@12 _ _ _ c5@12 _ _ _ c5@12 _ _ _ d4@12 _ _ _ c5@24 _ _ _ _ _ _ _ |;
+    pattern perc.b08 = | _ _ _ _ c4@12 _ _ _ c5@3 c5@3 c5@3 c5@3 c5@6 _ c5@6 _ c5@12 _ _ _ d4@12 _ _ _ c5@12 _ _ _ c5@6 _ c5@6 _ |;
+    pattern perc.b09 = | _ _ _ _ c4@24 _ _ _ _ _ _ _ c5@3 c5@3 c5@3 c5@3 c5@12 _ _ _ d4@12 _ _ _ c5@12 _ _ _ c5@12 _ _ _ |;
+    pattern perc.b0a = | _ _ _ _ c#4@12 _ _ _ c5@12 _ _ _ c5@12 _ _ _ c5@12 _ _ _ c5@12 _ _ _ c5@36 _ _ _ _ _ _ _ |;
+    pattern perc.b0b = | ~ ~ ~ ~ c4@18 _ _ _ _ _ c5@6 _ c5@6 _ c5@6 _ c5@24 _ _ _ _ _ _ _ c5@84 _ _ _ _ _ _ _ |;
+    pattern perc.b0c = | _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ c#4@12 _ _ _ c5@12 _ _ _ c5@24 _ _ _ |;
+    pattern perc.b0d = | _ _ _ _ c4@12 _ _ _ c5@3 c5@3 c5@3 c5@3 c5@6 _ c5@6 _ c5@12 _ _ _ d4@12 _ _ _ c5@6 _ c5@6 _ c5@6 _ c5@6 _ |;
+    pattern perc.b0e = | ~ ~ ~ ~ c4@18 _ _ _ _ _ c5@6 _ c5@6 _ c5@6 _ c5@12 _ _ _ c5@6 _ c5@6 _ c5@12 _ _ _ c5@24 _ _ _ |;
+    pattern perc.b0f = | _ _ _ _ c4@24 _ _ _ _ _ _ _ c5@6 _ c5@6 _ c5@12 _ _ _ c5@3 c5@3 c5@6 _ c5@12 _ _ _ c5@24 _ _ _ |;
+    pattern perc.b10 = | _ _ _ _ c#4@12 _ _ _ c5@12 _ _ _ c5@12 _ _ _ c5@12 _ _ _ c6@12 _ _ _ c5@6 _ c5@6 _ c5@6 _ c5@18 _ |;
+    pattern perc.b11 = | _ _ _ _ c5@3 c5@3 c5@3 c5@3 c5@6 _ c5@6 _ c5@6 _ c5@6 _ c5@12 _ _ _ c#4@12 _ _ _ c5@12 _ _ _ d5@12 _ _ _ |;
+    pattern perc.b12 = | ~ ~ ~ ~ c4@18 _ _ _ _ _ c5@3 c5@3 c5@6 _ c5@6 _ c5@12 _ _ _ c5@6 _ c5@6 _ c5@12 _ _ _ c5@24 _ _ _ |;
+    pattern perc.b13 = | _ _ _ _ c#4@12 _ _ _ c5@12 _ _ _ c5@12 _ _ _ c5@12 _ _ _ c5@12 _ _ _ c5@12 _ _ _ c5@24 _ _ _ |;
+    pattern perc.b14 = | _ _ _ _ c4@12 _ _ _ c5@6 _ c5@6 _ c5@6 _ c5@6 _ c5@15 _ _ _ _ c5@3 c5@3 c5@3 c5@12 _ _ _ c5@24 _ _ _ |;
+    pattern perc.b15 = | _ _ _ _ c4@12 _ _ _ c5@12 _ _ _ c5@12 _ _ _ c5@12 _ _ _ d4@12 _ _ _ c5@12 _ _ _ c#5@12 _ _ _ |;
+    pattern perc.b16 = | _ _ _ _ c#4@12 _ _ _ c5@12 _ _ _ c5@12 _ _ _ c5@12 _ _ _ c5@12 _ _ _ c5@132 _ _ _ _ _ _ _ |;
+    pattern perc.b17 = | _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern perc.b18 = | ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ c6@30 _ _ _ _ _ _ _ _ _ c#6@72 _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern perc.b19 = | _ _ _ _ _ _ _ _ _ _ _ _ c5@12 _ _ _ c5@87 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern perc.b1a = | _ _ _ _ _ _ _ _ _ _ _ _ _ c6@27 _ _ _ _ _ _ _ _ c#6@66 _ _ _ _ _ _ _ _ _ |;
+    pattern perc.b1b = | _ _ _ _ _ _ _ _ _ _ _ _ c4@12 _ _ _ c5@12 _ _ _ c#4@12 _ _ _ c5@24 _ _ _ _ _ _ _ |;
+    pattern perc.b1c = | ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ c6@24 _ _ _ _ _ _ _ c#6@54 _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern perc.b1d = | _ _ _ _ c#4@36 _ _ _ _ _ _ _ _ _ _ _ c5@24 _ _ _ _ _ _ _ c5@66 _ _ _ _ _ _ _ |;
+    pattern perc.b1e = | _ _ _ _ _ _ _ _ _ _ _ _ _ _ c6@27 _ _ _ _ _ _ _ _ c#6@39 _ _ _ _ _ _ _ _ |;
+    pattern perc.b1f = | ~ ~ ~ ~ c4@12 _ _ _ c5@24 _ _ _ _ _ _ _ c5@24 _ _ _ _ _ _ _ c5@12 _ _ _ c6@24 _ _ _ |;
+    pattern perc.b20 = | _ _ _ _ c#4@12 _ _ _ c5@24 _ _ _ _ _ _ _ c5@24 _ _ _ _ _ _ _ c5@12 _ _ _ c#6@24 _ _ _ |;
+    pattern perc.b21 = | _ _ _ _ c4@12 _ _ _ c5@24 _ _ _ _ _ _ _ c5@24 _ _ _ _ _ _ _ c5@12 _ _ _ c6@24 _ _ _ |;
+    pattern perc.b22 = | _ _ _ _ c4@12 _ _ _ c5@24 _ _ _ _ _ _ _ c5@12 _ _ _ d4@12 _ _ _ c5@12 _ _ _ c5@3 c5@3 c5@3 c5@3 |;
+    pattern perc.b23 = | c5@12 _ _ _ c4@12 _ _ _ c5@24 _ _ _ _ _ _ _ c5@24 _ _ _ _ _ _ _ c5@12 _ _ _ c6@24 _ _ _ |;
+    pattern perc.b24 = | _ _ _ _ c4@12 _ _ _ d6@24 _ _ _ _ _ _ _ c5@12 _ _ _ d4@12 _ _ _ c5@24 _ _ _ _ _ _ _ |;
+    pattern perc.b25 = | c5@12 _ _ _ c4@12 _ _ _ c5@24 _ _ _ _ _ _ _ c5@24 _ _ _ _ _ _ _ c5@9 _ _ c6@27 _ _ _ _ |;
+    pattern perc.b26 = | _ _ _ _ c4@12 _ _ _ c5@24 _ _ _ _ _ _ _ c5@24 _ _ _ _ _ _ _ c5@108 _ _ _ _ _ _ _ |;
+    pattern perc.b27 = | _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ c5@6 _ c5@6 _ |;
+    pattern perc.b28 = | _ _ _ _ c#4@12 _ _ _ c5@12 _ _ _ c5@12 _ _ _ c5@12 _ _ _ c5@6 _ c5@6 _ c5@6 _ c5@6 _ c5@6 _ c5@18 _ |;
+    pattern perc.b29 = | _ _ _ _ c4@12 _ _ _ c5@6 _ c5@6 _ c5@12 _ _ _ c5@12 _ _ _ c5@3 c5@3 c5@3 c5@3 c5@6 _ c5@6 _ c5@6 _ c5@18 _ |;
+    pattern perc.b2a = | _ _ _ _ c5@3 c5@3 c5@3 c5@3 c5@6 _ c5@6 _ c5@6 _ c5@6 _ c5@48 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ |;
+    pattern perc.b2b = | _ _ _ _ c4@12 _ _ _ c5@12 _ _ _ c5@12 _ _ _ c5@12 _ _ _ d4@12 _ _ _ c5@6 _ c5@6 _ c5@6 _ c5@6 _ |;
+
+    section ord00 {
+        ch0 = ch0.b00, ch0.b01, ch0.b02, ch0.b03;
+        ch1 = ch1.b00, ch1.b01, ch1.b02, ch1.b03;
+        ch2 = ch2.b00, ch2.b01, ch2.b02, ch2.b03;
+        perc = perc.b00*4;
+    }
+    section ord01 {
+        ch0 = ch0.b04, ch0.b05, ch0.b06, ch0.b07;
+        ch1 = ch1.b04, ch1.b05, ch1.b06, ch1.b07;
+        ch2 = ch2.b04, ch2.b05, ch2.b06, ch2.b07;
+        perc = perc.b00*4;
+    }
+    section ord02 {
+        ch0 = ch0.b08, ch0.b09, ch0.b0a, ch0.b0b;
+        ch1 = ch1.b08, ch1.b09, ch1.b0a, ch1.b0b;
+        ch2 = ch2.b04, ch2.b05, ch2.b06, ch2.b07;
+        perc = perc.b01, perc.b02, perc.b03, perc.b04;
+    }
+    section ord03 {
+        ch0 = ch0.b08, ch0.b09, ch0.b0a, ch0.b0b;
+        ch1 = ch1.b0c, ch1.b0d, ch1.b0e, ch1.b0f;
+        ch2 = ch2.b04, ch2.b05, ch2.b06, ch2.b07;
+        perc = perc.b05, perc.b03, perc.b06, perc.b07;
+    }
+    section ord04 {
+        ch0 = ch0.b08, ch0.b09, ch0.b0a, ch0.b0b;
+        ch1 = ch1.b08, ch1.b09, ch1.b0a, ch1.b0b;
+        ch2 = ch2.b08, ch2.b09, ch2.b0a, ch2.b0b;
+        perc = perc.b01, perc.b02, perc.b03, perc.b04;
+    }
+    section ord05 {
+        ch0 = ch0.b08, ch0.b09, ch0.b0a, ch0.b0b;
+        ch1 = ch1.b0c, ch1.b0d, ch1.b0e, ch1.b0f;
+        ch2 = ch2.b0c, ch2.b0d, ch2.b0e, ch2.b0f;
+        perc = perc.b05, perc.b03, perc.b06, perc.b08;
+    }
+    section ord06 {
+        ch0 = ch0.b0c*4;
+        ch1 = ch1.b10*4;
+        ch2 = ch2.b10, ch2.b11, ch2.b10, ch2.b12;
+        perc = perc.b01, perc.b02, perc.b03, perc.b09;
+    }
+    section ord07 {
+        ch0 = ch0.b0d, ch0.b0e, ch0.b0f, ch0.b0d;
+        ch1 = ch1.b11, ch1.b12, ch1.b13, ch1.b14;
+        ch2 = ch2.b13, ch2.b14, ch2.b15, ch2.b16;
+        perc = perc.b01, perc.b02, perc.b03, perc.b04;
+    }
+    section ord08 {
+        ch0 = ch0.b0d, ch0.b0e, ch0.b0f, ch0.b0d;
+        ch1 = ch1.b11, ch1.b12, ch1.b13, ch1.b14;
+        ch2 = ch2.b17, ch2.b14, ch2.b18, ch2.b19;
+        perc = perc.b05, perc.b0a, perc.b06, perc.b08;
+    }
+    section ord09 {
+        ch0 = ch0.b04, ch0.b05, ch0.b06, ch0.b07;
+        ch1 = ch1.b04, ch1.b05, ch1.b06, ch1.b07;
+        ch2 = ch2.b1a, ch2.b1b, ch2.b1c, ch2.b1d;
+        perc = perc.b01, perc.b02, perc.b03, perc.b04;
+    }
+    section ord0a {
+        ch0 = ch0.b08, ch0.b09, ch0.b0a, ch0.b0b;
+        ch1 = ch1.b0c, ch1.b15, ch1.b16, ch1.b17;
+        ch2 = ch2.b1e, ch2.b1b, ch2.b1c, ch2.b1d;
+        perc = perc.b05, perc.b03, perc.b06, perc.b07;
+    }
+    section ord0b {
+        ch0 = ch0.b08, ch0.b09, ch0.b0a, ch0.b0b;
+        ch1 = ch1.b0c, ch1.b18, ch1.b19, ch1.b0f;
+        ch2 = ch2.b1e, ch2.b1b, ch2.b1c, ch2.b1d;
+        perc = perc.b05, perc.b03, perc.b06, perc.b07;
+    }
+    section ord0c {
+        ch0 = ch0.b10, ch0.b11, ch0.b12, ch0.b0b;
+        ch1 = ch1.b1a, ch1.b1b, ch1.b1c, ch1.b1d;
+        ch2 = ch2.b1f, ch2.b20, ch2.b21, ch2.b22;
+        perc = perc.b0b, perc.b0c, perc.b03, perc.b04;
+    }
+    section ord0d {
+        ch0 = ch0.b08, ch0.b09, ch0.b0a, ch0.b0b;
+        ch1 = ch1.b1e, ch1.b1f, ch1.b20, ch1.b21;
+        ch2 = ch2.b23, ch2.b24, ch2.b25, ch2.b26;
+        perc = perc.b05, perc.b03, perc.b06, perc.b0d;
+    }
+    section ord0e {
+        ch0 = ch0.b13, ch0.b14, ch0.b15, ch0.b16;
+        ch1 = ch1.b11, ch1.b12, ch1.b13, ch1.b14;
+        ch2 = ch2.b27, ch2.b28, ch2.b29, ch2.b27;
+        perc = perc.b0e, perc.b0f, perc.b10, perc.b11;
+    }
+    section ord0f {
+        ch0 = ch0.b17, ch0.b18, ch0.b19, ch0.b1a;
+        ch1 = ch1.b22, ch1.b23, ch1.b24, ch1.b25;
+        ch2 = ch2.b2a, ch2.b2b, ch2.b2c, ch2.b2d;
+        perc = perc.b12, perc.b13, perc.b14, perc.b15;
+    }
+    section ord10 {
+        ch0 = ch0.b1b, ch0.b1c, ch0.b1d, ch0.b1e;
+        ch1 = ch1.b26, ch1.b27, ch1.b28, ch1.b29;
+        ch2 = ch2.b2e, ch2.b2f, ch2.b30, ch2.b31;
+        perc = perc.b01, perc.b02, perc.b03, perc.b04;
+    }
+    section ord11 {
+        ch0 = ch0.b1f, ch0.b20, ch0.b21, ch0.b22;
+        ch1 = ch1.b26, ch1.b27, ch1.b2a, ch1.b29;
+        ch2 = ch2.b2e, ch2.b2f, ch2.b32, ch2.b31;
+        perc = perc.b05, perc.b16, perc.b17, perc.b08;
+    }
+    section ord12 {
+        ch0 = ch0.b23, ch0.b24, ch0.b23, ch0.b25;
+        ch1 = ch1.b2b, ch1.b2c, ch1.b2d, ch1.b2e;
+        ch2 = ch2.b33, ch2.b34, ch2.b35, ch2.b16;
+        perc = perc.b18, perc.b19, perc.b1a, perc.b1b;
+    }
+    section ord13 {
+        ch0 = ch0.b23, ch0.b24, ch0.b26, ch0.b27;
+        ch1 = ch1.b2f, ch1.b30, ch1.b31, ch1.b32;
+        ch2 = ch2.b36, ch2.b14, ch2.b37, ch2.b38;
+        perc = perc.b1c, perc.b1d, perc.b1e, perc.b0d;
+    }
+    section ord14 {
+        ch0 = ch0.b23, ch0.b24, ch0.b23, ch0.b25;
+        ch1 = ch1.b33, ch1.b34, ch1.b35, ch1.b34;
+        ch2 = ch2.b39, ch2.b3a, ch2.b3b, ch2.b3c;
+        perc = perc.b1f, perc.b20, perc.b21, perc.b22;
+    }
+    section ord15 {
+        ch0 = ch0.b23, ch0.b24, ch0.b26, ch0.b27;
+        ch1 = ch1.b36, ch1.b37, ch1.b38, ch1.b34;
+        ch2 = ch2.b39, ch2.b3d, ch2.b3e, ch2.b3f;
+        perc = perc.b23, perc.b20, perc.b21, perc.b24;
+    }
+    section ord16 {
+        ch0 = ch0.b23, ch0.b24, ch0.b23, ch0.b25;
+        ch1 = ch1.b39, ch1.b3a, ch1.b3b, ch1.b34;
+        ch2 = ch2.b39, ch2.b40, ch2.b41, ch2.b42;
+        perc = perc.b1f, perc.b20, perc.b21, perc.b22;
+    }
+    section ord17 {
+        ch0 = ch0.b23, ch0.b24, ch0.b26, ch0.b28;
+        ch1 = ch1.b3c, ch1.b3d, ch1.b3e, ch1.b3f;
+        ch2 = ch2.b39, ch2.b3d, ch2.b43, ch2.b44;
+        perc = perc.b25, perc.b20, perc.b26, perc.b27;
+    }
+    section ord18 {
+        ch0 = ch0.b29, ch0.b05, ch0.b06, ch0.b07;
+        ch1 = ch1.b04, ch1.b05, ch1.b06, ch1.b07;
+        ch2 = ch2.b45, ch2.b46, ch2.b47, ch2.b48;
+        perc = perc.b01, perc.b02, perc.b03, perc.b04;
+    }
+    section ord19 {
+        ch0 = ch0.b04, ch0.b05, ch0.b06, ch0.b23;
+        ch1 = ch1.b04, ch1.b05, ch1.b40, ch1.b34;
+        ch2 = ch2.b49, ch2.b4a, ch2.b4b, ch2.b4c;
+        perc = perc.b12, perc.b28, perc.b29, perc.b2a;
+    }
+    section ord1a {
+        ch0 = ch0.b2a, ch0.b09, ch0.b0a, ch0.b0b;
+        ch1 = ch1.b41, ch1.b42, ch1.b43, ch1.b17;
+        ch2 = ch2.b1e, ch2.b1b, ch2.b1c, ch2.b1d;
+        perc = perc.b05, perc.b03, perc.b06, perc.b07;
+    }
+    section ord1b {
+        ch0 = ch0.b08, ch0.b09, ch0.b0a, ch0.b0b;
+        ch1 = ch1.b44, ch1.b45, ch1.b46, ch1.b47;
+        ch2 = ch2.b1e, ch2.b4d, ch2.b1c, ch2.b4e;
+        perc = perc.b05, perc.b03, perc.b06, perc.b2b;
+    }
+    section ord1c {
+        ch0 = ch0.b2b, ch0.b11*3;
+        ch1 = ch1.b48, ch1.b49, ch1.b4a, ch1.b4b;
+        ch2 = ch2.b4f, ch2.b2f, ch2.b30, ch2.b31;
+        perc = perc.b01, perc.b02, perc.b03, perc.b04;
+    }
+    section ord1d {
+        ch0 = ch0.b2c, ch0.b2d, ch0.b2e, ch0.b2f;
+        ch1 = ch1.b26, ch1.b4c, ch1.b28, ch1.b29;
+        ch2 = ch2.b2e, ch2.b50, ch2.b30, ch2.b31;
+        perc = perc.b05, perc.b0a, perc.b06, perc.b08;
+    }
+
+    instrument echoey {
+        priority = required;
+        level    = 255;
+        gate     = 6;
+        envelope = table([238, 221, 68, 51, 170, 153, 51, 34, 102, 85, 34, 17, 51, 34, 17, 17, 0], 2, -1, -1);
+    }
+    instrument leadmelody {
+        priority = required;
+        level    = 255;
+        gate     = 6;
+        // [ADSR] raw: 0 15 221 0 2 0 0 0 28   (approximated)
+        envelope = adsr(17, 1920, 0, 137);
+        effects  = [vibrato(106, 32)];
+    }
+    instrument leadharmony {
+        priority = required;
+        level    = 255;
+        gate     = 6;
+        // [ADSR] raw: 0 7 221 0 2 0 0 0 28   (approximated)
+        envelope = adsr(8, 896, 0, 64);
+        effects  = [vibrato(108, 32)];
+    }
+    instrument leadmelmony {
+        priority = required;
+        level    = 255;
+        gate     = 6;
+        // [ADSR] raw: 0 14 221 0 2 0 0 0 28   (approximated)
+        envelope = adsr(16, 1792, 0, 128);
+        effects  = [vibrato(106, 32)];
+    }
+    instrument phaser1 {
+        priority = required;
+        level    = 255;
+        gate     = 6;
+        envelope = table([17, 34, 51, 68, 85, 85, 102, 102, 102, 102, 85, 85, 68, 51, 34, 17, 0], 6, -1, -1);
+    }
+    instrument phaser2 {
+        priority = required;
+        level    = 255;
+        gate     = 6;
+        envelope = table([17, 17, 34, 51, 68, 85, 85, 102, 102, 102, 102, 85, 85, 68, 51, 34, 17, 0], 6, -1, -1);
+    }
+    instrument accent {
+        priority = required;
+        level    = 255;
+        gate     = 6;
+        envelope = table([51, 17, 68, 17, 85, 34, 102, 34, 119, 51, 136, 51, 136, 51, 136, 51, 119, 34, 102, 34, 85, 17, 68, 17, 51, 17, 34, 17, 17, 0], 1, -1, -1);
+    }
+    instrument wavyfull {
+        priority = required;
+        level    = 255;
+        gate     = 6;
+        envelope = table([34, 68, 102, 136, 170, 204, 187, 153, 119, 85, 51, 17, 34, 68, 102, 119, 136, 153, 170, 170, 170, 170, 170, 153, 136, 119, 102, 85, 51, 17, 17, 34, 51, 68, 85, 102, 119, 136, 153, 170, 170, 170, 170, 170, 153, 136, 119, 102, 85, 68, 51, 34, 17, 17, 17, 34, 34, 51, 68, 68, 85, 102, 102, 119, 119, 136, 136, 136, 153, 153, 153, 153, 153, 153, 153, 153, 153, 153, 153, 136, 136, 136, 119, 119, 119, 119, 102, 102, 85, 85, 68, 68, 51, 51, 34, 34, 17, 17, 0], 1, -1, -1);
+    }
+    instrument wavyhalf {
+        priority = required;
+        level    = 255;
+        gate     = 6;
+        envelope = table([17, 34, 51, 68, 85, 102, 102, 85, 68, 51, 34, 17, 17, 34, 51, 51, 68, 68, 85, 85, 85, 85, 85, 68, 68, 51, 51, 34, 34, 17, 17, 17, 34, 34, 51, 51, 68, 68, 68, 85, 85, 85, 85, 85, 68, 68, 68, 51, 51, 34, 34, 17, 17, 17, 17, 17, 17, 34, 34, 34, 51, 51, 51, 51, 51, 68, 68, 68, 68, 85, 85, 85, 85, 85, 85, 85, 85, 85, 68, 68, 68, 68, 51, 51, 51, 51, 51, 51, 34, 34, 34, 34, 34, 17, 17, 17, 17, 17, 0], 1, -1, -1);
+    }
+    instrument bip {
+        priority = required;
+        level    = 255;
+        gate     = 6;
+        envelope = table([136, 68, 0], 1, -1, -1);
+    }
+    instrument Nperclong {
+        priority = required;
+        level    = 255;
+        gate     = 6;
+        // [ADSR] raw: 0 15 255 0 60 48 0 5 0   (approximated)
+        envelope = adsr(15, 64, 255, 0);
+    }
+    instrument Npercshort {
+        priority = required;
+        level    = 255;
+        gate     = 6;
+        envelope = table([221, 136, 0], 1, -1, -1);
+    }
+    instrument Nperchat {
+        priority = required;
+        level    = 255;
+        gate     = 6;
+        envelope = table([119, 0, 0], 1, -1, -1);
+    }
+    instrument Nweirdsoft {
+        priority = required;
+        level    = 255;
+        gate     = 6;
+        // [ADSR] raw: 0 12 111 0 21 0 0 0 0   (approximated)
+        envelope = adsr(28, 146, 0, 0);
+    }
+    instrument Nweirdloud {
+        priority = required;
+        level    = 255;
+        gate     = 6;
+        // [ADSR] raw: 0 15 111 0 21 0 0 0 0   (approximated)
+        envelope = adsr(35, 183, 0, 0);
+    }
+    instrument Nbreath {
+        priority = required;
+        level    = 255;
+        gate     = 6;
+        envelope = table([17, 34, 51, 68, 68, 68, 51, 34, 34, 34, 17, 17, 34, 34, 51, 51, 51, 51, 34, 34, 34, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 0], 1, -1, -1);
+    }
+
+    orchestra Chip {
+        layer ch0.main {
+            source     = ch0;
+            instrument = echoey;
+            route      = C;
+        }
+        layer ch1.main {
+            source     = ch1;
+            instrument = echoey;
+            route      = C;
+        }
+        layer ch2.main {
+            source     = ch2;
+            instrument = echoey;
+            route      = C;
+        }
+        layer perc.main {
+            source     = perc;
+            instrument = Nweirdsoft;
+            route      = C;
+        }
+    }
+
+    scene all {
+        enables = [ch0.main, ch1.main, ch2.main, perc.main];
+    }
+
+    form main {
+        using    = Chip;
+        sequence = [
+            play(ord00, all),
+            play(ord01, all),
+            play(ord02, all),
+            play(ord03, all),
+            play(ord04, all),
+            play(ord05, all),
+            play(ord06, all),
+            play(ord07, all),
+            play(ord08, all),
+            play(ord09, all),
+            play(ord0a, all),
+            play(ord0b, all),
+            play(ord0c, all),
+            play(ord0d, all),
+            play(ord0e, all),
+            play(ord0f, all),
+            play(ord10, all),
+            play(ord11, all),
+            play(ord12, all),
+            play(ord13, all),
+            play(ord14, all),
+            play(ord15, all),
+            play(ord16, all),
+            play(ord17, all),
+            play(ord18, all),
+            play(ord19, all),
+            play(ord1a, all),
+            play(ord1b, all),
+            play(ord1c, all),
+            play(ord1d, all)
+        ];
+        loop     = 0;
+    }
+}
+
+target AfternoonBlend {
+    backend   = sn76489x4;
+    clock     = 3579545;
+    transpose = 0;
+
+    routes {
+        C = psg0;   // the source uses 3 tone + 1 noise voice
+    }
+
+    realize echoey {
+        waveform = square;
+    }
+    realize leadmelody {
+        waveform = square;
+    }
+    realize leadharmony {
+        waveform = square;
+    }
+    realize leadmelmony {
+        waveform = square;
+    }
+    realize phaser1 {
+        waveform = square;
+    }
+    realize phaser2 {
+        waveform = square;
+    }
+    realize accent {
+        waveform = square;
+    }
+    realize wavyfull {
+        waveform = square;
+    }
+    realize wavyhalf {
+        waveform = square;
+    }
+    realize bip {
+        waveform = square;
+    }
+    realize Nperclong {
+        waveform = noise;
+        mode     = white;   // inferred from the duty macro
+        rate     = medium;   // inferred from the fixed arp macro
+
+        extension sn76489 {
+            phase_reset = 1;
+        }
+    }
+    realize Npercshort {
+        waveform = noise;
+        mode     = periodic;   // inferred from the duty macro
+        rate     = medium;   // inferred from the fixed arp macro
+
+        extension sn76489 {
+            phase_reset = 1;
+        }
+    }
+    realize Nperchat {
+        waveform = noise;
+        mode     = white;   // inferred from the duty macro
+        rate     = high;   // inferred from the fixed arp macro
+
+        extension sn76489 {
+            phase_reset = 1;
+        }
+    }
+    realize Nweirdsoft {
+        waveform = noise;
+        mode     = white;   // inferred from the duty macro
+        rate     = medium;   // inferred from the fixed arp macro
+
+        extension sn76489 {
+            phase_reset = 1;
+        }
+    }
+    realize Nweirdloud {
+        waveform = noise;
+        mode     = white;   // inferred from the duty macro
+        rate     = medium;   // inferred from the fixed arp macro
+
+        extension sn76489 {
+            phase_reset = 1;
+        }
+    }
+    realize Nbreath {
+        waveform = noise;
+        mode     = white;   // inferred from the duty macro
+        rate     = medium;   // inferred from the fixed arp macro
+    }
+}

@@ -1,0 +1,775 @@
+// =====================================================================
+// RUNAWAY CIRCUIT
+// ChipScore DSL translation of the supplied Strudel composition.
+//
+// 128 bars, 155 BPM, 4/4, C minor
+//
+// Three tonal roles and four rhythm roles.
+// Derived production layers are defined by the orchestra.
+//	bass, bg, lead, kick, snare, hat.left, hat.right
+//
+// Syntax used here:
+//   | ... |          one bar
+//   ~                rest for one grid slot
+//   [a4 b4]          divide one grid slot equally
+//   pattern*4        repeat a whole-bar pattern four times
+//   a, b, c          concatenate whole-bar patterns
+// =====================================================================
+
+song RunawayCircuit {
+	tick_rate	= 62;
+	ticks_per_row	= 3;
+	rows_per_quarter = 8;
+	tuning		= 440;
+    meter	=	meter(4, 4);
+
+    roles	=	[
+		role(bass,	8),
+		role(bg, 	8),
+		role(lead, 	8),
+		role(kick,	8),
+		role(snare,	8),
+		role(hat.left,	8),
+		role(hat.right,	8)
+	];
+
+    play	=	main;
+
+
+	// =====================================================================
+	// REUSABLE ONE-BAR PATTERNS
+	// =====================================================================
+
+
+	pattern rest.bar =
+		| ~ ~ ~ ~ ~ ~ ~ ~ | ;
+
+	// Fixed 3+3+2 bass ostinato: 1, &2, &3, 4.
+	pattern bass.C  = | c3  ~ ~ c3  ~ c3  eb3 ~ | ;
+	pattern bass.Eb = | eb3 ~ ~ eb3 ~ eb3 g3  ~ | ;
+	pattern bass.Fm = | f3  ~ ~ f3  ~ f3  ab3 ~ | ;
+	pattern bass.G 	= | g3  ~ ~ g3  ~ g3  b3  ~ | ;
+	pattern bass.Bb = | bb2 ~ ~ bb2 ~ bb2 d3  ~ | ;
+	pattern bass.Db = | db3 ~ ~ db3 ~ db3 f3  ~ | ;
+	pattern bass.F  = | f3  ~ ~ f3  ~ f3  a3  ~ | ;
+
+	// Alternating two-note background figures.
+	pattern bg.Cm = | ~ g4  ~ eb5 ~ g4  ~ eb5 | ;
+	pattern bg.Ab = | ~ ab4 ~ c5  ~ ab4 ~ c5  | ;
+	pattern bg.G  = | ~ b4  ~ d5  ~ b4  ~ d5  | ;
+	pattern bg.Eb = | ~ bb4 ~ eb5 ~ bb4 ~ eb5 | ;
+	pattern bg.Bb = | ~ f4  ~ d5  ~ f4  ~ d5  | ;
+	pattern bg.BbRoot = | ~ bb4 ~ d5 ~ bb4 ~ d5 | ;
+	pattern bg.Db = | ~ ab4 ~ f5  ~ ab4 ~ f5  | ;
+	pattern bg.EbMajor 	= | ~ g4 ~ bb4 ~ g4 ~ bb4 | ;
+	pattern bg.FMajor 	= | ~ a4 ~ c5  ~ a4 ~ c5  | ;
+	
+
+
+	// =====================================================================
+	// MUSICAL SECTIONS
+	// =====================================================================
+
+	// INTRO — 8 bars.
+	// Ostinato alone for four bars; background enters at bar 5.
+	section INTRO [key=Cmin, function=intro] {
+		bass = bass.C*8 ;
+
+		bg =
+			rest.bar*4,
+			bg.Cm*2,
+			bg.Ab,
+			bg.G ;
+
+		lead = rest.bar*8 ;
+	}
+
+
+	// A — 16 bars.
+	// C pedal in the bass while the background moves the harmony.
+	section A [key=Cmin, function=pedal] {
+		bass = bass.C*16 ;
+
+		bg =
+			bg.Cm*4,
+			bg.Ab*4,
+			bg.BbRoot*4,
+			bg.Ab*2,
+			bg.G*2 ;
+
+		lead =
+			| ~ ~ eb4 ~ g4 ~ ~ ~ |
+			| c5 ~ bb4 ~ g4 ~ eb4 ~ |
+			| ~ ~ f4 g4 ~ bb4 ~ ~ |
+			| c5 ~ ~ ~ ~ ~ ~ ~ |
+
+			| ~ ab4 ~ c5 ~ eb5 ~ ~ |
+			| c5 ~ bb4 ab4 ~ ~ g4 ~ |
+			| ~ ~ ab4 ~ c5 ~ ab4 ~ |
+			| eb5 ~ ~ ~ c5 ~ ~ ~ |
+
+			| ~ bb4 ~ d5 ~ f5 ~ ~ |
+			| d5 ~ c5 bb4 ~ ~ ~ ~ |
+			| ~ ~ bb4 c5 d5 ~ f5 ~ |
+			| d5 ~ ~ ~ ~ bb4 ~ ~ |
+
+			| ~ ab4 c5 ~ f5 ~ c5 ~ |
+			| ab4 ~ ~ ~ ~ ~ ~ ~ |
+			| ~ ~ b4 ~ d5 ~ f5 ~ |
+			| d5 ~ ~ ~ b4 ~ ~ ~ | ;
+	}
+
+
+	// B — 12 bars.
+	// Same ostinato rhythm, transposed with the harmonic roots.
+	section B [key=Cmin, function=development] {
+		bass =
+			bass.C,
+			bass.Eb,
+			bass.Fm,
+			bass.G,
+			bass.C,
+			bass.Bb,
+			bass.Eb,
+			bass.G,
+			bass.Fm,
+			bass.Db,
+			bass.C,
+			bass.G ;
+
+		bg =
+			bg.Cm,
+			bg.Eb,
+			bg.Ab,
+			bg.G,
+			bg.Cm,
+			bg.Bb,
+			bg.Eb,
+			bg.G,
+			bg.Ab,
+			bg.Db,
+			bg.Cm,
+			bg.G ;
+
+		lead =
+			| eb5 ~ ~ c5 ~ g4 ~ ~ |
+			| ~ ~ g4 bb4 ~ eb5 ~ ~ |
+			| c5 ~ ab4 ~ f4 ~ ~ ~ |
+			| ~ b4 ~ d5 ~ f5 ~ ~ |
+
+			| eb5 ~ ~ c5 ~ ~ g4 ~ |
+			| ~ ~ d5 ~ f5 ~ d5 ~ |
+			| bb4 ~ eb5 ~ f5 ~ ~ ~ |
+			| ~ f5 ~ d5 ~ b4 ~ ~ |
+
+			| c5 ~ ab4 ~ f5 ~ c5 ~ |
+			| ~ ~ f5 ~ ab4 ~ f5 ~ |
+			| eb5 ~ c5 ~ g4 ~ eb4 ~ |
+			| ~ d5 ~ ~ b4 ~ ~ ~ | ;
+	}
+
+
+	// C — 10 bars.
+	// Double-time lead. Bass and background retain their normal rhythm.
+	section C [key=Cmin, function=double_time] {
+		bass =
+			bass.C*2,
+			bass.Eb*2,
+			bass.Bb*2,
+			bass.C,
+			bass.Fm,
+			bass.G*2 ;
+
+		bg =
+			bg.Cm*2,
+			bg.Eb*2,
+			bg.Bb*2,
+			bg.Cm,
+			bg.Ab,
+			bg.G*2 ;
+
+		lead =
+			| [eb5 f5] [g5 f5] [eb5 d5] [c5 d5]
+			  [eb5 c5] [g4 bb4] [c5 eb5] [d5 c5] |
+
+			| [bb4 c5] [d5 eb5] [f5 eb5] [d5 c5]
+			  [bb4 c5] [d5 f5] [g5 f5] [eb5 d5] |
+
+			| [eb5 g5] [bb5 g5] [eb5 d5] [c5 bb4]
+			  [g4 bb4] [eb5 g5] [bb5 g5] [eb5 ~] |
+
+			| [g5 f5] [eb5 d5] [c5 bb4] [g4 eb4]
+			  [g4 bb4] [c5 eb5] [g5 bb5] [g5 eb5] |
+
+			| [d5 f5] [bb5 f5] [d5 c5] [bb4 f4]
+			  [d4 f4] [bb4 d5] [f5 bb5] [f5 d5] |
+
+			| [bb5 a5] [g5 f5] [d5 f5] [bb4 d5]
+			  [f5 d5] [bb4 f4] [d5 f5] [bb5 ~] |
+
+			| [eb5 d5] [c5 bb4] [g4 c5] [eb5 g5]
+			  [c6 g5] [eb5 c5] [g4 eb4] [c5 ~] |
+
+			| [f5 ab5] [c6 ab5] [f5 eb5] [c5 ab4]
+			  [f4 ab4] [c5 f5] [ab5 f5] [c5 ~] |
+
+			| [g5 f5] [d5 b4] [g4 b4] [d5 g5]
+			  [b5 g5] [d5 b4] [g4 d4] [b4 ~] |
+
+			| [d5 ~] [g5 ~] [b5 ~] [d6 ~]
+			  [b5 g5] [d5 b4] [g4 ~] [~ ~] | ;
+	}
+
+
+	// D — 12 bars.
+	// Release section: the ostinato stops for eight bars.
+	// Lead returns only at bar 9.
+	section D [key=Cmin, function=release] {
+		bass =
+			| f3  ~ ~ ~ ~ ~ ~ ~ |
+			| f3  ~ ~ ~ ~ ~ c4 ~ |
+			| db3 ~ ~ ~ ~ ~ ~ ~ |
+			| db3 ~ ~ ~ ~ ~ ab3 ~ |
+
+			| eb3 ~ ~ ~ ~ ~ ~ ~ |
+			| eb3 ~ ~ ~ ~ ~ bb3 ~ |
+			| c3  ~ ~ ~ ~ ~ ~ ~ |
+			| c3  ~ ~ ~ ~ ~ g3 ~ |,
+
+			bass.F*2,
+			bass.G*2 ;
+
+		bg =
+			bg.Ab*2,
+			bg.Db*2,
+			bg.EbMajor*2,
+			bg.Cm*2,
+			bg.FMajor*2,
+			bg.G*2 ;
+
+		lead =
+			rest.bar*8,
+
+			| ~ ~ a4 ~ c5 ~ f5 ~ |
+			| a4 ~ ~ ~ f5 ~ c5 ~ |
+			| ~ ~ b4 ~ d5 ~ f5 ~ |
+			| f5 ~ d5 ~ b4 ~ ~ ~ | ;
+	}
+
+
+	// E — 10 bars.
+	// Written in the lower register. The form scene raises the lead one octave.
+	section E [key=Cmin, function=climax] {
+		bass =
+			bass.C,
+			bass.Bb,
+			bass.C,
+			bass.Bb,
+			bass.Eb,
+			bass.F,
+			bass.C,
+			bass.G,
+			bass.C,
+			bass.G ;
+
+		bg =
+			bg.Cm,
+			bg.Bb,
+			bg.Cm,
+			bg.Bb,
+			bg.Eb,
+			bg.FMajor,
+			bg.Cm,
+			bg.G,
+			bg.Cm,
+			bg.G ;
+
+		lead =
+			| eb4 ~ g4 ~ c5 ~ ~ ~ |
+			| c5 ~ ~ bb4 ~ f4 ~ ~ |
+			| eb4 ~ g4 ~ c5 ~ eb5 ~ |
+			| d5 ~ bb4 ~ ~ ~ ~ ~ |
+
+			| g4 ~ bb4 ~ eb5 ~ ~ ~ |
+			| a4 ~ c5 ~ f5 ~ c5 ~ |
+			| eb5 ~ c5 ~ g4 ~ ~ ~ |
+			| d5 ~ b4 ~ g4 ~ d5 ~ |
+
+			| c5 ~ eb5 ~ f5 ~ ~ ~ |
+			| d5 ~ ~ ~ b4 ~ ~ ~ | ;
+	}
+
+
+	// OUT — 16 bars.
+	// Ends on G so the loop resolves into C at the next bar.
+	section OUT [key=Cmin, function=outro] {
+		bass =
+			bass.C,
+			bass.Eb,
+			bass.Fm,
+			bass.G,
+
+			bass.C,
+			bass.Eb,
+			bass.F,
+			bass.G,
+
+			bass.C,
+			bass.Db,
+			bass.C,
+			bass.G,
+
+			bass.Fm,
+			bass.G,
+			bass.C,
+			bass.G ;
+
+		bg =
+			bg.Cm,
+			bg.Eb,
+			bg.Ab,
+			bg.G,
+
+			bg.Cm,
+			bg.Eb,
+			bg.FMajor,
+			bg.G,
+
+			bg.Cm,
+			bg.Db,
+			bg.Cm,
+			bg.G,
+
+			bg.Ab,
+			bg.G,
+			bg.Cm,
+			bg.G ;
+
+		lead =
+			| eb5 ~ ~ c5 ~ g4 ~ ~ |
+			| bb4 ~ eb5 ~ f5 ~ ~ ~ |
+			| ~ c5 ~ ab4 ~ f4 ~ ~ |
+			| ~ ~ b4 ~ d5 ~ f5 ~ |
+
+			| eb5 ~ ~ c5 ~ g4 ~ ~ |
+			| bb4 ~ eb5 ~ bb4 ~ g4 ~ |
+			| a4 ~ c5 ~ f5 ~ c5 ~ |
+			| d5 ~ b4 ~ g4 ~ ~ ~ |
+
+			| c5 ~ eb5 ~ f5 ~ eb5 ~ |
+			| f5 ~ db5 ~ ab4 ~ f4 ~ |
+			| eb5 ~ c5 ~ g4 ~ eb4 ~ |
+			| ~ d5 ~ b4 ~ g4 ~ ~ |
+
+			| c5 ~ ab4 ~ f4 ~ ab4 ~ |
+			| ~ b4 ~ d5 ~ f5 ~ ~ |
+			| eb5 ~ ~ ~ c5 ~ g4 ~ |
+			| ~ ~ d5 ~ ~ ~ b4 ~ | ;
+	}
+	
+	// =====================================================================
+	// RHYTHM SOURCES
+	// Noise instruments are mapped to the four PSG noise channels.
+	// =====================================================================
+	
+	rhythm kick = 
+		| x ~ ~ x ~ ~ ~ ~ | ;
+
+	rhythm snare =
+		| ~ ~ x ~ ~ ~ x ~ | ;
+
+	rhythm hat.left =
+		| x ~ x ~ x ~ x ~ | ;
+
+	rhythm hat.right =
+		| ~ x ~ x ~ x ~ x | ;	
+
+
+
+// =====================================================================
+// INSTRUMENTS
+//
+// These are logical instruments with an AfternoonBlend PSG realization.
+// A SID, AY, OPL, YM, or soft-core backend would supply its own blocks.
+// =====================================================================
+
+
+	instrument Bass {
+		priority 	= 	required;
+		level 		=	36;
+		gate		=	9;
+		envelope	=	adsr(0, 16, 128, 6);
+	}
+
+	instrument BassClick {
+		priority 	= optional;
+		level		= 26;
+		gate		= 3;
+		envelope	= adsr(0, 2, 0, 6);
+	}
+
+	instrument Background {
+		priority 	= required;
+		level 		= 51;
+		gate		= 6;
+		envelope	= adsr(0, 3, 38, 1);
+	}
+
+	instrument Lead {
+		priority 	= required;
+		level 		= 143;
+		gate		= 9;
+		envelope	= adsr(0, 3, 191, 6);
+		effects		= [ vibrato(32, 9) ];
+	}
+
+	instrument LeadDetune {
+		priority 	= optional;
+		level		= 56;
+		gate		= 9;
+		envelope	= adsr(0, 3, 191, 6);
+	}
+
+	instrument LeadOctave {
+		priority 	= optional;
+		level 		= 41;
+		gate		= 6;
+		envelope 	= adsr(0, 3, 89, 6);
+	}
+
+	instrument EchoShort {
+		priority 	= optional;
+		level 		= 41;
+		gate		= 6;
+		envelope 	= adsr(0, 3, 51, 6);
+	}
+
+	instrument EchoLong {
+		priority	= optional;
+		level		= 20;
+		gate		= 3;
+		envelope 	= adsr(0, 2, 31, 6);
+	}
+
+	instrument Kick {
+		priority	= required;
+		level 		= 46;
+		gate		= 3;
+		envelope 	= one_shot(0, 3);
+	}
+
+	instrument Snare {
+		priority 	= required;
+		level 		= 38;
+		gate		= 3;
+		envelope	= one_shot(0, 3);
+	}
+
+	instrument Hat {
+		priority	= optional;
+		level		= 18;
+		gate		= 3;
+		envelope	= one_shot(0, 1);
+	}
+	
+
+	// =====================================================================
+	// ORCHESTRA
+	//
+	// Three source roles become production layers. The background alternates
+	// between L and R but remains one monophonic musical part.
+	// =====================================================================
+
+	orchestra Studio {
+		layer bass.main {
+			source		= 	bass;
+			instrument 	=	Bass;
+			route 		=	C;
+		}
+
+		layer bass.octave_click {
+			source		= 	bass;
+			instrument 	=	BassClick;
+			transpose 	=	12;
+			route 		=	C;
+		}
+
+		layer bg.alternate {
+			source		= 	bg;
+			instrument 	=	Background;
+			distribute 	=	roundrobin([L, R]);
+		}
+
+		layer lead.main {
+			source		=	lead;
+			instrument	=	Lead;
+			route 		=	C;
+		}
+
+		layer lead.detune {
+			source		= 	lead;
+			instrument	=	LeadDetune;
+			detune 		=	8;
+			route 		=	C;
+		}
+
+		layer lead.octave_low {
+			source		=	lead;
+			instrument	=	LeadOctave;
+			transpose 	=	-12;
+			route 		=	C;
+		}
+
+		layer lead.echo_short {
+			source		=	lead;
+			instrument 	=	EchoShort;
+			delay 		=	12;
+			route 		=	R;
+		}
+
+		layer lead.echo_long {
+			source		=	lead;
+			instrument	=	EchoLong;
+			delay 		=	24;
+			route 		=	L;
+		}
+
+		layer drum.kick {
+			source		=	kick;
+			instrument 	=	Kick;
+			route 		=	C;
+		}
+
+		layer drum.snare {
+			source		=	snare;
+			instrument 	=	Snare;
+			route 		=	C;
+		}
+
+		layer drum.hat_left {
+			source		=	hat.left;
+			instrument 	=	Hat;
+			route 		=	L;
+		}
+
+		layer drum.hat_right {
+			source		=	hat.right;
+			instrument 	=	Hat;
+			route 		=	R;
+		}
+		
+		group echoes {
+			members = [
+				lead.echo_short, 
+				lead.echo_long
+			];
+		}
+		
+		group percussion {
+			members = [
+				drum.kick, 
+				drum.snare, 
+				drum.hat_left, 
+				drum.hat_right
+			];
+		}	
+	}
+
+
+	// =====================================================================
+	// ORCHESTRATION SCENES
+	//
+	// These replace the source's per-occurrence LIFT, DET, OCTD, B8, PERC,
+	// and ECHO arrays. Transforming role "lead" affects the main lead and
+	// every layer derived from it exactly once.
+	// =====================================================================
+		scene intro {
+			enables = [ 
+				bass.main,
+				bg.alternate,
+				lead.main
+			];
+		}
+
+		scene base {
+			enables = [ 
+				bass.main,
+				bg.alternate,
+				lead.main,
+				echoes,
+				percussion
+			];
+		}
+
+		scene thick {
+			enables = [ 
+				bass.main,
+				bass.octave_click,
+				bg.alternate,
+				lead.main,
+				lead.detune,
+				echoes,
+				percussion
+			];
+		}
+
+		scene wide {
+			enables = [
+				bass.main,
+				bass.octave_click,
+				bg.alternate,
+				lead.main,
+				lead.detune,
+				echoes,
+				percussion,
+				lead.octave_low
+			];
+		}
+
+		scene lifted_wide {
+			enables = [
+				bass.main,
+				bass.octave_click,
+				bg.alternate,
+				lead.main,
+				lead.detune,
+				echoes,
+				percussion,
+				lead.octave_low
+			];
+			transforms	=	[ transpose(lead, 12) ];
+		}
+
+		scene double_time {
+			enables = [
+				bass.main,
+				bass.octave_click,
+				bg.alternate,
+				lead.main,
+				lead.detune,
+				percussion
+			];
+		}
+
+		scene release {
+			enables = [ 
+				bass.main,
+				bg.alternate,
+				lead.main,
+				echoes
+			];
+		}
+
+	// =====================================================================
+	// FORM
+	//
+	// Uneven sections plus the closing intro reprise total 136 bars:
+	//   8 + 16 + 12 + 16 + 10 + 12 + 16 + 12 + 10 + 16 + 8 = 136
+	// =====================================================================
+
+	form main {
+		using	= 	Studio;
+		
+		sequence = [
+			play(INTRO,	intro),
+			play(A,		base),
+			play(B,		thick),
+			play(A,		lifted_wide),
+			play(C,     double_time),
+			play(D,     release),
+			play(A,     wide),
+			play(B,     thick),
+			play(E,     lifted_wide),
+			play(OUT,   wide),
+			play(INTRO, intro),
+		];
+
+		loop	=	0; // play once; the compiler drains delayed events before stopping.
+	}
+}
+
+
+// =====================================================================
+// AFTERNOONBLEND TARGET
+//
+// L/R/C routes preserve the intended spatial design. The compiler allocates
+// compatible physical voices from those PSGs using actual note lifetimes;
+// layers that never overlap may safely share a voice.
+// =====================================================================
+
+target AfternoonBlend {
+    backend		=	sn76489x4;
+    clock 		=	3579545;
+	transpose	= 	24;
+
+	extension sn76489 {
+		max_ztr_bytes = 20480;
+	}
+
+    routes {
+        L = psg0;
+        R = psg1;
+        C = [psg2, psg3];
+    }
+	
+	realize Kick {
+		waveform	= noise;
+		mode		= periodic;
+		rate		= low;
+
+		extension sn76489 {
+			phase_reset = 1;
+		}
+	}
+
+	realize Hat {
+		waveform 	= noise;
+		mode		= white;
+		rate		= high;
+	}	
+	
+	realize Snare {
+		waveform 	= noise;
+		mode		= white;
+		rate		= medium;
+	}
+
+	realize EchoLong {
+		waveform	= square;
+	}
+	
+	realize Bass {
+		waveform	= square;
+	}
+	
+	realize BassClick {
+		waveform 	= square;
+	}
+	
+	realize Background {
+		waveform	= square;
+	}
+
+	realize Lead {
+		waveform	= square;
+	}
+
+	realize LeadDetune {
+		waveform	= square;
+	}
+
+	realize LeadOctave {
+		waveform	= square;
+	}
+
+	realize EchoShort {
+		waveform	= square;
+	}	
+	
+
+    limits {
+        tonal_voices 		= 12;
+        noise_voices		= 4;
+        attenuation_steps 	= 16;
+    }
+}
