@@ -35,14 +35,17 @@
 #define ZTR_CHANNELS          16u
 #define ZTR_INSTRUMENT_BYTES  16u
 #define ZTR_PATTERN_BYTES     8u
+/* The resident pattern directory entry (the file's count field is
+ * validation-only and dropped). */
+#define ZTR_DIR_BYTES         6u
 #define ZTR_MACRO_HEADER      12u
 #define ZTR_MAX_FILE_BYTES    65535u
 #define ZTR_CLOCK_HZ          3579545ul
 
-/* The pattern-stream walk buffer and the service work bound. */
-#define ZTR_STREAM_CHUNK      32u
-#define ZTR_SERVICE_ROWS      8u
-#define ZTR_EVENT_MAX_BYTES   13u
+/* The validation window: whole chunks through the borrowed reader
+ * (the order buffers double as the scratch), so the walk loops make
+ * no C call per byte.  256-byte windows keep the walk cursors 8-bit. */
+#define ZTR_WINDOW_BYTES      256u
 
 /* A page-aligned base inside an area; the host build (HOST_ZTR)
  * publishes no pages, so only the Z80 half exists. */
@@ -65,9 +68,8 @@ uint16_t snd_ztr_rate;
 uint8_t snd_ztr_speed;
 uint16_t snd_ztr_pattern_length;
 uint16_t snd_ztr_order_count;
-uint8_t snd_ztr_head;
-volatile uint8_t snd_ztr_tail;
-uint16_t snd_ztr_queue_addrs[SND_ZTR_QUEUE_ROWS];
+uint8_t snd_ztr_published;
+volatile uint8_t snd_ztr_consumed;
 uint8_t snd_ztr_order;
 uint8_t snd_ztr_row;
 uint8_t snd_ztr_tick_in_row;
@@ -81,6 +83,9 @@ uint8_t snd_ztr_div_lo_page;
 uint8_t snd_ztr_loud_page;
 uint8_t snd_ztr_instr_page;
 uint16_t snd_ztr_macro_base;
+#ifndef HOST_ZTR
+uint16_t snd_ztr_order_base[2];
+#endif
 
 /* The resident tables.  The page-aligned ones share one area:
  * the core page, its effect/notation page, the five macro-slot
@@ -89,15 +94,14 @@ uint16_t snd_ztr_macro_base;
  * data and the queue need no page alignment (both are reached
  * through base addresses). */
 static uint8_t snd_ztr_orders[SND_ZTR_MAX_ORDERS * ZTR_CHANNELS];
-static uint8_t snd_ztr_patterns[SND_ZTR_MAX_PATTERNS * ZTR_PATTERN_BYTES];
+static uint8_t snd_ztr_patterns[SND_ZTR_MAX_PATTERNS * ZTR_DIR_BYTES];
 #ifdef HOST_ZTR
 static uint8_t host_pages_area[4u * 256u];
 #else
 static uint8_t snd_ztr_pages_area[11u * 256u + 255u];
 #endif
 static uint8_t snd_ztr_macro_area[SND_ZTR_MACRO_BYTES];
-static uint8_t snd_ztr_queue_area[SND_ZTR_QUEUE_ROWS *
-				  SND_ZTR_ROW_BYTES];
+static uint8_t snd_ztr_order_area[2u * SND_ZTR_ORDER_BYTES];
 
 /* The borrowed reader and the producer's position. */
 static kos_reader_t snd_ztr_reader;
@@ -110,15 +114,12 @@ static uint32_t note_offset;
 static uint8_t instrument_count;
 static uint16_t pattern_count;
 static uint32_t macro_used;
-static uint16_t produce_order;
-static uint16_t produce_row;
 
-struct ztr_cursor {
-	uint16_t next;               /* the next event's row byte */
-	uint16_t end;                /* the stream's end */
-	uint8_t active;
-};
-static struct ztr_cursor cursors[ZTR_CHANNELS];
+/* The setup_order scan's selection, as three parallel arrays: the
+ * channel index stays 8-bit, and each field is one indexed load. */
+static uint16_t cursor_next[ZTR_CHANNELS];
+static uint16_t cursor_end[ZTR_CHANNELS];
+static uint8_t cursor_active[ZTR_CHANNELS];
 
 /* --- the reader --------------------------------------------------------- */
 
@@ -152,63 +153,116 @@ static int ztr_read_forward(void *dst, uint32_t offset, uint16_t length)
 	return (int)length;
 }
 
-/* The stream walkers: three independent chunk walks over file ranges
- * (0 = the strings, 1 = the macros, 2 = the shared scan walker for
- * patterns, the note table and the divisor fill).  Flat statics and a
- * constant walker index keep the Z80 codegen simple absolute-memory
- * arithmetic - the pointer-based walker it replaces generated stack
- * shuffle code the SDCC port got wrong. */
-static uint16_t ws_pos[3u];
-static uint16_t ws_next[3u];
-static uint16_t ws_end[3u];
-static uint8_t ws_buf[3u][ZTR_STREAM_CHUNK];
-static uint8_t ws_have[3u];
-static uint8_t ws_at[3u];
+/* The window walkers: forward walks over file ranges (the strings
+ * and the pattern streams).  Each walker reads whole windows into an
+ * order buffer (free until the first refill) and the loops consume
+ * bytes in memory, so no C call runs per byte; the pattern walk
+ * shares buffer 1 with the directory/note windows, above them.  The
+ * state is two named sets, not indexed arrays: every access is a
+ * constant address. */
+static uint16_t ws0_pos;
+static uint16_t ws0_next;
+static uint16_t ws0_end;
+static uint8_t *ws0_cur;
+static uint8_t ws0_have;
+static uint8_t ws0_at;
+static uint16_t ws1_pos;
+static uint16_t ws1_next;
+static uint16_t ws1_end;
+static uint8_t *ws1_cur;
+static uint8_t ws1_have;
+static uint8_t ws1_at;
 
-static void zs_open(uint8_t w, uint16_t offset, uint16_t end)
+static uint8_t *ztr_order_buffer(uint8_t slot)
 {
-	ws_pos[w] = offset;
-	ws_next[w] = offset;
-	ws_end[w] = end;
-	ws_have[w] = 0u;
-	ws_at[w] = 0u;
+#ifdef HOST_ZTR
+	return snd_ztr_order_area + (uint16_t)slot * SND_ZTR_ORDER_BYTES;
+#else
+	return (uint8_t *)(uint16_t)snd_ztr_order_base[slot];
+#endif
 }
 
-/* The next byte; 0, a negative error, or -KOS_EIO past the end. */
-static int zs_get(uint8_t w, uint8_t *out)
+static void zs_open_strings(uint16_t offset, uint16_t end)
 {
+	ws0_pos = offset;
+	ws0_next = offset;
+	ws0_end = end;
+	ws0_cur = ztr_order_buffer(0u);
+	ws0_have = 0u;
+	ws0_at = 0u;
+}
+
+static void zs_open_patterns(uint16_t offset, uint16_t end)
+{
+	ws1_pos = offset;
+	ws1_next = offset;
+	ws1_end = end;
+	ws1_cur = ztr_order_buffer(1u) + ZTR_WINDOW_BYTES;
+	ws1_have = 0u;
+	ws1_at = 0u;
+}
+
+/* Fill the strings walk's window; 0 or a negative reader error. */
+static int zs_fill_strings(void)
+{
+	uint16_t left = (uint16_t)(ws0_end - ws0_next);
+	uint16_t want = left;
+	int result;
+
+	if (want > 254u) {
+		/* ws0_have is 8-bit: a full window would truncate */
+		want = 254u;
+	}
+	result = ztr_read(ws0_cur, (uint32_t)ws0_next, want);
+	if (result < 0) {
+		return result;
+	}
+	ws0_pos = ws0_next;
+	ws0_next = (uint16_t)(ws0_next + want);
+	ws0_have = (uint8_t)want;
+	ws0_at = 0u;
+	return 0;
+}
+
+/* Fill the pattern walk's window; 0 or a negative reader error.
+ * An event may straddle the window end: compact the unread tail (at
+ * most 12 bytes, the event cap) to the window's front and read the
+ * continuation after it, so every reader request starts exactly
+ * where the last one ended (the forward-only contract) and no event
+ * bytes are dropped. */
+static int zs_fill_patterns(void)
+{
+	uint16_t slack = (uint16_t)(ws1_have - ws1_at);
 	uint16_t left;
 	uint16_t want;
 	int result;
+	{
+		uint8_t *to = ws1_cur;
+		const uint8_t *from = ws1_cur + ws1_at;
+		uint8_t count = (uint8_t)slack;
 
-	if (ws_at[w] == ws_have[w]) {
-		left = (uint16_t)(ws_end[w] - ws_next[w]);
-		if (left == 0u) {
-			return -KOS_EIO;
+		while (count-- != 0u) {
+			*to++ = *from++;
 		}
-		want = left;
-		if (want > ZTR_STREAM_CHUNK) {
-			want = ZTR_STREAM_CHUNK;
-		}
-		result = ztr_read(ws_buf[w], (uint32_t)ws_next[w], want);
-		if (result < 0) {
-			return result;
-		}
-		ws_pos[w] = ws_next[w];
-		ws_next[w] = (uint16_t)(ws_next[w] + want);
-		ws_at[w] = 0u;
-		ws_have[w] = (uint8_t)want;
 	}
-	*out = ws_buf[w][ws_at[w]++];
+	left = (uint16_t)(ws1_end - ws1_next);
+	want = left;
+	if (want > 254u - slack) {
+		/* ws1_have is 8-bit: a full window would truncate */
+		want = 254u - slack;
+	}
+	result = ztr_read(ws1_cur + slack, (uint32_t)ws1_next, want);
+	if (result < 0) {
+		return result;
+	}
+	ws1_pos = (uint16_t)(ws1_next - slack);
+	ws1_next = (uint16_t)(ws1_next + want);
+	ws1_have = (uint8_t)(slack + want);
+	ws1_at = 0u;
 	return 0;
 }
 
 /* --- validation --------------------------------------------------------- */
-
-/* Shared scratch the validation reads into: a macro header and one
- * instrument entry. */
-static uint8_t ztr_instr_entry[ZTR_INSTRUMENT_BYTES];
-
 
 static uint16_t u16_at(const uint8_t *p)
 {
@@ -260,129 +314,145 @@ static int resident_macro_ok(uint16_t offset, uint8_t type,
 	return 1;
 }
 
-static int pattern_ok(uint16_t entry_index, uint16_t data_start,
-		      uint16_t data_end)
+/* Every pattern stream, in file order: one window walker over the
+ * whole pattern-data region, so the open pass pays at most one reader
+ * call per 255 stream bytes.  The directory pass left each entry's
+ * expected event count in the order scratch; the streams may leave
+ * gaps (the walker jumps forward over them, all reads monotonic). */
+static int pattern_streams_ok(const uint8_t *counts)
 {
-	const uint8_t *entry = snd_ztr_patterns + entry_index * 8u;
-	uint16_t offset;
-	uint16_t end;
-	uint16_t expected;
-	uint16_t events = 0u;
-	uint16_t last_row = 0u;
-	uint8_t first = 1u;
-	int result;
+	const uint8_t *entry = snd_ztr_patterns;
+	uint16_t i;
 
-	offset = u16_at(entry + 2);
-	end = offset + u16_at(entry + 4);
-	expected = u16_at(entry + 6);
-	if (entry[0] >= ZTR_CHANNELS || offset < data_start ||
-	    end > data_end) {
-		return 0;
-	}
-	zs_open(2u, offset, end);
-	while ((uint16_t)(ws_pos[2u] + ws_at[2u]) < end) {
-		uint8_t row;
-		uint8_t mask;
-		uint8_t modifiers = 0u;
-		uint8_t byte;
+	zs_open_patterns((uint16_t)pattern_data_offset,
+			 (uint16_t)note_offset);
+	for (i = 0u; i < pattern_count; ++i) {
+		uint16_t offset = u16_at(entry + 2);
+		uint16_t end = (uint16_t)(offset + u16_at(entry + 4));
+		uint16_t expected = u16_at(counts);
+		uint16_t events = 0u;
+		uint16_t last_row = 0u;
+		uint8_t first = 1u;
+		int result;
 
-		result = zs_get(2u, &row);
-		if (result < 0) {
-			return 0;
-		}
-		result = zs_get(2u, &mask);
-		if (result < 0) {
-			return 0;
-		}
-		if ((uint16_t)row >= snd_ztr_pattern_length ||
-		    (first == 0u && (uint16_t)row <= last_row) ||
-		    mask == 0u) {
-			return 0;
-		}
-		first = 0u;
-		last_row = row;
-		if ((mask & (ZTR_EVENT_OFF | ZTR_EVENT_RELEASE)) ==
-		    (ZTR_EVENT_OFF | ZTR_EVENT_RELEASE)) {
-			return 0;
-		}
-		if ((mask & ZTR_EVENT_NOTE) != 0u) {
-			result = zs_get(2u, &byte);
-			if (result < 0 || byte >= ZTR_NOTE_COUNT) {
-				return 0;
-			}
-		}
-		if ((mask & ZTR_EVENT_INSTRUMENT) != 0u) {
-			result = zs_get(2u, &byte);
-			if (result < 0 || byte >= ZTR_CHANNELS) {
-				return 0;
-			}
-		}
-		if ((mask & ZTR_EVENT_VOLUME) != 0u) {
-			result = zs_get(2u, &byte);
-			if (result < 0 || byte > 15u) {
-				return 0;
-			}
-		}
-		if ((mask & ZTR_EVENT_EFFECT) != 0u) {
-			uint8_t effect;
+		entry += ZTR_DIR_BYTES;
+		counts += 2u;
 
-			result = zs_get(2u, &effect);
-			if (result < 0) {
-				return 0;
-			}
-			result = zs_get(2u, &byte);
-			if (result < 0 || effect == 0u ||
-			    effect > ZTR_EFFECT_STOP) {
-				return 0;
-			}
+		if (ws1_next < offset) {
+			/* jump the walker to this stream's first byte */
+			ws1_pos = offset;
+			ws1_next = offset;
+			ws1_have = 0u;
+			ws1_at = 0u;
+		} else {
+			ws1_at = (uint8_t)(offset - ws1_pos);
 		}
-		if ((mask & ZTR_EVENT_LEGATO) != 0u &&
-		    (mask & ZTR_EVENT_NOTE) == 0u) {
-			return 0;
-		}
-		if ((mask & ZTR_EVENT_NOTE) != 0u &&
-		    (mask & (ZTR_EVENT_OFF | ZTR_EVENT_RELEASE)) != 0u) {
-			return 0;
-		}
-		if ((mask & ZTR_EVENT_MODIFIERS) != 0u) {
-			result = zs_get(2u, &modifiers);
-			if (result < 0 || (modifiers & 0x07u) != 0u ||
-			    (modifiers & (ZTR_MOD_ARP_SET |
-					  ZTR_MOD_ARP_CLEAR)) ==
-			    (ZTR_MOD_ARP_SET | ZTR_MOD_ARP_CLEAR) ||
-			    (modifiers & (ZTR_MOD_HAIRPIN_SET |
-					  ZTR_MOD_HAIRPIN_CLEAR)) ==
-			    (ZTR_MOD_HAIRPIN_SET |
-			     ZTR_MOD_HAIRPIN_CLEAR)) {
-				return 0;
-			}
-			if ((modifiers & ZTR_MOD_ARP_SET) != 0u) {
-				result = zs_get(2u, &byte);
+		while ((uint16_t)(ws1_pos + ws1_at) < end) {
+			uint8_t row;
+			uint8_t mask;
+			uint8_t modifiers = 0u;
+			uint8_t byte;
+
+			/* One fill per event: an event is at most 13
+			 * bytes, so with the slack resident the walk
+			 * needs no further C call (a stream ending
+			 * inside the slack reads only its own bytes;
+			 * the end equality catches a truncated
+			 * event). */
+			if ((int)(ws1_have - ws1_at) < 13 &&
+			    ws1_next < ws1_end) {
+				result = zs_fill_patterns();
 				if (result < 0) {
 					return 0;
 				}
 			}
-			if ((modifiers & ZTR_MOD_HAIRPIN_SET) != 0u) {
-				uint8_t ceiling;
-
-				result = zs_get(2u, &byte);
-				if (result < 0) {
-					return 0;
-				}
-				if (byte == 0u ||
-				    (byte > 15u && byte < (uint8_t)0xF1u)) {
-					return 0;
-				}
-				result = zs_get(2u, &ceiling);
-				if (result < 0 || ceiling > 15u) {
+			row = ws1_cur[ws1_at++];
+			mask = ws1_cur[ws1_at++];
+			if ((uint16_t)row >= snd_ztr_pattern_length ||
+			    (first == 0u && (uint16_t)row <= last_row) ||
+			    mask == 0u) {
+				return 0;
+			}
+			first = 0u;
+			last_row = row;
+			if ((mask & (ZTR_EVENT_OFF | ZTR_EVENT_RELEASE)) ==
+			    (ZTR_EVENT_OFF | ZTR_EVENT_RELEASE)) {
+				return 0;
+			}
+			if ((mask & ZTR_EVENT_NOTE) != 0u) {
+				byte = ws1_cur[ws1_at++];
+				if (byte >= ZTR_NOTE_COUNT) {
 					return 0;
 				}
 			}
+			if ((mask & ZTR_EVENT_INSTRUMENT) != 0u) {
+				byte = ws1_cur[ws1_at++];
+				if (byte >= ZTR_CHANNELS) {
+					return 0;
+				}
+			}
+			if ((mask & ZTR_EVENT_VOLUME) != 0u) {
+				byte = ws1_cur[ws1_at++];
+				if (byte > 15u) {
+					return 0;
+				}
+			}
+			if ((mask & ZTR_EVENT_EFFECT) != 0u) {
+				uint8_t effect;
+
+				effect = ws1_cur[ws1_at++];
+				byte = ws1_cur[ws1_at++];
+				if (effect == 0u || effect > ZTR_EFFECT_STOP) {
+					return 0;
+				}
+			}
+			if ((mask & ZTR_EVENT_LEGATO) != 0u &&
+			    (mask & ZTR_EVENT_NOTE) == 0u) {
+				return 0;
+			}
+			if ((mask & ZTR_EVENT_NOTE) != 0u &&
+			    (mask & (ZTR_EVENT_OFF | ZTR_EVENT_RELEASE)) !=
+			    0u) {
+				return 0;
+			}
+			if ((mask & ZTR_EVENT_MODIFIERS) != 0u) {
+				modifiers = ws1_cur[ws1_at++];
+				if ((modifiers & 0x07u) != 0u ||
+				    (modifiers & (ZTR_MOD_ARP_SET |
+						  ZTR_MOD_ARP_CLEAR)) ==
+				    (ZTR_MOD_ARP_SET | ZTR_MOD_ARP_CLEAR) ||
+				    (modifiers & (ZTR_MOD_HAIRPIN_SET |
+						  ZTR_MOD_HAIRPIN_CLEAR)) ==
+				    (ZTR_MOD_HAIRPIN_SET |
+				     ZTR_MOD_HAIRPIN_CLEAR)) {
+					return 0;
+				}
+				if ((modifiers & ZTR_MOD_ARP_SET) != 0u) {
+					byte = ws1_cur[ws1_at++];
+				}
+				if ((modifiers & ZTR_MOD_HAIRPIN_SET) != 0u) {
+					uint8_t ceiling;
+
+					byte = ws1_cur[ws1_at++];
+					if (byte == 0u ||
+					    (byte > 15u &&
+					     byte < (uint8_t)0xF1u)) {
+						return 0;
+					}
+					ceiling = ws1_cur[ws1_at++];
+					if (ceiling > 15u) {
+						return 0;
+					}
+				}
+			}
+			++events;
 		}
-		++events;
+		if ((uint16_t)(ws1_pos + ws1_at) != end ||
+		    events != expected) {
+			return 0;
+		}
 	}
-	return (uint16_t)(ws_pos[2u] + ws_at[2u]) == end &&
-	       events == expected;
+	return 1;
 }
 
 static int validate(void)
@@ -460,11 +530,14 @@ static int validate(void)
 	    !string_ref_ok(u16_at(header + 32), (uint16_t)string_end)) {
 		return -KOS_EINVAL;
 	}
-	zs_open(0u, ZTR_HEADER_BYTES, (uint16_t)string_end);
+	zs_open_strings(ZTR_HEADER_BYTES, (uint16_t)string_end);
 	byte = 1u;
-	while ((uint16_t)(ws_pos[0u] + ws_at[0u]) < (uint16_t)string_end) {
-		result = zs_get(0u, &byte);
-		if (result < 0) return result;
+	while ((uint16_t)(ws0_pos + ws0_at) < (uint16_t)string_end) {
+		if (ws0_at == ws0_have) {
+			result = zs_fill_strings();
+			if (result < 0) return result;
+		}
+		byte = ws0_cur[ws0_at++];
 	}
 	if (byte != 0u) return -KOS_EINVAL;
 
@@ -473,17 +546,19 @@ static int validate(void)
 			  (uint16_t)(snd_ztr_order_count * ZTR_CHANNELS));
 	if (result < 0) return result;
 	memset(snd_ztr_instr, 0, 256u);
+	/* The instrument table is one contiguous read: the window
+	 * loops must not pay one reader call per instrument. */
+	result = ztr_read_forward(ztr_order_buffer(1u), instrument_offset,
+				  (uint16_t)((uint16_t)instrument_count *
+					     ZTR_INSTRUMENT_BYTES));
+	if (result < 0) {
+		return result;
+	}
 	for (i = 0u; i < instrument_count; ++i) {
-		uint8_t *entry = ztr_instr_entry;
-		uint8_t number;
+		const uint8_t *entry = ztr_order_buffer(1u) +
+			i * ZTR_INSTRUMENT_BYTES;
+		uint8_t number = entry[0];
 
-		result = ztr_read(entry, instrument_offset +
-				  ((uint32_t)i << 4),
-				  ZTR_INSTRUMENT_BYTES);
-		if (result < 0) {
-			return result;
-		}
-		number = entry[0];
 		if (number >= ZTR_CHANNELS ||
 		    (seen_instruments[number >> 3] &
 		     (uint8_t)(1u << (number & 7u))) != 0u ||
@@ -530,50 +605,88 @@ static int validate(void)
 			entry[5u + slot * 2u] = (uint8_t)(resident >> 8);
 		}
 	}
-	result = ztr_read_forward(snd_ztr_patterns, pattern_dir_offset,
-			  (uint16_t)(pattern_count * ZTR_PATTERN_BYTES));
-	if (result < 0) return result;
-	/* Every pattern stream. */
-	for (i = 0u; i < pattern_count; ++i) {
-		uint16_t prior;
-		uint16_t offset = u16_at(snd_ztr_patterns + i * 8u + 2u);
+	/* The pattern directory, windowed through the order scratch:
+	 * every window is read first (one forward pass), each entry
+	 * validated and kept resident compacted (the count field is
+	 * validation-only and held in the other order buffer), then
+	 * every stream is walked in file order. */
+	{
+		uint8_t *counts = ztr_order_buffer(0u);
+		uint8_t *count = counts;	/* advancing */
+		uint8_t *resident = snd_ztr_patterns;
+		uint16_t done = 0u;
 
-		if (i != 0u) {
-			const uint8_t *previous = snd_ztr_patterns + (i - 1u) * 8u;
-			prior = (uint16_t)(u16_at(previous + 2u) +
-					   u16_at(previous + 4u));
-			if (offset < prior) return -KOS_EINVAL;
+		while (done < pattern_count) {
+			uint16_t window = pattern_count - done;
+			uint16_t j;
+
+			if (window > ZTR_WINDOW_BYTES / ZTR_PATTERN_BYTES) {
+				window = ZTR_WINDOW_BYTES /
+					ZTR_PATTERN_BYTES;
+			}
+			result = ztr_read(ztr_order_buffer(1u),
+					  pattern_dir_offset +
+					  (uint32_t)done * ZTR_PATTERN_BYTES,
+					  (uint16_t)(window *
+						     ZTR_PATTERN_BYTES));
+			if (result < 0) return result;
+			for (j = 0u; j < window; ++j) {
+				const uint8_t *entry =
+					ztr_order_buffer(1u) + j *
+					ZTR_PATTERN_BYTES;
+				uint16_t index = (uint16_t)(done + j);
+				uint16_t offset = u16_at(entry + 2);
+				uint16_t length = u16_at(entry + 4);
+
+				if (entry[0] >= ZTR_CHANNELS ||
+				    offset < pattern_data_offset ||
+				    (uint16_t)(offset + length) >
+				    note_offset) {
+					return -KOS_EINVAL;
+				}
+				if (index != 0u) {
+					uint16_t prior = (uint16_t)(
+						u16_at(resident - 6u + 2u) +
+						u16_at(resident - 6u + 4u));
+
+					if (offset < prior) {
+						return -KOS_EINVAL;
+					}
+				}
+				memcpy(resident, entry, ZTR_DIR_BYTES);
+				count[0] = entry[6];
+				count[1] = entry[7];
+				resident += ZTR_DIR_BYTES;
+				count += 2u;
+			}
+			done = (uint16_t)(done + window);
 		}
-		if (!pattern_ok(i, (uint16_t)pattern_data_offset,
-				(uint16_t)note_offset)) {
+		if (!pattern_streams_ok(counts)) {
 			return -KOS_EINVAL;
 		}
 	}
-	/* The note table. */
+	/* The note table: one whole-window read into the scratch, then
+	 * the divisors into the split pages. */
 	{
 		uint16_t note;
 		uint8_t *lo_page = snd_ztr_div_lo;
 		uint8_t *hi_page = lo_page + 256u;
+		const uint8_t *table = ztr_order_buffer(1u);
 
-		zs_open(2u, (uint16_t)note_offset,
-			(uint16_t)(note_offset + 192u));
+		result = ztr_read(ztr_order_buffer(1u), note_offset,
+				  (uint16_t)(ZTR_NOTE_COUNT << 1));
+		if (result < 0) {
+			return -KOS_EIO;
+		}
 		for (note = 0u; note < ZTR_NOTE_COUNT; ++note) {
-			uint8_t lo;
-			uint8_t hi;
+			uint8_t lo = table[note << 1];
+			uint8_t hi = table[(note << 1) + 1u];
 
-			result = zs_get(2u, &lo);
-			if (result < 0) {
-				return -KOS_EIO;
-			}
-			result = zs_get(2u, &hi);
-			if (result < 0) {
-				return -KOS_EIO;
-			}
-						if (lo == 0u && hi == 0u) {
+			if (lo == 0u && hi == 0u) {
 				return -KOS_EINVAL;
 			}
 			if ((uint16_t)((uint16_t)lo |
-				       				       ((uint16_t)hi << 8)) > 1023u) {
+				       ((uint16_t)hi << 8)) > 1023u) {
 				return -KOS_EINVAL;
 			}
 			lo_page[note] = lo;
@@ -629,193 +742,91 @@ static int load_resident(void)
 
 /* --- the producer ------------------------------------------------------- */
 
-static void setup_order(void)
+static void setup_order_for(uint16_t order)
 {
+	const uint8_t *entry = snd_ztr_patterns;
 	uint16_t i;
 	uint8_t channel;
 
 	for (channel = 0u; channel < ZTR_CHANNELS; ++channel) {
-		cursors[channel].next = 0u;
-		cursors[channel].end = 0u;
-		cursors[channel].active = 0u;
+		cursor_next[channel] = 0u;
+		cursor_end[channel] = 0u;
+		cursor_active[channel] = 0u;
 	}
 	/* Resolve all 16 selections in one directory pass, as the
 	 * reference's setup_order does. */
-	for (i = 0u; i < pattern_count; ++i) {
-		const uint8_t *entry = snd_ztr_patterns + i * 8u;
+	for (i = 0u; i < pattern_count; ++i, entry += ZTR_DIR_BYTES) {
 		uint8_t number = entry[0];
 
 		if (number < ZTR_CHANNELS &&
-		    cursors[number].active == 0u &&
-		    snd_ztr_orders[(uint16_t)produce_order * ZTR_CHANNELS +
-				   number] != 0xFFu &&
-		    entry[1] == snd_ztr_orders[(uint16_t)produce_order *
-					       ZTR_CHANNELS + number]) {
-			cursors[number].next = u16_at(entry + 2);
-			cursors[number].end = cursors[number].next +
+		    cursor_active[number] == 0u &&
+		    snd_ztr_orders[order * ZTR_CHANNELS + number] != 0xFFu &&
+		    entry[1] == snd_ztr_orders[order * ZTR_CHANNELS +
+					      number]) {
+			cursor_next[number] = u16_at(entry + 2);
+			cursor_end[number] = cursor_next[number] +
 				u16_at(entry + 4);
-			cursors[number].active = 1u;
+			cursor_active[number] = 1u;
 		}
 	}
 }
 
-/* One channel's event into the record's slot. */
-static int decode_event(struct ztr_cursor *cursor, uint8_t produce_row_byte,
-			uint8_t *slot)
+/* Fill one order buffer: the cursor table (a start and an end offset
+ * per channel, both zero for an FFh selection), then each selected
+ * stream whole, one read per stream.  The streams pack right after
+ * the table; the offsets are buffer-relative.  Returns 0 or a
+ * negative reader error (the caller publishes nothing on error). */
+static int refill_order(uint8_t order, uint8_t slot)
 {
-	uint8_t buf[ZTR_EVENT_MAX_BYTES];
-	uint16_t left = (uint16_t)(cursor->end - cursor->next);
-	uint16_t amount;
-	uint8_t pos = 2u;
-	uint8_t mask;
-	int result;
-
-	slot[0] = 0u;
-	if (left == 0u) {
-		return 0;
-	}
-	amount = left;
-	if (amount > ZTR_EVENT_MAX_BYTES) {
-		amount = ZTR_EVENT_MAX_BYTES;
-	}
-	result = ztr_read(buf, (uint32_t)cursor->next, amount);
-	if (result < 0) {
-		return result;
-	}
-	if (buf[0] != produce_row_byte) {
-		return 0; /* sparse: nothing on this row */
-	}
-	mask = buf[1];
-	slot[0] = mask;
-	slot[1] = 0xFFu;
-	slot[2] = 0xFFu;
-	slot[3] = 0xFFu;
-	slot[4] = 0u;
-	slot[5] = 0u;
-	slot[6] = 0u;
-	slot[7] = 0u;
-	slot[8] = 0u;
-	slot[9] = 0u;
-	if ((mask & ZTR_EVENT_NOTE) != 0u) {
-		slot[1] = buf[pos++];
-	}
-	if ((mask & ZTR_EVENT_INSTRUMENT) != 0u) {
-		slot[2] = buf[pos++];
-	}
-	if ((mask & ZTR_EVENT_VOLUME) != 0u) {
-		slot[3] = buf[pos++];
-	}
-	if ((mask & ZTR_EVENT_EFFECT) != 0u) {
-		slot[4] = buf[pos++];
-		slot[5] = buf[pos++];
-	}
-	if ((mask & ZTR_EVENT_MODIFIERS) != 0u) {
-		slot[6] = buf[pos++];
-		if ((slot[6] & ZTR_MOD_ARP_SET) != 0u) {
-			slot[7] = buf[pos++];
-		}
-		if ((slot[6] & ZTR_MOD_HAIRPIN_SET) != 0u) {
-			slot[8] = buf[pos++];
-			slot[9] = buf[pos++];
-		}
-	}
-	cursor->next += pos;
-	return 0;
-}
-
-/* One row record into the queue slot at `tail`.  The tail is published
- * only by the caller, after the record is complete. */
-/* The record at queue index i (the host producer test uses the same
- * entry point; the uint16 table is the assembly's view). */
-uint8_t *snd_ztr_row_address(uint8_t index)
-{
-	return snd_ztr_queue_area + (uint16_t)index * SND_ZTR_ROW_BYTES;
-}
-
-static int produce_row_record(uint8_t tail)
-{
-	uint8_t *record = snd_ztr_row_address(tail);
+	uint8_t *buffer = ztr_order_buffer(slot);
+	uint8_t *entry = buffer;
+	uint16_t pos = SND_ZTR_ORDER_TABLE;
 	uint8_t channel;
-	int result;
 
-	/* The record is fixed-size and fully defined: inactive channels'
-	 * slots are zero (the engine skips them on the mask byte alone,
-	 * and the checksum contract pins every byte). */
-	memset(record, 0, SND_ZTR_ROW_BYTES);
-	record[0] = (uint8_t)produce_order;
-	record[1] = (uint8_t)produce_row;
-	for (channel = 0u; channel < ZTR_CHANNELS; ++channel) {
-		uint8_t *slot = record + 2u +
-			channel * SND_ZTR_SLOT_BYTES;
-
-		if (cursors[channel].active != 0u) {
-			result = decode_event(&cursors[channel],
-					      (uint8_t)produce_row, slot);
-			if (result < 0) {
-				return result;
-			}
-		} else {
-			slot[0] = 0u;
-		}
-	}
-	/* Advance the producer's position. */
-	++produce_row;
-	if (produce_row >= snd_ztr_pattern_length) {
-		produce_row = 0u;
-		++produce_order;
-		if (produce_order < snd_ztr_order_count) {
-			setup_order();
-		}
-	}
-	return 0;
-}
-
-/* Produce up to `bound` rows.  Returns 0, or a negative reader error. */
-static uint8_t produce_done; /* every row the song has is published */
-
-static int ztr_produce_rows(uint8_t bound)
-{
-	uint8_t produced = 0u;
-
-	while (produced < bound && produce_order < snd_ztr_order_count) {
-		uint8_t next = snd_ztr_tail + 1u;
+	setup_order_for(order);
+	for (channel = 0u; channel < ZTR_CHANNELS; ++channel, entry += 4u) {
+		uint16_t length;
 		int result;
 
-		if (next == SND_ZTR_QUEUE_ROWS) {
-			next = 0u;
+		if (cursor_active[channel] == 0u) {
+			/* both offsets stay zero: no stream */
+			entry[0] = 0u;
+			entry[1] = 0u;
+			entry[2] = 0u;
+			entry[3] = 0u;
+			continue;
 		}
-		if (next == snd_ztr_head) {
-			return 0; /* the queue is full */
+		length = (uint16_t)(cursor_end[channel] -
+				    cursor_next[channel]);
+		if (length == 0u) {
+			/* both offsets stay zero: no stream */
+			entry[0] = 0u;
+			entry[1] = 0u;
+			entry[2] = 0u;
+			entry[3] = 0u;
+			continue;
 		}
-		result = produce_row_record(snd_ztr_tail);
+		entry[0] = (uint8_t)pos;
+		entry[1] = (uint8_t)(pos >> 8);
+		result = ztr_read(buffer + pos,
+				  (uint32_t)cursor_next[channel],
+				  length);
 		if (result < 0) {
 			return result;
 		}
-		snd_ztr_tail = next; /* publish */
-		++produced;
+		pos = (uint16_t)(pos + length);
+		entry[2] = (uint8_t)pos;
+		entry[3] = (uint8_t)(pos >> 8);
 	}
-	produce_done = produce_order >= snd_ztr_order_count;
 	return 0;
-}
-
-/* The queue holds the start window when it is full or every row the
- * song has is already published. */
-static uint8_t ztr_window_complete(void)
-{
-	uint8_t next = snd_ztr_tail + 1u;
-
-	if (next == SND_ZTR_QUEUE_ROWS) {
-		next = 0u;
-	}
-	return next == snd_ztr_head || produce_done != 0u;
 }
 
 /* --- the control surface ------------------------------------------------ */
 
 static void ztr_reset_state(void)
 {
-	snd_ztr_head = 0u;
-	snd_ztr_tail = 0u;
+	snd_ztr_published = 0xFFu;   /* nothing pending */
+	snd_ztr_consumed = 0u;
 	snd_ztr_order = 0u;
 	snd_ztr_row = 0u;
 	snd_ztr_tick_in_row = 0u;
@@ -827,9 +838,6 @@ static void ztr_reset_state(void)
 	snd_ztr_order_count = 0u;
 	macro_used = 1u;	/* byte 0 reserved: a resident offset of
 				 * zero means "no macro" to the engine */
-	produce_done = 0u;
-	produce_order = 0u;
-	produce_row = 0u;
 }
 
 static void ztr_forget_reader(void)
@@ -843,13 +851,12 @@ static void ztr_publish_pages(void)
 {
 	uint8_t *pages;
 	uint8_t slot;
-	uint8_t i;
 
 	pages = (uint8_t *)0;
 #ifdef HOST_ZTR
-	/* The page bytes and the queue's uint16 table are the assembly's
-	 * view; the host producer never runs the engine.  The host only
-	 * needs scratch for the resident-table fillers. */
+	/* The page bytes are the assembly's view; the host producer
+	 * never runs the engine.  The host only needs scratch for the
+	 * resident-table fillers. */
 	pages = host_pages_area;
 	snd_ztr_div_lo = pages;
 	snd_ztr_loud = pages + 512u;
@@ -863,9 +870,6 @@ static void ztr_publish_pages(void)
 		snd_ztr_macro_page[slot] = 0u;
 	}
 	snd_ztr_macro_base = 0u;
-	for (i = 0u; i < SND_ZTR_QUEUE_ROWS; ++i) {
-		snd_ztr_queue_addrs[i] = 0u;
-	}
 #else
 	{
 		uint8_t *page;
@@ -885,11 +889,9 @@ static void ztr_publish_pages(void)
 		snd_ztr_instr = page + 10u * 256u;
 	}
 	snd_ztr_macro_base = (uint16_t)snd_ztr_macro_area;
-	for (i = 0u; i < SND_ZTR_QUEUE_ROWS; ++i) {
-		snd_ztr_queue_addrs[i] =
-			(uint16_t)(((uint16_t)snd_ztr_queue_area +
-				    (uint16_t)i * SND_ZTR_ROW_BYTES));
-	}
+	snd_ztr_order_base[0] = (uint16_t)snd_ztr_order_area;
+	snd_ztr_order_base[1] = (uint16_t)(snd_ztr_order_area +
+					   SND_ZTR_ORDER_BYTES);
 #endif
 }
 
@@ -897,8 +899,6 @@ int snd_ztr_open(const kos_reader_t *source)
 {
 	uint32_t logical;
 	uint32_t rounded;
-	uint32_t position;
-	uint8_t byte;
 	int result;
 
 	if (source == (const kos_reader_t *)0 ||
@@ -941,22 +941,59 @@ int snd_ztr_open(const kos_reader_t *source)
 		result = -KOS_EBUSY;
 		goto fail;
 	}
-	produce_order = 0u;
-	produce_row = 0u;
 	result = load_resident();
 	if (result < 0) {
 		goto fail;
 	}
-	for (position = ztr_size; position < source->size; ++position) {
-		result = ztr_read(&byte, position, 1u);
-		if (result < 0) goto fail;
-		if (byte != 0x1Au) {
-			result = -KOS_EINVAL;
+	/* The largest order's stream total, over the resident
+	 * directory: a larger one is -KOS_ENOSPC. */
+	{
+		uint16_t largest = 0u;
+		uint16_t order;
+
+		for (order = 0u; order < snd_ztr_order_count; ++order) {
+			uint16_t total = 0u;
+			uint8_t channel;
+
+			setup_order_for(order);
+			for (channel = 0u; channel < ZTR_CHANNELS;
+			     ++channel) {
+				if (cursor_active[channel] != 0u) {
+					total = (uint16_t)(total +
+						(uint16_t)(cursor_end[channel] -
+							   cursor_next[channel]));
+				}
+			}
+			if (total > largest) {
+				largest = total;
+			}
+		}
+		if (largest > SND_ZTR_ORDER_STREAM) {
+			result = -KOS_ENOSPC;
 			goto fail;
 		}
 	}
+	if (source->size > ztr_size) {
+		/* The CP/M padding (at most one 128-byte record, all
+		 * 1Ah): one whole read through the scratch, then a
+		 * pointer walk. */
+		const uint8_t *pad = ztr_order_buffer(0u);
+		uint16_t left = (uint16_t)(source->size - ztr_size);
+
+		result = ztr_read(ztr_order_buffer(0u), ztr_size, left);
+		if (result < 0) {
+			goto fail;
+		}
+		while (left != 0u) {
+			if (*pad != 0x1Au) {
+				result = -KOS_EINVAL;
+				goto fail;
+			}
+			++pad;
+			--left;
+		}
+	}
 	snd_ztr_reset_channels();
-	setup_order();
 	snd_reserved_voices |= snd_ztr_mask;
 	snd_active_rate = snd_ztr_rate;
 	snd_ztr_state = SND_ZTR_PREPARING;
@@ -978,16 +1015,16 @@ int snd_ztr_prepare(void)
 	    	    snd_ztr_state != SND_ZTR_PLAYING) {
 		return -KOS_EINVAL;
 	}
-	result = ztr_produce_rows(SND_ZTR_QUEUE_ROWS);
-	if (result < 0) {
-		snd_ztr_last_error = result;
-		return result;
-	}
-	if (snd_ztr_state == SND_ZTR_PREPARING &&
-	    ztr_window_complete()) {
+	/* Order 0 into buffer 0, published after it is complete. */
+	if (snd_ztr_state == SND_ZTR_PREPARING) {
+		result = refill_order(0u, 0u);
+		if (result < 0) {
+			snd_ztr_last_error = result;
+			return result;
+		}
+		snd_ztr_published = 0u;
 		snd_ztr_state = SND_ZTR_READY;
 	}
-	/* SND_NEED_MORE until the start window is resident. */
 	return snd_ztr_state == SND_ZTR_READY ? 0 : SND_NEED_MORE;
 }
 
@@ -999,40 +1036,32 @@ int snd_service(void)
 	    snd_zvg_state == SND_ZVG_UNDERRUN) {
 		(void)snd_zvg_refill();
 	}
-	/* The ZTR arm: at most ZTR_SERVICE_ROWS rows per call.  A reader
-	 * failure stops the call; playback keeps going and underruns if
-	 * the queue drains before the source recovers. */
-	if (snd_ztr_state == SND_ZTR_PREPARING ||
-	    snd_ztr_state == SND_ZTR_READY ||
-	    snd_ztr_state == SND_ZTR_PLAYING ||
-	    snd_ztr_state == SND_ZTR_UNDERRUN) {
-		int result = ztr_produce_rows(ZTR_SERVICE_ROWS);
+	/* The ZTR arm: one order refill per call, always the order
+	 * after the one the engine consumed.  A reader failure is
+	 * recorded; playback underruns when the next order change
+	 * finds nothing published and resumes here once the due order
+	 * is resident. */
+	if (snd_ztr_state == SND_ZTR_PLAYING ||
+	    snd_ztr_state == SND_ZTR_UNDERRUN ||
+	    snd_ztr_state == SND_ZTR_READY) {
+		if (snd_ztr_published == snd_ztr_consumed &&
+		    (uint16_t)snd_ztr_consumed + 1u <
+		    snd_ztr_order_count) {
+			uint8_t order = (uint8_t)(snd_ztr_consumed + 1u);
+			int result = refill_order(order, order & 1u);
 
-		if (result < 0) {
-			snd_ztr_last_error = result;
-			if (snd_ztr_state == SND_ZTR_PREPARING ||
-			    snd_ztr_state == SND_ZTR_READY) {
-				snd_ztr_state = SND_ZTR_ERROR;
+			if (result < 0) {
+				snd_ztr_last_error = result;
+			} else {
+				snd_ztr_published = order;
 			}
-		} else if (snd_ztr_state == SND_ZTR_PREPARING &&
-			   ztr_window_complete()) {
-			snd_ztr_state = SND_ZTR_READY;
-		} else if (snd_ztr_state == SND_ZTR_UNDERRUN) {
-			/* Automatic recovery once the due row is
-			 * resident. */
-			uint8_t head = snd_ztr_head;
-
-			if (head != snd_ztr_tail) {
-				const uint8_t *record =
-					snd_ztr_row_address(head);
-
-				if (record[0] == snd_ztr_order &&
-				    record[1] == snd_ztr_row) {
-					snd_ztr_restore();
-					snd_output_flush();
-					snd_ztr_state = SND_ZTR_PLAYING;
-				}
-			}
+		} else if (snd_ztr_state == SND_ZTR_UNDERRUN &&
+			   snd_ztr_published == snd_ztr_order) {
+			/* The due order is resident: resume. */
+			snd_ztr_consumed = snd_ztr_published;
+			snd_ztr_restore();
+			snd_output_flush();
+			snd_ztr_state = SND_ZTR_PLAYING;
 		}
 	}
 	return 0;

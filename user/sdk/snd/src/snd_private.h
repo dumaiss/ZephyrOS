@@ -171,31 +171,20 @@ int snd_zvg_refill(void);
 /* Resident capacities, sized for both fixture songs (136 orders, 398
  * patterns, 6,612 macro bytes) with headroom; exceeding one is
  * -KOS_ENOSPC at open. */
-#define SND_ZTR_MAX_ORDERS   140u
+#define SND_ZTR_MAX_ORDERS   136u
 #define SND_ZTR_MAX_PATTERNS 400u
 #define SND_ZTR_INSTRUMENTS  16u
-#define SND_ZTR_MACRO_BYTES  6656u
-#define SND_ZTR_QUEUE_ROWS   3u   /* rows of lookahead (2 usable)  */
+#define SND_ZTR_MACRO_BYTES  6640u
 
-/* The prepared row record, 101's contract with the engine: fixed
- * size, already decoded.  A record holds the row's position and one
- * 10-byte slot per channel; a slot's first byte is the decoded
- * presence mask, 0 when the channel has no event, so the consumer
- * skips idle channels on one test and never parses.
- *
- *   +0 order, +1 row; slot at 2 + channel * 10:
- *     +0 mask (0 = no event)
- *     +1 note (FFh when absent)
- *     +2 instrument (FFh when absent)
- *     +3 volume (FFh when absent)
- *     +4 effect (0 = none)
- *     +5 effect parameter
- *     +6 modifiers
- *     +7 arpeggio (MOD_ARP_SET's payload)
- *     +8 hairpin rate (MOD_HAIRPIN_SET's payload, signed)
- *     +9 hairpin ceiling */
-#define SND_ZTR_ROW_BYTES  162u
-#define SND_ZTR_SLOT_BYTES 10u
+/* The order double buffers.  Each holds one order's raw pattern
+ * streams, read whole at the offset and length the pattern directory
+ * gives (one read per stream), behind a 16-entry cursor table: one
+ * start and one end offset per channel (both zero for an FFh
+ * selection).  The streams follow the table; the cursor offsets are
+ * buffer-relative. */
+#define SND_ZTR_ORDER_BYTES  1024u
+#define SND_ZTR_ORDER_TABLE  64u    /* 16 channels x 4 bytes        */
+#define SND_ZTR_ORDER_STREAM (SND_ZTR_ORDER_BYTES - SND_ZTR_ORDER_TABLE)
 #define SND_ZTR_MACRO_SLOTS 5u
 
 /* The ZTR event and modifier bits and the native effects
@@ -228,14 +217,18 @@ extern uint8_t snd_ztr_speed;        /* ticks per row               */
 extern uint16_t snd_ztr_pattern_length;
 extern uint16_t snd_ztr_order_count;
 
-/* The producer/consumer queue: record indices as single bytes; the
- * producer publishes the tail only after the record is complete, the
- * consumer advances the head only after the row is applied.  Record
- * i lives at snd_ztr_queue_addrs[i] (a 16-bit table, so neither side
- * multiplies by SND_ZTR_ROW_BYTES). */
-extern uint8_t snd_ztr_head;
-extern volatile uint8_t snd_ztr_tail;
-extern uint16_t snd_ztr_queue_addrs[SND_ZTR_QUEUE_ROWS];
+/* The order double-buffer handshake: `snd_ztr_published` is the
+ * order the back buffer holds, written only after the refill
+ * completed; `snd_ztr_consumed` is the order the engine plays,
+ * written when the engine (or its resume) takes a published buffer.
+ * The back buffer is buffer[(consumed + 1) & 1]; snd_service refills
+ * it once published == consumed.  Buffer i starts at
+ * snd_ztr_order_base[i]. */
+extern uint8_t snd_ztr_published;
+extern volatile uint8_t snd_ztr_consumed;
+#ifndef HOST_ZTR
+extern uint16_t snd_ztr_order_base[2];
+#endif
 
 /* The engine's position (assembly-owned): the row to consume next and
  * the row's tick. */
@@ -263,7 +256,6 @@ extern uint8_t snd_ztr_instr_page;
 extern uint16_t snd_ztr_macro_base;  /* the resident macro data     */
 
 /* Assembly entry points the C members use (snd_ztr_dec.asm). */
-uint8_t *snd_ztr_row_address(uint8_t index); /* the record at index i */
 void snd_ztr_tick(void);             /* one playback tick           */
 void snd_ztr_mute(void);             /* the mask's voices to atten 15 */
 void snd_ztr_restore(void);          /* re-render from the held state */

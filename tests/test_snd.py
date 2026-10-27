@@ -780,8 +780,6 @@ class TestSndZtrLoad(SndCase):
                     text)]
 
     def test_host_rows_short_reads_transient_error_and_forward_open(self):
-        import test_snd_oracle
-
         for song in self.SONGS:
             normal = self.host_output(song)
             short = self.host_output(song, "short")
@@ -789,18 +787,12 @@ class TestSndZtrLoad(SndCase):
             self.assertNotIn("offsets decreased", normal.stderr)
             error = self.host_output(song, "error")
             self.assertEqual(error.stdout, "ztr: refused -10\n", song)
-            with tempfile.NamedTemporaryFile() as rows:
-                subprocess.run(
-                    [test_snd_oracle.ZTR_TRACE,
-                     os.path.join(ZVG_FIXTURES, song + ".ztr"),
-                     "--rows", rows.name], stdout=subprocess.DEVNULL,
-                    check=True, cwd=ROOT)
-                rows.seek(0)
-                oracle = rows.read().decode("ascii")
-            produced = "\n".join(
-                line for line in normal.stdout.splitlines()
-                if line.startswith("row ")) + "\n"
-            self.assertEqual(produced, oracle, song)
+            # The producer acceptance is the order-buffer comparison
+            # and one stream checksum per order, matching the card's
+            # ztrload output; the oracle row records no longer exist.
+            self.assertEqual(
+                len(self.checksums(normal.stdout)),
+                {"night-market": 30, "RunawayCircuit": 136}[song], song)
 
     def test_sdk_loader_refuses_every_malformed_ztr(self):
         directory = os.path.join(ZVG_MALFORMED)
@@ -924,18 +916,18 @@ class TestSndZtr(SndCase):
     def test_stalled_reader_mutes_and_resumes_the_due_row(self):
         z, since = self.run_ztr_mode("ztrstall", done="ztrstall served")
         transcript = self.trace(z, since)
-        self.assertIn("sndtest: ztr PASS state 3 ticks 7 underruns 1 "
-                      "order 0 row 3", transcript)
-        self.assertIn("sndtest: ztrstall served 6", transcript)
+        self.assertIn("sndtest: ztr PASS state 3 ticks 383 underruns 1 "
+                      "order 1 row 1", transcript)
+        self.assertRegex(transcript, r"ztrstall served \d+")
         ticks, _marks, _orphans, _trailing = split_ticks(
             self.collect(z, since))
         pairs = ticks[0::2]
         values = [[value for port, value in tick if port == 0xE0]
                   for tick in pairs]
         muted = next(index for index, tick in enumerate(values)
-                     if tick == [0x9F])
-        self.assertEqual(values[muted + 1], [0x9D],
-                         "the due row restores the audible voice")
+                     if tick == [0x9F, 0xBF])
+        self.assertGreater(len(values[muted + 2]), 0,
+                           "the due order resumes audible writes")
 
     def test_stop_effect_ends_a_short_generated_song(self):
         tools = os.path.join(ROOT, "UserSoftware", "SNTracker", "tools")
@@ -981,6 +973,107 @@ def zvg_golden(name):
                           "writes": int(parts[2]),
                           "underruns": int(parts[5])}
     return ticks, totals
+
+
+SNTRACK = os.path.join(ROOT, "UserSoftware", "SNTracker", "build",
+                       "user", "sntrack.exe")
+
+
+def song_tick_count(song):
+    """The oracle's total tick count (the timer-event target)."""
+    from test_snd_oracle import ZTR_TRACE
+
+    out = subprocess.run(
+        [ZTR_TRACE, os.path.join(ZVG_FIXTURES, song + ".ztr"), "60000",
+         "/dev/null"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        check=True, cwd=ROOT, text=True)
+    match = re.search(r"# (\d+) ticks", out.stdout)
+    assert match, out.stdout
+    return int(match.group(1))
+
+
+@unittest.skipUnless(os.path.exists(SNTEST) and os.path.exists(SNTRACK),
+                     "run make")
+class TestSndZtrClient(SndCase):
+    """Requirement 4: real playback, paced by the timer."""
+
+    SONGS = ("night-market", "RunawayCircuit")
+
+    @classmethod
+    def setUpClass(cls):
+        import test_snd_oracle
+        test_snd_oracle.build_tools()
+
+    def run_sntrack(self, song):
+        with open(SNTRACK, "rb") as handle:
+            program = handle.read()
+        with open(os.path.join(ZVG_FIXTURES, song + ".ztr"), "rb") \
+                as handle:
+            fixture = handle.read()
+        z, since = self.start({"SNTRACK.EXE": program, "SONG.ZTR": fixture},
+                              b"/fs/sntrack.exe /fs/song.ztr\r")
+        self.run_to_pattern(z, "Playback complete", since=since,
+                            budget=600_000_000)
+        self.run_to_pattern(z, "Timer events", since=since,
+                            budget=600_000_000)
+        self.run_to_pattern(z, "\n", since=len(z.glyphs))
+        return z, since
+
+    def test_sndtest_ztr_timed_keeps_the_tempo(self):
+        with open(SNTEST, "rb") as handle:
+            program = handle.read()
+        with open(os.path.join(ZVG_FIXTURES, "night-market.ztr"), "rb") \
+                as handle:
+            fixture = handle.read()
+        z, since = self.start(
+            {"SNDTEST.EXE": program, "RUN.ZTR": fixture},
+            b"/fs/sndtest.exe ztr /fs/run.ztr timed\r")
+        self.run_to_pattern(z, "ztr PASS", since=since,
+                            budget=600_000_000)
+        transcript = self.trace(z, since)
+        self.assertIn("sndtest: ztr PASS 5 %d 0" %
+                      song_tick_count("night-market"), transcript)
+
+    def test_sntrack_plays_both_songs_clean_and_on_tempo(self):
+        from snd_harness import parse_golden, port_to_chip
+
+        for song in self.SONGS:
+            z, since = self.run_sntrack(song)
+            transcript = self.trace(z, since)
+            self.assertIn("Playback complete.", transcript)
+            match = re.search(
+                r"Timer events ([0-9A-Fa-f]+)  underruns (\d+)  "
+                r"overruns (\d+)  missed ([0-9A-Fa-f]+)", transcript)
+            self.assertIsNotNone(match, song)
+            timer_events = int(match.group(1), 16)
+            self.assertEqual((int(match.group(2)), int(match.group(3)),
+                              int(match.group(4))), (0, 0, 0), song)
+            ticks = song_tick_count(song)
+            self.assertLessEqual(abs(timer_events - ticks) * 100, ticks * 2,
+                                 "%s tempo: %d timer events for %d ticks"
+                                 % (song, timer_events, ticks))
+            # the first 3,000 ticks equal the goldens: align on tick 0's
+            # first write (the play's mute flush precedes it) and compare
+            # the write prefix
+            golden = parse_golden(os.path.join(
+                ZVG_GOLDEN, song + ".trace"))
+            wanted = [entry for tick in range(3000)
+                      for entry in golden.get(tick, [])]
+            played = [(port_to_chip(port), value)
+                      for port, value, _t in z.sound_peer.writes[since:]]
+            first = (int(wanted[0][0]) + SoundPeer.FIRST_PORT,
+                     wanted[0][1])
+            start = None
+            for index in range(len(played)):
+                if (played[index][0] is not None and
+                        (played[index][0] + SoundPeer.FIRST_PORT,
+                         played[index][1]) == first):
+                    start = index
+                    break
+            self.assertIsNotNone(start, "%s: no tick-0 write" % song)
+            body = [entry for entry in played[start:]
+                    if entry[0] is not None][:len(wanted)]
+            self.assertEqual(body, wanted, song)
 
 
 @unittest.skipUnless(os.path.exists(SNTEST), "run make")

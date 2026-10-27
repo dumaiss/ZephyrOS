@@ -7,13 +7,14 @@
 ;   void snd_ztr_reset_channels(void); clear the engine's channel storage
 ;
 ; The C half (snd_ztr.c) owns open/validate, the resident tables and the
-; foreground producer of the prepared-row queue.  One playback tick is a
+; foreground producer of the order double buffers.  One playback tick is a
 ; port of the preserved reference player (tests/snd/oracle):
-; at the row's first tick, consume the due head record (order, row) and
-; apply its already-decoded per-channel events (the reference player's
-; begin_row and decode_row); otherwise a due record that is not resident
-; is an underrun - mute the ZTR's voices, count, and resume at the row
-; once snd_service has published it.  Effects/notation, active macros
+; at the row's first tick, decode the due events from the front order
+; buffer's raw pattern streams through the per-channel cursors (the
+; reference player's begin_row and decode_channel_row); at an order
+; change take the published buffer or underrun - mute the ZTR's voices,
+; count, and hold until snd_service has published that order.  The tick
+; never runs while UNDERRUN.  Effects/notation, active macros
 ; and rendering are fused into one channel-order walk; work flags skip
 ; idle channels without changing the reference ordering.  DIRECT with
 ; a valid shadow compares and writes period/noise/attenuation inline;
@@ -42,9 +43,9 @@
 	.globl _snd_ztr_speed
 	.globl _snd_ztr_pattern_length
 	.globl _snd_ztr_order_count
-	.globl _snd_ztr_head
-	.globl _snd_ztr_tail
-	.globl _snd_ztr_queue_addrs
+	.globl _snd_ztr_published
+	.globl _snd_ztr_consumed
+	.globl _snd_ztr_order_base
 	.globl _snd_ztr_order
 	.globl _snd_ztr_row
 	.globl _snd_ztr_tick_in_row
@@ -65,8 +66,7 @@
 	.globl snd_put_atten
 	.globl snd_put_noise
 
-SND_ZTR_QUEUE_ROWS = 3
-SND_ZTR_SLOT_BYTES = 10
+SND_ZTR_ORDER_TABLE = 64	; 16 channels x 4 bytes
 
 SND_ZTR_EMPTY     = 0
 SND_ZTR_PREPARING = 1
@@ -85,6 +85,7 @@ EV_EFFECT    = 0x10
 EV_OFF       = 0x08
 EV_RELEASE   = 0x04
 EV_LEGATO    = 0x02
+EV_MODIFIERS = 0x01
 
 MOD_RESET    = 0x80
 MOD_ARP_SET  = 0x40
@@ -220,6 +221,10 @@ _zt_event_rate::
 	.ds 1
 _zt_event_ceil::
 	.ds 1
+_zt_bufbase::
+	.ds 2		; the front order buffer's base address
+_zt_ent::
+	.ds 2		; the channel's cursor-table entry address
 _zt_end_pending::
 	.ds 1		; the final row finishes before playback becomes DONE
 
@@ -275,81 +280,182 @@ _zt_walk:
 	ret
 
 ; ---------------------------------------------------------------------------
-; The row consumption: the due head record, or an underrun.  HL clobbered.
+; The row consumption: the reference's begin_row, then each channel
+; decodes its due event from the front order buffer's cursors.  HL
+; clobbered.
 ; ---------------------------------------------------------------------------
 _zt_take_row:
-	ld	a, (_snd_ztr_head)
-	ld	c, a
-	ld	a, (_snd_ztr_tail)
-	cp	c
-	jr	z, _zt_underrun
-	ld	l, c
-	ld	h, #0
-	add	hl, hl
-	ld	de, #_snd_ztr_queue_addrs
+	; the front order buffer: _snd_ztr_order_base[order & 1]
+	ld	a, (_snd_ztr_order)
+	and	#1
+	add	a, a
+	ld	e, a
+	ld	d, #0
+	ld	hl, #_snd_ztr_order_base
 	add	hl, de
 	ld	e, (hl)
 	inc	hl
-	ld	d, (hl)		; DE = the record
-	ex	de, hl
-	ld	a, (hl)		; order
-	ld	c, a
-	ld	a, (_snd_ztr_order)
-	cp	c
-	jr	nz, _zt_underrun
-	inc	hl
-	ld	a, (hl)		; row
-	ld	c, a
-	ld	a, (_snd_ztr_row)
-	cp	c
-	jr	nz, _zt_underrun
-	inc	hl			; the first channel slot
+	ld	d, (hl)
+	ld	(_zt_bufbase), de
 	; the reference's begin_row pre-pass (per-channel effect reset)
-	; clobbers HL: keep the slot pointer across it
-	push	hl
 	call	_zt_begin_row
-	pop	hl
-	; the events, in channel order
+	; the decode, in channel order
 	ld	b, #16
 	ld	a, (_snd_ztr_core_page)
 	ld	d, a
 	ld	e, #0			; DE = channel 0's base
-_zt_apply_loop:
-	ld	a, (hl)		; the mask; 0 skips the channel
-	or	a
-	jr	z, _zt_apply_next
+_zt_dec_loop:
+	push	de			; the channel base
+	ld	a, e
+	rrca
+	rrca
+	rrca
+	rrca
+	and	#0x0F			; the channel (E = c << 4)
+	push	bc			; the loop counter
+	ld	h, #0
+	ld	l, a
+	add	hl, hl
+	add	hl, hl			; HL = channel * 4
+	ld	de, (_zt_bufbase)
+	add	hl, de			; HL = the cursor-table entry
+	ld	(_zt_ent), hl
+	ld	e, (hl)
+	inc	hl
+	ld	d, (hl)			; DE = start offset
+	inc	hl
+	ld	a, (hl)
+	inc	hl
+	ld	h, (hl)
+	ld	l, a			; HL = end offset
+	ex	de, hl			; DE = end, HL = start
+	ld	a, h
+	or	l
+	jp	z, _zt_dec_next		; an FFh selection
+	ld	a, l
+	sub	e
+	ld	a, h
+	sbc	a, d
+	jp	nc, _zt_dec_next	; the stream is exhausted
+	; HL = the cursor address = base + start
+	ld	de, (_zt_bufbase)
+	add	hl, de
+	ld	e, (hl)			; the event's row
+	ld	a, (_snd_ztr_row)
+	cp	e
+	jp	nz, _zt_dec_next	; sparse: nothing on this row
+	inc	hl
+	ld	a, (hl)			; the mask
+	inc	hl
+	ld	(_zt_event_mask), a
+	ld	c, a
+	; the stream cursor is saved in DE (the end offset is spent)
+	ex	de, hl
+	; the decoded event's defaults, as the reference sets them
+	ld	a, #0xFF
+	ld	(_zt_event_note), a
+	ld	(_zt_event_instr), a
+	ld	(_zt_event_vol), a
+	ld	hl, #_zt_event_effect
+	ld	b, #6
+	xor	a
+_zt_ev_defaults:
+	ld	(hl), a
+	inc	l
+	djnz	_zt_ev_defaults
+	ex	de, hl			; HL = the stream cursor again
+	ld	a, c
+	and	#EV_NOTE
+	jr	z, _zt_ev_no_note
+	ld	a, (hl)
+	inc	hl
+	ld	(_zt_event_note), a
+_zt_ev_no_note:
+	ld	a, c
+	and	#EV_INSTRUMENT
+	jr	z, _zt_ev_no_instr
+	ld	a, (hl)
+	inc	hl
+	ld	(_zt_event_instr), a
+_zt_ev_no_instr:
+	ld	a, c
+	and	#EV_VOLUME
+	jr	z, _zt_ev_no_vol
+	ld	a, (hl)
+	inc	hl
+	ld	(_zt_event_vol), a
+_zt_ev_no_vol:
+	ld	a, c
+	and	#EV_EFFECT
+	jr	z, _zt_ev_no_effect
+	ld	a, (hl)
+	inc	hl
+	ld	(_zt_event_effect), a
+	ld	a, (hl)
+	inc	hl
+	ld	(_zt_event_param), a
+_zt_ev_no_effect:
+	ld	a, c
+	and	#EV_MODIFIERS
+	jr	z, _zt_ev_payloads
+	ld	a, (hl)
+	inc	hl
+	ld	(_zt_event_mod), a
+	and	#MOD_ARP_SET
+	jr	z, _zt_ev_no_arp
+	ld	a, (hl)
+	inc	hl
+	ld	(_zt_event_arp), a
+_zt_ev_no_arp:
+	ld	a, (_zt_event_mod)
+	and	#MOD_HAIRPIN_SET
+	jr	z, _zt_ev_payloads
+	ld	a, (hl)
+	inc	hl
+	ld	(_zt_event_rate), a
+	ld	a, (hl)
+	inc	hl
+	ld	(_zt_event_ceil), a
+_zt_ev_payloads:
+	; the cursor advances past the event: store the offset back
+	ex	de, hl			; DE = the cursor address
+	ld	hl, (_zt_bufbase)
+	ld	a, e
+	sub	l
+	ld	e, a
+	ld	a, d
+	sbc	a, h
+	ld	d, a			; DE = the cursor offset
+	ld	hl, (_zt_ent)
+	ld	(hl), e
+	inc	hl
+	ld	(hl), d
+	; apply the decoded event
+	pop	bc			; the loop counter
+	pop	de			; the channel base
 	push	bc
-	push	de
-	push	hl
-	call	_zt_apply_event	; HL = the slot, DE = the channel base
-	pop	hl
-	pop	de
+	ld	hl, #_zt_event_mask	; the decoded slot
+	call	_zt_apply_event		; returns HL = the channel base
 	pop	bc
+	ex	de, hl			; DE = the channel base again
 	ld	a, (_snd_ztr_state)
 	cp	#SND_ZTR_PLAYING
-	jr	nz, _zt_apply_aborted
-_zt_apply_next:
-	ld	a, l
-	add	a, #SND_ZTR_SLOT_BYTES
-	ld	l, a
-	jr	nc, 1$
-	inc	h			; the record crosses a page boundary
-1$:
-	push	af
+	jp	nz, _zt_dec_abort
 	ld	a, e
 	add	a, #16
 	ld	e, a
-	pop	af
-	djnz	_zt_apply_loop
-_zt_apply_aborted:
-	; the head advances only after the row is applied
-	ld	a, (_snd_ztr_head)
-	inc	a
-	cp	#SND_ZTR_QUEUE_ROWS
-	jr	nz, 1$
-	xor	a
-1$:
-	ld	(_snd_ztr_head), a
+	dec	b
+	jp	nz, _zt_dec_loop
+	jr	_zt_dec_abort
+_zt_dec_next:
+	pop	bc			; the loop counter
+	pop	de			; the channel base
+	ld	a, e
+	add	a, #16
+	ld	e, a
+	dec	b
+	jp	nz, _zt_dec_loop
+_zt_dec_abort:
 	ld	a, (_snd_ztr_state)
 	cp	#SND_ZTR_PLAYING
 	ret	nz
@@ -2597,7 +2703,10 @@ _zt_dirty:
 
 ; ---------------------------------------------------------------------------
 ; The position advance (the reference's advance_position): the next row,
-; or the next order, or DONE at the song's end.
+; or the next order, or DONE at the song's end.  At an order change the
+; engine takes the published buffer and switches the front cursor table;
+; an order not yet published is an underrun (muted, held at its first
+; row).
 ; ---------------------------------------------------------------------------
 _zt_advance_position:
 	ld	a, (_snd_ztr_row)
@@ -2616,9 +2725,18 @@ _zt_advance_position:
 	ld	hl, (_snd_ztr_order_count)
 	ld	a, c
 	cp	l
-	ret	c
+	jr	c, _zt_ap_order_change
 	ld	a, #1
 	ld	(_zt_end_pending), a
+	ret
+_zt_ap_order_change:
+	; the next order's buffer must be published
+	ld	a, (_snd_ztr_published)
+	cp	c
+	jp	nz, _zt_underrun
+	; the front buffer switches: the consumed order's data is covered
+	ld	a, c
+	ld	(_snd_ztr_consumed), a
 	ret
 _zt_ap_row:
 	ld	a, c

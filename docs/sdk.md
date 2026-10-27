@@ -182,27 +182,33 @@ tick, and the application times ticks with `snd_timer_period`; a
 program that uses no sound pays no snd code or data cost.
 
 ZTR songs use the same borrowed-reader model through `snd_ztr_*`.
-Call `snd_ztr_open`, repeat `snd_ztr_prepare` until it returns zero,
-then call `snd_ztr_play`.  Deliver elapsed timer counts to `snd_tick`
-and call `snd_service` only from the foreground.  A missing due row
-mutes the song and enters `SND_ZTR_UNDERRUN`; foreground service
-automatically restores playback at that exact row when it becomes
-available.  Pause/resume holds and restores musical state, while stop
-silences the reserved voices and releases their mask.  The source is
-borrowed and must remain open until `snd_ztr_close`.
+Call `snd_ztr_open`, then `snd_ztr_prepare` (order 0), then
+`snd_ztr_play`.  Deliver elapsed timer counts to `snd_tick` and call
+`snd_service` only from the foreground.  Two 1,024-byte order buffers
+hold the current and the next order's raw pattern streams (a 64-byte
+table of per-channel cursors, then the streams); `snd_service` refills
+one order per call, and the assembly tick decodes each channel's due
+event through its cursor, so no C decode runs per tick.  A missing due
+order at an order change mutes the song and enters
+`SND_ZTR_UNDERRUN`; foreground service automatically resumes playback
+at that order's first row once its buffer is published.  Pause/resume
+holds and restores musical state, while stop silences the reserved
+voices and releases their mask.  The source is borrowed and must
+remain open until `snd_ztr_close`.
 
-The ZTR tick is assembly from queue consumption through PSG output and
-makes no reader call.  Focused DIRECT samples put ordinary active ticks
-at about 3,400-6,000 T-states, event-heavy row ticks at about
-6,700-8,500, and the initial bind/reset ticks at 15,757 (Night Market)
-and 15,670 (RunawayCircuit).  Across the complete 3,000-tick validation
-windows, including idle/due-macro work, the medians are 17,123 and
-10,433 T-states and the worst ticks are 54,861 and 100,522.  These
-exceed the 6,000 median and 15,000 worst targets; the validation record
-contains the profiles and preserves oracle semantics.
-The resident ZTR state includes bounded orders, instruments/macros,
-pattern directory, divisor/loudness/channel pages and a three-row
-prepared queue; pattern streams remain in the source.
+The ZTR tick is assembly from cursor decode through PSG output and
+makes no reader call.  Across the complete 3,000-tick validation
+windows, the medians are 17,139 (Night Market) and 11,133
+(RunawayCircuit) T-states and the worst ticks 59,343 (36% of a
+166,667-T-state 60 Hz frame) and 108,945 (65%).  Both worst ticks
+exceed the 25% reporting threshold; the validation record contains
+their profiles and preserves oracle semantics.  Opening a song
+validates whole 255-byte windows with one reader call per window; it
+is currently dominated by the largest-order scan and exceeds the
+5,000,000-T-state target (see the validation record's profile).
+The resident ZTR state includes bounded orders, instruments/macros, a
+compacted pattern directory, divisor/loudness/channel pages and the
+two order buffers; pattern streams remain in the source.
 
 The shared read-at view is [kos/reader.h](include/kos/reader.h):
 `kos_reader_t` borrows a source and reads it absolutely (`read_at`,

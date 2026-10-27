@@ -397,9 +397,9 @@ The tick decodes raw stream bytes exactly as the reference player does over its 
 
 ### 6.2 Work-space and memory policy
 
-- **Resident:** the header fields, the orders, the instrument directory, the macro data, the pattern directory and the 96 divisors, in library storage sized by compile-time capacities (`SND_ZTR_*`); exceeding one refuses the song at open (`-KOS_ENOSPC`).
-- **Order buffers:** two, each `SND_ZTR_ORDER_BYTES`; the validation pass records the largest order's total stream bytes, and a larger order refuses the song at open.
-- The two fixture songs: night-market keeps 8,500 bytes resident and its largest order is 871 bytes; RunawayCircuit 6,334 and 370. The pattern data never sits in RAM whole.
+- **Resident:** the header fields, the orders, the instrument directory, the macro data, the pattern directory (compacted to 6 bytes per entry: channel, number, offset, length) and the 96 divisors, in library storage sized by compile-time capacities (`SND_ZTR_*`); exceeding one refuses the song at open (`-KOS_ENOSPC`).
+- **Order buffers:** two, each `SND_ZTR_ORDER_BYTES` (1,024: a 64-byte table of per-channel start/end cursors, then the raw streams); the validation pass records the largest order's total stream bytes, and a larger order refuses the song at open.
+- The capacities: 136 orders × 16 selections, 400 pattern entries × 6 bytes, 6,640 macro bytes; night-market's largest order is 871 stream bytes, RunawayCircuit's 370. The pattern data never sits in RAM whole.
 - Data the tick reads is directly visible during the tick: no far-mapped pointers retained across callbacks.
 
 ### 6.3 Underrun behavior

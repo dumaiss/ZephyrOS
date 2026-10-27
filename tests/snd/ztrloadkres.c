@@ -15,13 +15,29 @@ static uint16_t checksum_byte(uint16_t sum, uint8_t byte)
 	return (uint16_t)(((sum << 1) | (sum >> 15)) + byte);
 }
 
+static uint16_t buffer_end(const uint8_t *buffer)
+{
+	uint16_t end = SND_ZTR_ORDER_TABLE;
+	unsigned int channel;
+
+	for (channel = 0u; channel < SND_ZTR_CHANNELS; ++channel) {
+		const uint8_t *entry = buffer + channel * 4u;
+		uint16_t stream_end = (uint16_t)entry[2] |
+			((uint16_t)entry[3] << 8);
+
+		if (stream_end > end) {
+			end = stream_end;
+		}
+	}
+	return end;
+}
+
 int main(int argc, char **argv)
 {
 	kres_container container;
 	kres_resource resource;
 	kos_reader_t reader;
-	uint16_t order = 0u;
-	uint16_t sum = 0u;
+	uint16_t order;
 	int result;
 
 	if (argc != 2) {
@@ -44,35 +60,33 @@ int main(int argc, char **argv)
 		printf("ztrloadkres: open %d\r\n", result);
 		goto done;
 	}
-	for (;;) {
-		uint8_t head = snd_ztr_head;
+	for (order = 0u; order < snd_ztr_order_count; ++order) {
+		uint16_t sum = 0u;
+		uint16_t end;
+		const uint8_t *buffer;
+		uint16_t byte;
+		unsigned int waits = 0u;
 
-		while (head != snd_ztr_tail) {
-			const uint8_t *record =
-				(const uint8_t *)snd_ztr_queue_addrs[head];
-			unsigned int byte;
-
-			if (record[0] != (uint8_t)order) {
-				printf("ztrloadkres: order %u checksum %04x\r\n",
-				       (unsigned int)order, (unsigned int)sum);
-				order = record[0];
-				sum = 0u;
-			}
-			for (byte = 0u; byte < SND_ZTR_ROW_BYTES; ++byte) {
-				sum = checksum_byte(sum, record[byte]);
-			}
-			if (++head == SND_ZTR_QUEUE_ROWS) head = 0u;
-			snd_ztr_head = head;
-		}
-		{
-			uint8_t before = snd_ztr_tail;
-
+		while (snd_ztr_published != (uint8_t)order) {
 			(void)snd_service();
-			if (snd_ztr_tail == before) break;
+			if (++waits > 10000u) {
+				printf("ztrloadkres: stalled %u\r\n",
+				       (unsigned int)order);
+				result = 1;
+				goto done;
+			}
 		}
+		buffer = (const uint8_t *)(uint16_t)
+			snd_ztr_order_base[order & 1u];
+		end = buffer_end(buffer);
+		for (byte = SND_ZTR_ORDER_TABLE; byte < end; ++byte) {
+			sum = checksum_byte(sum, buffer[byte]);
+		}
+		printf("ztrloadkres: order %u checksum %04x\r\n",
+		       (unsigned int)order, (unsigned int)sum);
+		snd_ztr_consumed = (uint8_t)order;
+		(void)snd_service();
 	}
-	printf("ztrloadkres: order %u checksum %04x\r\n",
-	       (unsigned int)order, (unsigned int)sum);
 	console_puts("ztrloadkres: PASS\r\n");
 	result = 0;
 done:
