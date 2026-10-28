@@ -275,6 +275,49 @@ class ShellSession(HwtestReplay):
                           ("CHILD.TMP",): b""})
         self.assertEqual(peer.fs2_dirs, {(), ("SUB",)})
 
+    def test_idle_prompt_polls_about_ten_times_a_second(self):
+        """An idle prompt polls the console about 10 times a second (the
+        poll is bus activity the sound card picks up); a key after a
+        pause is still read within about 100 ms, and keys while typing
+        on the next tick."""
+        from z80sim import read_symbols
+        console_read = read_symbols(os.path.join(
+            ROOT, "build", "user", "shell", "shell.map"))["_console_read"]
+        z = self.start(card=True)
+        self.send(z, "echo ready", "ready\n/> ")
+
+        def run(seconds, typed=b""):
+            start = z.tstates
+            polls = 0
+            echo = None
+            steps = 0
+            since = len(z.glyphs)
+            z.hid.hid_queue.extend(typed)
+            while z.tstates - start < seconds * 10_000_000:
+                pc = z.pc
+                self.skip_delay(z)
+                self.feed(z)
+                z.step()
+                steps += 1
+                if pc == console_read and (z.latch & 0x18) == 0x10:
+                    polls += 1
+                if steps % 0x1FF == 0:
+                    self.pump(z)
+                if typed and echo is None and len(z.glyphs) > since:
+                    echo = (z.tstates - start) / 10_000
+            return polls / seconds, echo
+
+        run(1.2)  # past the fast window that `echo ready` opened
+        rate, _ = run(2)
+        self.assertGreaterEqual(rate, 8, "idle polls per second")
+        self.assertLessEqual(rate, 12, "idle polls per second")
+        _, first = run(0.5, b"e")
+        self.assertIsNotNone(first)
+        self.assertLessEqual(first, 110, "first key after a pause, ms")
+        _, second = run(0.2, b"c")
+        self.assertIsNotNone(second)
+        self.assertLessEqual(second, 15, "a key while typing, ms")
+
     def test_history_and_clear_screen(self):
         """The line editor: the up arrow recalls the last lines (newest
         first), the down arrow walks back to an empty line, and CTRL-L

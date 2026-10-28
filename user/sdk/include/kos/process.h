@@ -43,6 +43,15 @@ int splitargs(char *tail, char **argv, int max);
  * and returns at once otherwise. */
 void idle(void);
 
+/* An input wait's pacing: call idle_input() between empty input polls
+ * and idle_input_ready() when input arrives.  While input is idle it
+ * waits 16 interrupts before the next poll (about 10 polls a second),
+ * keeping the poll's own bus activity out of the audio band; for about
+ * a second after input it waits one, so typing responds per tick.  The
+ * IO controller queues keys meanwhile, never losing one. */
+void idle_input(void);
+void idle_input_ready(void);
+
 /* Run `path` synchronously with the raw argument tail `args` (NULL or ""
  * for none; over 125 bytes is refused locally with -KOS_EINVAL).
  * Returns the child's u16 exit status or -errno (docs/abi.md). */

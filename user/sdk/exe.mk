@@ -58,9 +58,9 @@ $(EXE_RUNTIME): $(KOS_SDK_SRC)/runtime.asm
 	@mkdir -p $(dir $@)
 	$(SDASZ80) $(EXE_ASFLAGS) -o $@ $<
 
-KOS_SDK_C_SRC := args.c fs.c truncate.c ipc.c exec.c console_io.c \
+KOS_SDK_C_SRC := args.c fs.c truncate.c ipc.c exec.c console_io.c console_line.c \
     xmem.c seg.c xload.c event.c \
-    console_proto.c console_render.c console_info.c timer.c sound.c idle.c stream.c \
+    console_proto.c console_render.c console_info.c timer.c sound.c idle.c idle_input.c stream.c \
     stdio.c fread.c fwrite.c fseek.c feof.c \
     reader.c reader_full.c reader_handle.c reader_stdio.c \
     klibc/strrchr.c klibc/strlcpy.c klibc/strlcat.c \

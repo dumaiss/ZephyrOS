@@ -169,6 +169,8 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
+	uint8_t pollnow = 0;
+
 	while (playing != 0u) {
 		char key;
 
@@ -180,7 +182,8 @@ int main(int argc, char **argv)
 			playing = 0u;
 			break;
 		}
-		if (console_poll() > 0) {
+		if (!(pollnow++) && console_poll() > 0) {
+
 			(void)console_read(&key, 1u);
 			if (key == 'q' || key == 'Q' || key == 27) {
 				aborted = 1u;

@@ -586,6 +586,8 @@ struct kos_startup *startup(void);
 int  splitargs(char *tail, char **argv, int max);
 int  run(const char *path, const char *args);
 void idle(void);
+void idle_input(void);
+void idle_input_ready(void);
 ```
 
 `run` runs a child synchronously with a raw tail (NULL or empty for none)
@@ -593,8 +595,7 @@ and returns the child's exit status or `-errno`. A path over 127 bytes or a
 tail over 125 is refused locally.
 
 `idle` waits for the next interrupt (`HALT`). A program waiting on input
-calls it between empty polls, as `getchar` (and with it
-`console_readline`) does:
+calls it between empty polls:
 - **Why:** the program then polls once per interrupt (the timer's tick at
   least, 156.25 Hz) with the CPU halted in between, instead of spinning
   through system calls. A spinning loop's bus activity falls in the audio
@@ -604,6 +605,17 @@ calls it between empty polls, as `getchar` (and with it
 - **When it halts:** only where an interrupt is sure to come, that is
   where the system has the timer (`/dev/timer`, asked once) and
   interrupts are enabled. Otherwise it returns at once.
+
+`idle_input` paces an input wait further: call it between empty input
+polls, and `idle_input_ready` when input arrives. `getchar` (and with it
+`console_readline`, so the shell's prompt) waits this way:
+- **Idle:** it waits 16 interrupts before the next poll, about 10 polls
+  a second on the tick. The poll itself is bus activity in the audio
+  band; at the per-tick rate (156 a second) it is audible.
+- **Typing:** for about a second after input it waits one interrupt, so
+  keys respond per tick. A first key after a pause is read within about
+  100 ms.
+- **Nothing is lost:** keys wait in the IO controller's queue.
 
 ### 6.5 Extended memory (`kos/xmem.h`)
 
