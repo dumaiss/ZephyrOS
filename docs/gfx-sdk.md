@@ -1337,14 +1337,12 @@ Both must leave the display and console in their normal KonaOS state when they e
 
 At that point the platform has enough graphics infrastructure to begin the first real graphical application without adding further resident OS machinery.
 
-**GFX v1.1** is complete when a demo shaped like a tracker runs on
-physical hardware, alongside music played through the sound driver:
-- the 16-colour mode at 128 columns in the 4×6 font: a pattern view of
-  all 16 voices with per-row backgrounds, line separators, and a top band
-  with a scope, an envelope graph and meters drawn with the shapes;
-- the view is paged: the cursor row moves down one row per music step
-  (two rows redrawn), and at a page's last row the next page, already
-  drawn on the hidden page, is shown with `gfx_show_page`, with the
-  cursor back at the top;
-- the top band updated in place, item by item, after the vertical blank;
+**GFX v1.1** is complete when SN-Track (`docs/sntrack-ui.md`) plays a
+song on physical hardware through libsnd:
+- the 16-colour mode at 128 columns in the 4×6 font: all 16 voices with
+  per-row backgrounds and line separators;
+- the view is paged: the play cursor moves one row per music step as two
+  XOR fills, and at a page's last row the next page, already drawn on the
+  hidden page, is shown with `gfx_show_page`;
+- the panels change only when their data does, on both pages;
 - no audible glitch, and the display and console restored on exit.

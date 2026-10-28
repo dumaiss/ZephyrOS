@@ -1016,7 +1016,13 @@ class TestSndZtrClient(SndCase):
                             budget=600_000_000)
         self.run_to_pattern(z, "Timer events", since=since,
                             budget=600_000_000)
-        self.run_to_pattern(z, "\n", since=len(z.glyphs))
+        # the statistics line is complete once the shell prompts again;
+        # search from the glyph that starts it
+        stats = len(z.glyphs)
+        while stats > since and \
+                "Timer events" not in "".join(z.glyphs[stats:]):
+            stats -= 1
+        self.run_to_pattern(z, "\n/> ", since=stats)
         return z, since
 
     def test_sndtest_ztr_timed_keeps_the_tempo(self):

@@ -184,8 +184,12 @@ IOC driver's private header.
   status, 2-26 DATA bytes, a count within the request and the ring) before
   any byte is committed; a bad reply leaves the ring unchanged. Bytes are
   kept verbatim, NUL, control bytes and VT100 key sequences included.
-- A set doorbell followed by a failed or empty fetch imposes a 64-call
-  penalty before the next fetch; data or a released doorbell clears it. A
+- A set doorbell followed by a failed or empty fetch imposes a penalty
+  before the next fetch: 4 calls, doubling on each consecutive failure up
+  to 128, so a glitch costs about 0.4 s at the paced input wait's 10
+  polls a second while a dead controller (whose fetch runs to the full
+  reply timeout) is tried rarely; data or a released doorbell clears the
+  penalty and the backoff. A
   transport failure reads as "no input", so a broken link cannot wedge
   console polling.
 

@@ -27,10 +27,11 @@
  * Failure policy -- a broken IOC link must not wedge the console:
  *
  *   - an asserted semantic doorbell followed by a failed or empty fetch
- *     imposes a 64-call penalty during which the doorbell is ignored, so
- *     a dead controller cannot put a full IOC timeout on every console
- *     poll.  Successful data or a released doorbell clears the penalty
- *     immediately.
+ *     imposes a penalty during which the doorbell is ignored, so a dead
+ *     controller cannot put a full IOC timeout on every console poll:
+ *     KHID_STUCK_PENALTY calls, doubling on each consecutive failure up
+ *     to KHID_STUCK_PENALTY_MAX.  Successful data or a released doorbell
+ *     clears the penalty and the backoff immediately.
  *   - transport failures are reported as "no input" (0 / EAGAIN), never
  *     as a poll error, and a link that is down at init keeps the engine
  *     registered: the first ordinary operation retries the whole-link
@@ -178,6 +179,7 @@ static uint8_t hid_driver(struct khid_state *state)
 		/* A line that can still fall is not stuck: the released
 		 * doorbell clears the penalty at no IOC cost. */
 		state->penalty = 0u;
+		state->backoff = 0u;
 		return 0u;
 	}
 	if (state->penalty != 0u) {
@@ -186,6 +188,7 @@ static uint8_t hid_driver(struct khid_state *state)
 	}
 	if (hid_fetch(state) != 0u) {
 		state->penalty = 0u;
+		state->backoff = 0u;
 		return 1u;
 	}
 
@@ -193,7 +196,11 @@ static uint8_t hid_driver(struct khid_state *state)
 	 * controller stuck with the line asserted.  Ignore the doorbell
 	 * for a bounded number of calls instead of paying an IOC round
 	 * trip on every console poll. */
-	state->penalty = KHID_STUCK_PENALTY;
+	if (state->backoff < KHID_STUCK_PENALTY_MAX) {
+		state->backoff =
+			(uint8_t)((state->backoff << 1) | KHID_STUCK_PENALTY);
+	}
+	state->penalty = state->backoff;
 	return 0u;
 }
 
@@ -316,6 +323,7 @@ uint8_t hid_driver_init(const struct driver_boot *boot)
 	hid_state.tail = 0u;
 	hid_state.count = 0u;
 	hid_state.penalty = 0u;
+	hid_state.backoff = 0u;
 
 	/* The one dependency (the IOC transport, manifest position 0): the
 	 * host resolved it to the endpoint number; the driver never looks a

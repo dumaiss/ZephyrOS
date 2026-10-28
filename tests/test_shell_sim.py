@@ -318,6 +318,49 @@ class ShellSession(HwtestReplay):
         self.assertIsNotNone(second)
         self.assertLessEqual(second, 15, "a key while typing, ms")
 
+    def test_a_stuck_doorbell_backs_off_and_a_glitch_recovers_fast(self):
+        """A doorbell held with nothing to fetch: the HID driver backs
+        off (4 polls, doubling to 128), so a dead controller costs a
+        handful of fetches over 20 s; a single empty fetch (a glitch)
+        delays the next key by about half a second at most."""
+        z = self.start(card=True)
+        self.send(z, "echo ready", "ready\n/> ")
+        peer = z.ioc_peer
+
+        def run(seconds, until=None):
+            start = z.tstates
+            seen = len(peer.requests)
+            steps = 0
+            while z.tstates - start < seconds * 10_000_000:
+                self.skip_delay(z)
+                self.feed(z)
+                z.step()
+                steps += 1
+                if steps % 0x1FF == 0:
+                    self.pump(z)
+                    if until is not None and until():
+                        break
+            fetches = sum(1 for item in peer.requests[seen:]
+                          if item[0] == peer.CMD_HID_INPUT)
+            return fetches, (z.tstates - start) / 10_000
+
+        run(1.2)  # past the fast window
+        peer.doorbell = True
+        fetches, _ = run(20)
+        peer.doorbell = False
+        self.assertGreaterEqual(fetches, 3, "the guard still retries")
+        self.assertLessEqual(fetches, 10, "fetches over 20 s, stuck")
+        run(0.3)  # a released doorbell clears the backoff
+
+        # The glitch: one empty fetch, then a real key.
+        peer.doorbell = True
+        run(0.15)
+        peer.doorbell = False
+        since = len(z.glyphs)
+        z.hid.hid_queue.extend(b"x")
+        _, waited = run(1.5, until=lambda: len(z.glyphs) > since)
+        self.assertLessEqual(waited, 600, "a key after a glitch, ms")
+
     def test_history_and_clear_screen(self):
         """The line editor: the up arrow recalls the last lines (newest
         first), the down arrow walks back to an empty line, and CTRL-L

@@ -17,7 +17,8 @@ without executing target code:
     no port/status constants, no IN/OUT or register access), the exact
     input-only descriptor, fetch-on-doorbell only, exact
     request sizing, strict reply validation before any ring commit, and
-    the proven 64-call stuck-doorbell penalty;
+    the stuck-doorbell penalty (4 calls, doubling to 128 on repeated
+    failures);
   - the fake-IOC fixture and the no-IOC/malformed images that prove
     dependency failure, interface verification and rollback;
   - mapcheck rejects linked HID driver symbols (module-only).
@@ -284,7 +285,8 @@ class TestHidSourceDiscipline(unittest.TestCase):
     def test_ring_and_penalty_constants(self):
         env = parse_c_header(DRIVER_H)
         self.assertEqual(evaluate("KHID_RING_SIZE", env), 16)
-        self.assertEqual(evaluate("KHID_STUCK_PENALTY", env), 64)
+        self.assertEqual(evaluate("KHID_STUCK_PENALTY", env), 4)
+        self.assertEqual(evaluate("KHID_STUCK_PENALTY_MAX", env), 128)
         # Power-of-two ring: wraparound is the mask expression.
         self.assertIn("KHID_RING_SIZE - 1u", self.c)
 
@@ -333,10 +335,16 @@ class TestHidSourceDiscipline(unittest.TestCase):
             self.assertLess(self.fetch.index(check), commit)
 
     def test_stuck_penalty_applied_and_cleared(self):
-        self.assertIn("state->penalty = KHID_STUCK_PENALTY", self.driver)
+        # A failure starts at KHID_STUCK_PENALTY and each consecutive
+        # one doubles it, up to KHID_STUCK_PENALTY_MAX.
+        self.assertIn("state->backoff = KHID_STUCK_PENALTY;", self.driver)
+        self.assertIn("state->penalty = state->backoff;", self.driver)
+        self.assertIn("state->backoff < KHID_STUCK_PENALTY_MAX", self.driver)
+        self.assertIn("(uint8_t)(state->backoff << 1)", self.driver)
         self.assertIn("--state->penalty", self.driver)
-        # Successful data clears it.
+        # Successful data or a released doorbell clears both.
         self.assertIn("state->penalty = 0u;", self.driver)
+        self.assertIn("state->backoff = 0u;", self.driver)
 
     def test_getc_and_read_text_are_nonblocking(self):
         self.assertIn("return (-KOS_EAGAIN);", self.c)

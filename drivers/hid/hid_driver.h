@@ -21,9 +21,15 @@
  * mask, matching the proven MCU-side queue discipline. */
 #define KHID_RING_SIZE 16u
 
-/* Console driver calls to ignore the semantic doorbell after a fetch
- * that produced no data (the proven stuck-doorbell guard). */
-#define KHID_STUCK_PENALTY 64u
+/* The stuck-doorbell guard: after a fetch that produced no data, the
+ * semantic doorbell is ignored for KHID_STUCK_PENALTY console calls, and
+ * the next consecutive failure doubles it, up to KHID_STUCK_PENALTY_MAX.
+ * A glitch (a live controller's empty reply) costs about 0.4 s at the
+ * paced input wait's 10 polls a second; a dead controller, whose fetch
+ * runs to the full reply timeout (about 2.6 s), backs off to one attempt
+ * per 128 calls. */
+#define KHID_STUCK_PENALTY     4u
+#define KHID_STUCK_PENALTY_MAX 128u
 
 /* Bounded READ_TEXT staging: the driver I/O block the drained bytes are
  * copied out from (DRIVER_IO, the one fast copy range). */
@@ -39,6 +45,7 @@ struct khid_state {
 	uint8_t tail;       /* ring consume index                    */
 	uint8_t count;      /* bytes currently buffered              */
 	uint8_t penalty;    /* stuck-doorbell countdown              */
+	uint8_t backoff;    /* the next penalty, 0 = the first       */
 	uint8_t ring[KHID_RING_SIZE];
 	uint8_t read_buffer[KHID_READ_BATCH];
 	uint16_t read_buffer_address;

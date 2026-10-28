@@ -396,28 +396,28 @@ song RunawayCircuit {
 
 	instrument Bass {
 		priority 	= 	required;
-		level 		=	36;
+		level 		=	64;
 		gate		=	9;
 		envelope	=	adsr(0, 16, 128, 6);
 	}
 
 	instrument BassClick {
 		priority 	= optional;
-		level		= 26;
+		level		= 64;
 		gate		= 3;
 		envelope	= adsr(0, 2, 0, 6);
 	}
 
 	instrument Background {
 		priority 	= required;
-		level 		= 51;
+		level 		= 128;
 		gate		= 6;
 		envelope	= adsr(0, 3, 38, 1);
 	}
 
 	instrument Lead {
 		priority 	= required;
-		level 		= 143;
+		level 		= 255;
 		gate		= 9;
 		envelope	= adsr(0, 3, 191, 6);
 		effects		= [ vibrato(32, 9) ];
@@ -425,49 +425,49 @@ song RunawayCircuit {
 
 	instrument LeadDetune {
 		priority 	= optional;
-		level		= 56;
+		level		= 128;
 		gate		= 9;
 		envelope	= adsr(0, 3, 191, 6);
 	}
 
 	instrument LeadOctave {
 		priority 	= optional;
-		level 		= 41;
+		level 		= 64;
 		gate		= 6;
 		envelope 	= adsr(0, 3, 89, 6);
 	}
 
 	instrument EchoShort {
 		priority 	= optional;
-		level 		= 41;
+		level 		= 64;
 		gate		= 6;
 		envelope 	= adsr(0, 3, 51, 6);
 	}
 
 	instrument EchoLong {
 		priority	= optional;
-		level		= 20;
+		level		= 48;
 		gate		= 3;
 		envelope 	= adsr(0, 2, 31, 6);
 	}
 
 	instrument Kick {
 		priority	= required;
-		level 		= 46;
+		level 		= 64;
 		gate		= 3;
 		envelope 	= one_shot(0, 3);
 	}
 
 	instrument Snare {
 		priority 	= required;
-		level 		= 38;
+		level 		= 64;
 		gate		= 3;
 		envelope	= one_shot(0, 3);
 	}
 
 	instrument Hat {
 		priority	= optional;
-		level		= 18;
+		level		= 64;
 		gate		= 3;
 		envelope	= one_shot(0, 1);
 	}

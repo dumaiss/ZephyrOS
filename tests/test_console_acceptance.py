@@ -48,14 +48,11 @@ import modpack  # noqa: E402
 import romfspack  # noqa: E402
 
 # The packed monitor artifact (pinned by user/monitor/ and the tooling
-# tests; the store must deliver these exact bytes).  The monitor grew by
-# the B (reboot) command, by the `irq:` row's counters and the SDK's
-# longer system-info record, by the SDK's buffered console and by the
-# idle wait between input polls, and shrank by the call() reply-status
-# load, so the pinned identity moved with each relink.
-MONITOR_SIZE = 6787
+# tests; the store must deliver these exact bytes).  The identity moves
+# with every relink of the monitor or of the libkos members it links.
+MONITOR_SIZE = 6313
 MONITOR_SHA256 = (
-    "cc9257c66524819da8aeae7828e7d6d6015e5a0584326757a1445251725c515e")
+    "d5de61f5eaa4f39a50b48ae0106a2afadcce2277512797a7ae5c667c019a52bc")
 
 # The monitor's visible rows, decoded from the V9958 trace.
 PROMPT = "Z80> "

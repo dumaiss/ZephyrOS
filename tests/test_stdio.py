@@ -231,10 +231,14 @@ static unsigned int read_queued;
 static unsigned char fail_write;
 static char long_text[300];
 
-/* idle() is part of the console client through getchar(), but this probe
- * exercises buffering only; the real halt path is covered by the driver
- * and timer suites. */
-void idle(void)
+/* getchar() waits through idle_input(), but this probe exercises
+ * buffering only; the real wait is covered by the shell and timer
+ * suites. */
+void idle_input(void)
+{
+}
+
+void idle_input_ready(void)
 {
 }
 
@@ -839,7 +843,7 @@ class TestConsoleBufferProbe(ProbeTestBase):
         super().setUp()
         self.probe = SdkProbe(
             self.tmp,
-            ["console_proto.c", "console_io.c"],
+            ["console_proto.c", "console_io.c", "console_line.c"],
             CONSOLE_PROBE).build().run()
 
     def test_every_case_passes(self):
