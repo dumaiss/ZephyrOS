@@ -36,7 +36,7 @@ else
 include $(KOS_SDK_ROOT)/mk/kos.mk
 
 $(eval $(call exe_program,sntrack,.,sntracker.c,STACK=1024,LIBS=snd))
-$(eval $(call exe_program,sntview,.,sntview.c ztrdoc.c view.c,STACK=768,LIBS=gfx))
+$(eval $(call exe_program,sntview,.,sntview.c sntview_tick.c ztrdoc.c view.c,STACK=1024,LIBS=snd:gfx,RESIDENT=sntview_tick.c))
 
 .PHONY: all clean test
 .DEFAULT_GOAL := all

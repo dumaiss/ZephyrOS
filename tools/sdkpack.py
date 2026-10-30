@@ -12,7 +12,7 @@
       lib/             libkos.lib (the runtime object folded in), libtui.lib,
                        libtui_128x35.lib, libtui_widgets.lib, libgfx.lib,
                        crt0.rel
-      tools/           exepack.py, exemanifest.py, ihx.py
+      tools/           exepack.py, exemanifest.py, exeplace.py, ihx.py
       mk/kos.mk        the standalone build rules
       template/        Makefile + hello.c
       examples/        hello, fardemo (__banked), files (open/read/list),
@@ -44,7 +44,7 @@ import sys
 import tarfile
 from pathlib import Path
 
-TOOL_FILES = ("exepack.py", "exemanifest.py", "ihx.py", "kimg.py")
+TOOL_FILES = ("exepack.py", "exemanifest.py", "exeplace.py", "ihx.py", "kimg.py")
 DOC_FILES = ("sdk.md", "tui.md", "exe-format.md")
 SDK_INCLUDE = "user/sdk/include"
 SDK_TEMPLATE = "user/sdk/template"

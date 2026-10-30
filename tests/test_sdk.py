@@ -310,9 +310,12 @@ class TestHelloExe(unittest.TestCase):
                          self.symbols["s__DATA"][0] - LOAD_BASE)
         self.assertEqual(self.manifest["bss_size"],
                          self.symbols["l__DATA"][0])
+        # The image is the low data, the code and the program's
+        # constants (_RCONST, after the code).
         self.assertEqual(self.manifest["image_size"],
                          self.symbols["l__KOS_SDK_DATA"][0] +
-                         self.symbols["l__CODE"][0])
+                         self.symbols["l__CODE"][0] +
+                         self.symbols.get("l__RCONST", (0,))[0])
 
     def test_container_validates_and_enters_after_low_data(self):
         fields, geometry = exepack.validate_image(self.image)
@@ -424,7 +427,8 @@ class TestSdkBoundary(unittest.TestCase):
                           "hwtest", "iobench", "iomix", "iomix_child",
                           "iostream", "ipc", "ipccopy",
                           "kresread", "krestest", "monitor", "ns",
-                          "nschild", "readermap", "readertest", "readphase",
+                          "nschild", "placetest", "readermap", "readertest",
+                          "readphase",
                           "shell", "sndprobe", "sndtest", "sound",
                           "textbench", "timer",
                           "tui_core_probe", "tui_demo", "tui_dialog",

@@ -444,7 +444,10 @@ class GfxReplay(HwtestReplay):
         the sdcccall(0) argument), recording the op of every hit, until
         `until(z)` is true."""
         for step in range(limit):
-            if z.pc == self.dispatch:
+            # The driver runs in OS mode (11); a program's own code at the
+            # same address (a placed program's home zone or far segment,
+            # 8000h-BFFFh) is not a dispatch.
+            if z.pc == self.dispatch and (z.latch & 0x18) == 0x18:
                 ops.append(z.rd(z.hl))
             self.skip_delay(z)
             self.feed(z)

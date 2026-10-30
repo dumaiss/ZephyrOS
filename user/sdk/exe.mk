@@ -67,7 +67,7 @@ KOS_SDK_C_SRC := args.c fs.c truncate.c ipc.c exec.c console_io.c console_line.c
     klibc/utoa.c klibc/ultoa.c klibc/itoa.c klibc/ltoa.c \
     klibc/printf.c klibc/sdcc_arith.c klibc/sdcc_arith_signed.c
 KOS_SDK_ASM_SRC := gate.asm ipcgate.asm diaggate.asm nsgate.asm \
-    xmemgate.asm bcall.asm sdcc_calls.asm event_entry.asm sound_out.asm idle_halt.asm \
+    xmemgate.asm bcall.asm vcall.asm sdcc_calls.asm event_entry.asm sound_out.asm idle_halt.asm \
     klibc/strlen.asm klibc/strcmp.asm klibc/strncmp.asm klibc/strchr.asm \
     klibc/memcpy.asm klibc/memmove.asm klibc/memset.asm klibc/memcmp.asm \
     klibc/divmod.asm klibc/sdcc_arith16.asm klibc/mul.asm \
@@ -267,8 +267,8 @@ $(EXE_LIBKRES): $(EXE_KRES_OBJS) $(KOS_RULES)
 # flush.  Setup is C: the lifecycle and the note compiler.
 KOS_SND_SRC     := $(KOS_SDK_ROOT)/snd/src
 KOS_SND_PRIVATE := $(KOS_SND_SRC)/snd_private.h
-KOS_SND_C_SRC   := snd.c snd_manual.c snd_tables.c snd_zvg.c snd_ztr.c
-KOS_SND_ASM_SRC := snd_tick.asm snd_voice.asm snd_out.asm \
+KOS_SND_C_SRC   := snd.c snd_manual.c snd_tables.c snd_zvg.c snd_ztr.c snd_service.c
+KOS_SND_ASM_SRC := snd_tick.asm snd_tick_ztr.asm snd_voice.asm snd_out.asm \
 	snd_zvg_dec.asm snd_ztr_dec.asm
 EXE_SND_OBJS    := $(addprefix $(EXE_SDK_BUILD)/snd/,\
 	$(patsubst %.c,%.rel,$(KOS_SND_C_SRC)) \

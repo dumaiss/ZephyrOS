@@ -89,6 +89,12 @@ kos_entry::
 	halt
 	jr	007$
 
+; A program's constant data (its C sources compile with --constseg
+; RCONST, mk/kos.mk) follows the code and precedes the BSS: in a placed
+; program it is resident (architecture 7.2), so a pointer to it reaches
+; it from every zone.
+	.area _RCONST
+
 	.area _DATA
 
 ; Bounded argv store, the tail copy and the tail pointer, zero-initialized

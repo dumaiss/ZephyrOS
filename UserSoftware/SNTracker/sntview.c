@@ -1,18 +1,20 @@
-/* SN-Track ZTR document view.  Playback remains in sntracker.c: P scrolls
- * the cursor at the song's tempo with no sound, drawing the next page on
- * the hidden one between cursor moves, and reports how far it fell
- * behind. */
+/* SN-Track ZTR document view and player.  P plays the song through
+ * libsnd: the timer handler ticks the engine, and the cursor follows the
+ * row the engine plays.  Audio gets the deadlines; the display gets what
+ * remains - the next page is drawn on the hidden one between cursor
+ * moves, the cursor jumps when drawing falls behind, and the exit report
+ * says how far it did. */
 
 #include "kos.h"
 #include "kos/errno.h"
+#include "kos/event.h"
 #include "kos/gfx.h"
 #include "kos/reader.h"
+#include "kos/snd.h"
 #include "kos/timer.h"
+#include "sntview_tick.h"
 #include "view.h"
 #include "ztrdoc.h"
-
-/* The clock runs in 25.6 us counts: 78125 counts are two seconds. */
-#define COUNTS_2S 78125ul
 
 static struct ztrdoc document;
 static struct view screen;
@@ -33,11 +35,16 @@ static uint8_t shown_page, cursor;
 static uint16_t next_order, next_first;
 static uint8_t next, prep;
 
-/* Scrolling: the clock's row deadlines and the lateness counts. */
+/* Playback: the engine is ticked by the timer handler while `ticking`;
+ * `playing` while the cursor follows it, `paused` while held, `ended`
+ * after the song's end.  The lateness and audio counts for the report. */
 static int timer_handle;
-static uint8_t playing, ended;
-static uint32_t start, deadline, row_counts, row_frac, frac, frac_den;
-static uint16_t due, done, rows_scrolled, late_rows, late_pages;
+static kos_handle_source_t source;
+static kos_reader_t reader;
+static uint8_t snd_opened, song_loaded, song_used, playing, paused, ended;
+static uint16_t serviced_order;
+static uint16_t rows_scrolled, late_rows, late_pages;
+static struct snd_ztr_status status;
 
 /* What each kind of loop step costs, clock read to clock read (so the
  * console poll and the read itself are included): the order load and
@@ -49,14 +56,16 @@ static uint16_t due, done, rows_scrolled, late_rows, late_pages;
 #define T_FINISH 3u
 #define T_LOAD   4u
 #define T_MOVE   5u
-#define T_KINDS  6u
+#define T_REFILL 6u
+#define T_KINDS  7u
 #define T_NONE   0xFFu
 static const char *const t_names[T_KINDS] = {
-	" order ", " panel ", " row ", " finish ", " load ", " move "
+	" order ", " panel ", " row ", " finish ", " load ", " move ",
+	" refill "
 };
 static uint32_t t_sum[T_KINDS], last_now;
 static uint16_t t_n[T_KINDS], t_max[T_KINDS];
-static uint8_t last_kind;	/* start_scroll sets T_NONE */
+static uint8_t last_kind;	/* start_play sets T_NONE */
 
 static int parse_order(const char *text, uint16_t *value)
 {
@@ -173,51 +182,135 @@ static uint8_t last_row(void)
 	return (uint8_t)((left < ZTRDOC_VIEW_ROWS ? left : ZTRDOC_VIEW_ROWS) - 1u);
 }
 
-static int start_scroll(void)
+static int start_timer(void)
 {
-	if (timer_handle <= 0) {
-		timer_handle = timer_open();
-		if (timer_handle < 0) { timer_handle = 0; return -1; }
-	}
-	if (ended != 0u) {
-		/* From the song's start: order 0's first page, shown. */
-		next_order = 0u; next_first = 0u; prep = 0u; next = NEXT_PAGE;
-		if (flip() < 0) return -1;
-		ended = 0u;
-	}
-	/* A row is `speed` ticks at `rate` Hz: speed * 78125 / (2 * rate)
-	 * counts, kept as a quotient and a remainder. */
-	frac_den = (uint32_t)document.rate << 1;
-	row_counts = 0u;
-	for (row_frac = 0u; row_frac < document.speed; ++row_frac)
-		row_counts += COUNTS_2S;	/* the runtime has no __mullong */
-	row_frac = row_counts % frac_den;
-	row_counts /= frac_den;
-	if (timer_now(timer_handle, &start) < 0) return -1;
-	deadline = row_counts; frac = row_frac; due = done = 0u;
-	last_kind = T_NONE;
-	playing = 1u;
+	uint32_t period;
+	if (snd_timer_period(&period) < 0) return -1;
+	/* Prime idle() before this process subscribes to the timer. */
+	idle();
+	timer_handle = timer_open();
+	if (timer_handle < 0) { timer_handle = 0; return -1; }
+	if (notify(timer_handle, on_tick) < 0 ||
+	    timer_event(timer_handle, period) < 0) return -1;
 	return 0;
 }
 
-/* Move the cursor to the row the clock says is due: skipped rows and a
- * hidden page not drawn in time count as late, nothing queues.  Returns
- * 1 after a cursor move or an idle wait (a moment to poll the console),
- * 0 after a piece of the hidden page, or a negative error. */
-static int scroll(void)
+static void stop_timer(void)
+{
+	if (timer_handle <= 0) return;
+	(void)timer_event(timer_handle, 0u);
+	(void)notify(timer_handle, (kos_event_handler_t)0);
+	(void)unbind((unsigned char)timer_handle);
+	timer_handle = 0;
+}
+
+/* The title bar's transport on the shown page: PLAY or STOP and the
+ * time the ticks played make. */
+static int show_transport(void)
+{
+	uint32_t ticks = ticks_played;
+	screen.playing = (uint8_t)(playing != 0u && paused == 0u);
+	screen.seconds = (uint16_t)(ticks / document.rate);
+	return view_update_transport(&screen, shown_page);
+}
+
+/* Play from the song's start: order 0's first page, the cursor on its
+ * first row; a song played before is loaded again (the tables the
+ * document borrows are refilled with the same contents). */
+static int start_play(void)
+{
+	if (song_used != 0u) {
+		(void)snd_ztr_stop(); snd_ztr_close();
+		song_loaded = 0u;
+		if (snd_ztr_open(&reader) < 0) return -1;
+		song_loaded = 1u;
+	}
+	song_used = 1u;
+	for (;;) {
+		int result = snd_ztr_prepare();
+		if (result < 0) return -1;
+		if (result != SND_NEED_MORE) break;
+		(void)snd_ztr_service();
+	}
+	if (order != 0u || first_row != 0u) {
+		next_order = 0u; next_first = 0u; prep = 0u; next = NEXT_PAGE;
+		if (flip() < 0) return -1;
+	} else if (cursor != 0u) {
+		if (view_move_cursor(shown_page, cursor, 0u) < 0) return -1;
+		cursor = 0u;
+	}
+	if (timer_handle <= 0 && start_timer() < 0) return -1;
+	serviced_order = 0xFFFFu;
+	ticks_played = 0u;
+	last_kind = T_NONE;
+	ended = 0u; paused = 0u; playing = 1u;
+	if (snd_ztr_play() < 0) return -1;
+	ticking = 1u;
+	return show_transport();
+}
+
+static int pause_play(uint8_t hold)
+{
+	if (hold != 0u) {
+		ticking = 0u;
+		if (snd_ztr_pause() < 0) return -1;
+	} else {
+		if (snd_ztr_resume() < 0) return -1;
+		ticking = 1u;
+		last_kind = T_NONE;
+	}
+	paused = hold;
+	return show_transport();
+}
+
+/* Follow the engine: the refill first (audio's deadline), then the
+ * cursor to the row the engine plays, else a piece of the hidden page.
+ * Skipped rows and a page not drawn by its flip count as late; nothing
+ * queues.  Returns 1 after a cursor move or an idle wait (a moment to
+ * poll the console), 0 after other work, or a negative error. */
+static int follow(void)
 {
 	uint32_t now;
-	uint16_t advance, moved;
-	uint8_t to;
+	uint16_t advance, moved, at, target;
+	uint8_t to, t_order, t_row;
 	if (timer_now(timer_handle, &now) < 0) return -1;
 	account(now);
-	while ((uint32_t)(now - start) >= deadline) {
-		++due; deadline += row_counts; frac += row_frac;
-		if (frac >= frac_den) { frac -= frac_den; ++deadline; }
+	(void)snd_ztr_get_status(&status);
+	if (status.order != serviced_order) {
+		/* The engine changed order: this service refills the next. */
+		serviced_order = status.order;
+		(void)snd_ztr_service();
+		last_kind = T_REFILL;
+		return 0;
 	}
-	advance = (uint16_t)(due - done);
+	(void)snd_ztr_service();
+	if (status.state == SND_ZTR_ERROR) return -1;
+	/* The engine names the row it consumes next: the one playing is
+	 * the row before it (none yet before the first tick). */
+	t_order = status.order; t_row = status.row;
+	if (status.state == SND_ZTR_READY ||
+	    (t_order == 0u && t_row == 0u)) {
+		t_row = 0u;
+	} else if (t_row != 0u) {
+		--t_row;
+	} else {
+		--t_order; t_row = (uint8_t)(document.rows - 1u);
+	}
+	/* Rows from the cursor to the engine's row (never backwards). */
+	target = t_row;
+	for (at = order; at < t_order; ++at) target = (uint16_t)(target + document.rows);
+	at = (uint16_t)(first_row + cursor);
+	advance = target > at ? (uint16_t)(target - at) : 0u;
 	if (advance == 0u) {
 		int fetched = 0;
+		if (status.state == SND_ZTR_DONE) {
+			ticking = 0u; playing = 0u; ended = 1u;
+			return show_transport() < 0 ? -1 : 1;
+		}
+		if ((uint16_t)(ticks_played / document.rate) != screen.seconds) {
+			last_kind = T_MOVE;
+			return show_transport() < 0 ? -1 : 1;
+		}
 		if (next == NEXT_NONE) { target_next(0u); return 1; }
 		if (next == NEXT_PAGE && prep <= VIEW_STEPS) {
 			last_kind = prep == 0u ? T_ORDER : prep <= VIEW_PANEL_STEPS ? T_PANEL :
@@ -230,7 +323,6 @@ static int scroll(void)
 		return 1;
 	}
 	moved = advance;
-	done = due;
 	last_kind = T_MOVE;
 	to = cursor;
 	while (advance != 0u) {
@@ -239,10 +331,9 @@ static int scroll(void)
 		advance = (uint16_t)(advance - left - 1u);
 		if (next == NEXT_NONE) target_next(0u);
 		if (next == NEXT_END) {
-			/* The song's end: the cursor stops on its last row;
-			 * the rows past it were never shown. */
+			/* Past the song's last row: never, the engine stops. */
 			moved = (uint16_t)(moved - advance - 1u);
-			to = last_row(); playing = 0u; ended = 1u;
+			to = last_row();
 			break;
 		}
 		if (to != cursor && view_move_cursor(shown_page, cursor, to) < 0)
@@ -250,6 +341,7 @@ static int scroll(void)
 		if (prep <= VIEW_STEPS) ++late_pages;
 		if (flip() < 0) return -1;
 		cursor = to = 0u;
+		if (show_transport() < 0) return -1;
 	}
 	if (moved > 1u) late_rows = (uint16_t)(late_rows + moved - 1u);
 	rows_scrolled = (uint16_t)(rows_scrolled + moved);
@@ -262,8 +354,7 @@ static int scroll(void)
 
 int main(int argc, char **argv)
 {
-	FILE *file = 0;
-	kos_reader_t reader;
+	int file;
 	uint8_t gfx_opened = 0u, quit = 0u, poll = 1u;
 	int result, rc = 1;
 
@@ -272,12 +363,30 @@ int main(int argc, char **argv)
 		console_puts("sntview: usage: sntview FILE.ZTR [ORDER]\r\n");
 		return 1;
 	}
-	file = fopen(argv[0], "rb");
-	if (file == 0) { console_puts("sntview: cannot open song\r\n"); return 1; }
-	result = kos_reader_from_stdio(&reader, file);
-	if (result >= 0)
-		result = ztrdoc_open(&document, &reader, order_buffer,
-				     sizeof(order_buffer));
+	/* A raw handle reader: the reads are whole spans, and stdio would
+	 * cost the program 6 KB it does not have. */
+	file = open(argv[0], KFS_O_READ);
+	if (file < 0) { console_puts("sntview: cannot open song\r\n"); return 1; }
+	source.handle = (unsigned int)file;
+	result = kos_reader_from_handle(&reader, &source);
+	/* libsnd loads and checks the song; the document borrows its
+	 * tables. */
+	if (result >= 0) {
+		if (snd_open() < 0) {
+			console_puts("sntview: cannot open /dev/sound\r\n");
+			goto cleanup;
+		}
+		snd_opened = 1u;
+		result = snd_ztr_open(&reader);
+	}
+	if (result >= 0) {
+		struct snd_ztr_tables tables;
+		song_loaded = 1u;
+		result = snd_ztr_tables(&tables);
+		if (result >= 0)
+			result = ztrdoc_open(&document, &reader, &tables,
+					     order_buffer, sizeof(order_buffer));
+	}
 	if (result >= 0 && order >= document.order_count) {
 		console_puts("sntview: no such order\r\n");
 		goto cleanup;
@@ -310,17 +419,20 @@ int main(int argc, char **argv)
 		poll = 1u;
 		if (key == 'q' || key == 'Q' || key == 27) { quit = 1u; continue; }
 		if (key == 'p' || key == 'P') {
-			if (playing != 0u) playing = 0u;
-			else if (start_scroll() < 0) goto cleanup;
+			if (playing != 0u) result = pause_play((uint8_t)(paused ^ 1u));
+			else result = start_play();
+			if (result < 0) goto cleanup;
 			continue;
 		}
-		if (playing != 0u) {
-			result = scroll();
+		if (playing != 0u && paused == 0u) {
+			result = follow();
 			if (result < 0) goto cleanup;
 			poll = (uint8_t)result;
 			continue;
 		}
-		if (key != ' ') { if (key == 0) idle(); continue; }
+		/* Space flips pages while stopped, not while paused: the view
+		 * must stay on the engine's row. */
+		if (key != ' ' || paused != 0u) { if (key == 0) idle(); continue; }
 		if (next != NEXT_PAGE) target_next(1u);
 		if (flip() < 0) goto cleanup;
 		ended = 0u;
@@ -328,9 +440,21 @@ int main(int argc, char **argv)
 	rc = 0;
 
 cleanup:
+	ticking = 0u;
+	stop_timer();
+	if (song_loaded != 0u) {
+		(void)snd_ztr_get_status(&status);
+		(void)snd_ztr_stop(); snd_ztr_close();
+	}
+	if (snd_opened != 0u) snd_close();
 	if (gfx_opened != 0u) view_close();
-	if (timer_handle > 0) (void)unbind((unsigned char)timer_handle);
-	if (file != 0) (void)fclose(file);
+	(void)close((unsigned int)file);
+	if (song_loaded != 0u) {
+		console_puts("sntview: underruns "); put_decimal(status.underruns);
+		console_puts(", overruns "); put_decimal(status.overruns);
+		console_puts(", missed ticks "); put_decimal(missed_events);
+		console_puts("\r\n");
+	}
 	if (rows_scrolled != 0u) {
 		console_puts("sntview: "); put_decimal(rows_scrolled);
 		console_puts(" rows, "); put_decimal(late_rows);

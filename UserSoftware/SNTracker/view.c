@@ -49,7 +49,9 @@ static const struct gfx_rgb sntrack_palette[16] = {
 };
 
 static struct view *active_view;
-static struct ztrdoc_event decoded[ZTRDOC_CHANNELS][ZTRDOC_VIEW_ROWS];
+/* The page being drawn: each channel's stream cursor, a row decoded per
+ * row step. */
+static uint16_t row_at[ZTRDOC_CHANNELS];
 static struct gfx_text_style text_style;
 /* CP850 FAh, the middle dot: an empty character slot. */
 static const char dots[27] = {
@@ -92,7 +94,35 @@ static int text(uint16_t x, uint16_t y, const char *s, uint8_t fg, uint8_t bg)
 	return draw_text(x, y, s, strlen(s), fg, bg);
 }
 
-static void draw_title(const struct view *v, uint8_t page)
+/* 0-99 as two decimal digits (by subtraction: the runtime has no 8-bit
+ * divide, which SDCC picks for values it knows are small). */
+static void two_digits(char *out, uint16_t value)
+{
+	char tens = '0';
+	while (value >= 10u) { value -= 10u; ++tens; }
+	out[0] = tens; out[1] = (char)('0' + value);
+}
+
+/* PLAY or STOP, and the elapsed time as MM:SS (minutes capped at 99). */
+static void draw_transport(struct view *v, uint8_t page)
+{
+	uint16_t y = PAGE_Y(page) + 1u, minutes = v->seconds / 60u;
+	uint16_t seconds = v->seconds % 60u; char b[6];
+	if (minutes > 99u) minutes = 99u;
+	(void)text(356u, y, v->playing ? "PLAY" : "STOP", v->playing ? 6u : 7u, 1u);
+	two_digits(b, minutes); b[2] = ':'; two_digits(b + 3u, seconds);
+	b[5] = '\0';
+	(void)text(492u, y, b, 4u, 1u);
+	v->shown_playing[page] = v->playing; v->shown_seconds[page] = v->seconds;
+}
+
+static uint8_t transport_differs(const struct view *v, uint8_t page)
+{
+	return (uint8_t)(v->shown_playing[page] != v->playing ||
+			 v->shown_seconds[page] != v->seconds);
+}
+
+static void draw_title(struct view *v, uint8_t page)
 {
 	char b[10]; uint16_t mhz100; uint16_t y = PAGE_Y(page);
 	(void)gfx_fill_rect(0u, y, 512u, 9u, 1u, GFX_OP_COPY);
@@ -106,8 +136,7 @@ static void draw_title(const struct view *v, uint8_t page)
 	(void)text(268u, y + 1u, b, 4u, 1u);
 	decimal(b, v->doc->rate); (void)text(320u, y + 1u, b, 4u, 1u);
 	(void)text((uint16_t)(320u + strlen(b) * 4u), y + 1u, "HZ", 4u, 1u);
-	(void)text(356u, y + 1u, "STOP", 7u, 1u);
-	(void)text(492u, y + 1u, "00:00", 4u, 1u);
+	draw_transport(v, page);
 }
 
 /* The panels draw in two halves (`half` 0: ground, heading and the first
@@ -131,8 +160,8 @@ static void draw_orders(const struct view *v, uint8_t page, uint8_t half)
 		memset(b, ' ', sizeof(b));
 		hex2(b, (uint8_t)order);
 		for (ch = 0u; ch < 16u; ++ch)
-			if (v->doc->orders[order][ch] != 0xFFu)
-				hex2(b + 3u + ch * 3u, v->doc->orders[order][ch]);
+			if (ZTRDOC_ORDER(v->doc, order)[ch] != 0xFFu)
+				hex2(b + 3u + ch * 3u, ZTRDOC_ORDER(v->doc, order)[ch]);
 		(void)draw_text(0u, y + 19u + line * 6u, b, 50u, 4u, 1u);
 		if (order == v->order)
 			(void)gfx_fill_rect(0u, y + 19u + line * 6u, 204u, 6u,
@@ -280,7 +309,7 @@ static void draw_headers(const struct view *v, uint8_t page)
 		b[0]=(char)('A' + (ch >> 2)); b[1]=(ch & 3u)==3u ? 'N' : (char)('1' + (ch & 3u));
 		(void)draw_text(cell_x[ch], y + HEADER_Y + 2u, b, 2u, 4u, 0u);
 		/* A channel the order does not use: M in its last slot. */
-		if (v->doc->orders[v->order][ch] == 0xFFu)
+		if (ZTRDOC_ORDER(v->doc, v->order)[ch] == 0xFFu)
 			(void)draw_text(cell_x[ch] + ((ch & 3u) == 3u ? 8u : 32u),
 					y + HEADER_Y + 2u, "M", 1u, 7u, 0u);
 	}
@@ -315,19 +344,17 @@ static void draw_status(const struct view *v, uint8_t page)
 
 int view_begin_page(struct view *v, uint8_t page, uint16_t first_row)
 {
-	uint8_t ch;
 	if (v == 0 || page > 1u) return -1;
 	active_view=v; v->first_row=first_row;
 	if (v->pending[page] != 0u) v->drawn[page]=0u;
 	v->pending[page]=1u;
-	for (ch=0u; ch<16u; ++ch)
-		if (ztrdoc_decode_channel(v->order_buffer,ch,first_row,decoded[ch])<0) return -1;
+	if (ztrdoc_seek_rows(v->order_buffer,first_row,row_at)<0) return -1;
 	return 0;
 }
 
 int view_draw_step(struct view *v, uint8_t page, uint8_t step)
 {
-	struct ztrdoc_event row_events[ZTRDOC_CHANNELS]; uint8_t ch, full, window, moved;
+	struct ztrdoc_event row_events[ZTRDOC_CHANNELS]; uint8_t full, window, moved;
 	if (v == 0 || page > 1u || step >= VIEW_STEPS) return -1;
 	active_view=v;
 	/* A page drawn before keeps its title, instruments and song panel;
@@ -336,7 +363,10 @@ int view_draw_step(struct view *v, uint8_t page, uint8_t step)
 	window = (uint8_t)(full || v->drawn_top[page] != v->order_top);
 	moved = (uint8_t)(v->drawn_order[page] != v->order);
 	gfx_begin();
-	if (step == 0u) { if (full) draw_title(v,page); }
+	if (step == 0u) {
+		if (full) draw_title(v,page);
+		else if (transport_differs(v,page)) draw_transport(v,page);
+	}
 	else if (step <= 2u) {
 		if (window) draw_orders(v,page,(uint8_t)(step - 1u));
 		else if (step == 1u && moved) move_order_highlight(v,page);
@@ -348,7 +378,9 @@ int view_draw_step(struct view *v, uint8_t page, uint8_t step)
 	}
 	else if (step == 6u) { if (full || moved) draw_headers(v,page); }
 	else if (step < VIEW_PANEL_STEPS + ZTRDOC_VIEW_ROWS) {
-		for (ch=0u; ch<16u; ++ch) row_events[ch]=decoded[ch][step - VIEW_PANEL_STEPS];
+		if (ztrdoc_next_row(v->order_buffer,
+				    (uint16_t)(v->first_row + step - VIEW_PANEL_STEPS),
+				    row_at,row_events)<0) { (void)gfx_end(); return -1; }
 		(void)view_draw_row(page,(uint16_t)(step - VIEW_PANEL_STEPS),row_events);
 	} else {
 		draw_rules(page); draw_status(v,page);
@@ -365,6 +397,15 @@ int view_draw_page(struct view *v, uint8_t page, uint16_t first_row)
 	if (view_begin_page(v,page,first_row)<0) return -1;
 	gfx_begin();
 	for (step=0u; step<VIEW_STEPS; ++step) (void)view_draw_step(v,page,step);
+	return gfx_end();
+}
+
+int view_update_transport(struct view *v, uint8_t page)
+{
+	if (v == 0 || page > 1u) return -1;
+	if (transport_differs(v,page) == 0u) return 0;
+	gfx_begin();
+	draw_transport(v,page);
 	return gfx_end();
 }
 

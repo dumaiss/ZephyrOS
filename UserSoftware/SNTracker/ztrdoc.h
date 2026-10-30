@@ -2,11 +2,10 @@
 #define SNTRACK_ZTRDOC_H
 
 #include "kos/reader.h"
+#include "kos/snd.h"
 
 #define ZTRDOC_CHANNELS 16u
-#define ZTRDOC_MAX_ORDERS 136u
 #define ZTRDOC_MAX_INSTRUMENTS 16u
-#define ZTRDOC_MAX_PATTERNS 400u
 #define ZTRDOC_ORDER_BUFFER 1024u
 #define ZTRDOC_ORDER_TABLE 64u
 #define ZTRDOC_VIEW_ROWS 16u
@@ -46,8 +45,10 @@ struct ztrdoc_pattern {
 	uint8_t number;
 	uint16_t offset;
 	uint16_t length;
-	uint16_t events;
 };
+
+/* Order `n`'s 16 pattern numbers (FFh: the channel is unused). */
+#define ZTRDOC_ORDER(doc, n) ((doc)->orders + ((uint16_t)(n) << 4))
 
 struct ztrdoc {
 	const kos_reader_t *reader;
@@ -67,28 +68,35 @@ struct ztrdoc {
 	uint16_t pattern_data_offset;
 	uint16_t note_table_offset;
 	char title[33];
-	uint8_t orders[ZTRDOC_MAX_ORDERS][ZTRDOC_CHANNELS];
-	struct ztrdoc_pattern patterns[ZTRDOC_MAX_PATTERNS];
-	uint16_t channel_start[ZTRDOC_CHANNELS + 1u];
+	/* libsnd's resident tables (snd_ztr_tables): the orders and the
+	 * 6-byte pattern directory, not copied. */
+	const uint8_t *orders;
+	const uint8_t *patterns;
 	struct ztrdoc_instrument instruments[ZTRDOC_MAX_INSTRUMENTS];
 	int8_t instrument_index[ZTRDOC_MAX_INSTRUMENTS];
 };
 
-/* Open, checking the whole file; scratch holds one stream at a time.
- * -KOS_ENOSPC: a stream or an order over the buffers; -KOS_ENOTSUP: an
- * instrument used on tone and noise channels; -KOS_EINVAL: malformed. */
+/* Open over a song libsnd has loaded (its layout, capacities and CRC
+ * already checked): the header's display values, the instruments, and
+ * one pass over every stream that validates the events and types each
+ * instrument; scratch holds a window of streams.  -KOS_ENOSPC: a stream
+ * over the scratch; -KOS_ENOTSUP: an instrument used on tone and noise
+ * channels; -KOS_EINVAL: malformed. */
 int ztrdoc_open(struct ztrdoc *doc, const kos_reader_t *reader,
+		const struct snd_ztr_tables *tables,
 		uint8_t *scratch, uint16_t size);
 /* The order's streams after a 16-entry start/end table; the used size. */
 int ztrdoc_load_order(const struct ztrdoc *doc, uint16_t order,
 		      uint8_t *buffer, uint16_t size);
-/* One channel's events for the ZTRDOC_VIEW_ROWS rows from first_row of a
- * loaded order. */
-int ztrdoc_decode_channel(const uint8_t *buffer, uint8_t channel,
-			  uint16_t first_row,
-			  struct ztrdoc_event out[ZTRDOC_VIEW_ROWS]);
-int ztrdoc_find_pattern(const struct ztrdoc *doc, uint8_t channel,
-			uint8_t number, struct ztrdoc_pattern *out);
+/* Row-at-a-time decoding of a loaded order: ztrdoc_seek_rows sets each
+ * channel's stream cursor to its first event at or after `first_row`;
+ * ztrdoc_next_row then decodes row `row` (rows asked in ascending order)
+ * into one event per channel, empty where the channel has none. */
+int ztrdoc_seek_rows(const uint8_t *buffer, uint16_t first_row,
+		     uint16_t at[ZTRDOC_CHANNELS]);
+int ztrdoc_next_row(const uint8_t *buffer, uint16_t row,
+		    uint16_t at[ZTRDOC_CHANNELS],
+		    struct ztrdoc_event out[ZTRDOC_CHANNELS]);
 const struct ztrdoc_instrument *ztrdoc_instrument(
 	const struct ztrdoc *doc, uint8_t number);
 uint8_t ztrdoc_noise_control(const struct ztrdoc *doc,

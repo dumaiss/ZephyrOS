@@ -212,6 +212,13 @@ int snd_tick(uint16_t elapsed_ticks);
  * an event handler. */
 int snd_service(void);
 
+/* snd_tick and snd_service for a program that plays ZTR songs and
+ * nothing else: the same catch-up, engine ticks, flush and refill,
+ * without the manual voice engine or the ZVG decoder, which such a
+ * program then does not link. */
+int snd_tick_ztr(uint16_t elapsed_ticks);
+int snd_ztr_service(void);
+
 /* Supply a 96-entry divisor table for a card whose clock the built-in
  * A440 table does not match.  Pass 0 to go back to the built-in table. */
 int snd_set_note_table(const uint16_t *divisors);
@@ -326,5 +333,21 @@ int snd_ztr_stop(void);
 void snd_ztr_close(void);
 
 int snd_ztr_get_status(struct snd_ztr_status *out);
+
+/* The loaded song's resident tables, for a client that shows the song
+ * without keeping its own copy: the orders (order_count x 16 pattern
+ * numbers, FFh where a channel is unused) and the pattern directory
+ * (pattern_count entries of SND_ZTR_DIR_BYTES: channel, number, then the
+ * stream's file offset and length, little-endian), in file order.  Valid
+ * from snd_ztr_open until snd_ztr_stop or snd_ztr_close; -KOS_EINVAL
+ * without a song. */
+#define SND_ZTR_DIR_BYTES 6u
+struct snd_ztr_tables {
+	const uint8_t *orders;
+	const uint8_t *patterns;
+	uint16_t order_count;
+	uint16_t pattern_count;
+};
+int snd_ztr_tables(struct snd_ztr_tables *out);
 
 #endif /* KOS_SND_H */

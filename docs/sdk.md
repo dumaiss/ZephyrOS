@@ -142,7 +142,9 @@ build in parallel. Each declaration also defines a `NAME` target.
 | `INCLUDES=a:b` | empty | extra include roots, for program-owned headers |
 | `LIBS=a:b` | empty | optional SDK libraries in link order; each resolves to `lib/lib<name>.lib` (or the corresponding in-tree archive) |
 | `TUI_GRID=CxR` | `85x26` | the libtui capacity: `tui` in `LIBS` links `lib/libtui_<C>x<R>.lib` (`128x35`), or `libtui.lib` for `85x26`; any other grid is a build error |
-| `FAR1=SRC:SRC` … `FAR4=SRC:SRC` | none | far-code sources of segment n, linked at `8000h` (section 6.6) |
+| `RESIDENT=SRC:SRC` | none | sources that stay resident: event handlers and anything else that must run while a far segment is mapped (architecture 7.2) |
+| `PLACE=MOD=ZONE:…` | none | placement pins, colon separated: a program source (`view.c=far1`) or a library member (`libgfx.lib(gfx_text.rel)=home`) pinned to `resident`, `home` or `farN` |
+| `FAR1=SRC:SRC` … `FAR4=SRC:SRC` | none | hand-declared far-code sources of segment n, linked at `8000h` (section 6.6); such a program is not placed |
 | `DATA1=SRC:SRC` … `DATA4=SRC:SRC` | none | far-data sources of data segment n, linked at `8000h` (section 12) |
 | `BLOBS=a.bin:b.bin` | none | binary payloads bundled as plain data segments (at most 32 KiB each) |
 | `SEGMENTS=FILE` | none | a hand-written JSON segment table, instead of the generated one |
@@ -340,10 +342,28 @@ order). `FARn=` and `DATAn=` options are numbered from 1 without gaps. With
 first, because a far segment's id is the number its `__banked` definitions
 name.
 
-**The far link rule.** A program with far code or far data keeps its
-primary image and BSS below `8000h` and its stack base at or above
-`C000h`, so `8000h-BFFFh` belongs to the segments. The packer checks this
-and refuses a far area over 16 KiB or not based at `8000h`.
+**Placement.** A program that fits its bank links as it always has. One
+that does not is placed automatically (architecture 7.2): every program
+object and linked library member gets a zone - resident (`0100h-7FFFh`
+and `C000h-DFFFh`), home (`8000h-BFFFh` of its own bank) or a far
+segment - and every call that crosses zones goes through a generated
+veneer, so the sources stay plain C. The program says only what the
+toolchain cannot know: `RESIDENT=` for its event handlers' sources, and
+optional `PLACE=` pins. Its data and its constants are always resident
+(a pointer may reach them from anywhere); an SDK library places as one
+unit. The link writes the placement (each module's zone and size, every
+veneer) into `build/user/NAME/place/placement.txt`. A program with
+hand-declared `FARn=`/`DATAn=` segments keeps its own layout and the far
+link rule below.
+
+**The link rule.** In a placed program a reference is direct only when
+its target is resident or in the referrer's own zone; calls elsewhere go
+through veneers, and data or code addresses cross zones only to resident
+targets. The packer checks this from the relocations, naming the module
+and symbol of a violation. A program with hand-declared segments keeps
+its primary image and BSS below `8000h` and its stack base at or above
+`C000h`. Either way the packer refuses a far area over 16 KiB or not
+based at `8000h`.
 
 The rule file is a prerequisite of the archive and of every link script,
 so editing it rebuilds `libkos` from scratch and relinks every program.
@@ -737,8 +757,8 @@ delivery point is the only delay.
 
 The frame is built below the interrupted stack pointer and the handler
 runs below it, so the program's stack must not lie in the `8000h-BFFFh`
-aperture (the far link rule and the SDK's stack reservation already keep
-it out).  The trampoline and `EVENT_RETURN` live in `libkos`, which every
+aperture (the link rule and the SDK's stack reservation already keep it
+out).  The trampoline and `EVENT_RETURN` live in `libkos`, which every
 program links; a program never writes its own.
 
 The trampoline also saves the SDK's fixed low argument-block area
@@ -871,10 +891,22 @@ E000h-STACK     the stack, growing down from E000h; a delivered device
 8000h-BFFFh     with the aperture open: a far segment or a mapped object
 ```
 
+A placed program (section 3, architecture 7.2) splits the same bank:
+
+```text
+0100h-7FFFh     resident: low data, crt0, the runtime, resident modules
+                and their statics (zeros in the image)
+8000h-BFFFh     home: home modules and their statics; with the aperture
+                open, a far segment or a mapped object instead
+C000h-...       resident statics that did not fit below 8000h (the BSS)
+...-DFFFh       the stack
+```
+
 The runtime object is linked into every program and pins `_KOS_SDK_DATA`
 before `_CODE`, so the gate-visible blocks stay in the argument window
-however large a program's BSS grows. A program with far code or far data
-keeps `8000h-BFFFh` free (the far link rule).
+however large a program's BSS grows. In a placed program nothing that
+runs while a far segment or object is mapped lies in `8000h-BFFFh` (the
+link rule, section 3).
 
 Buffering is part of that BSS: every program that writes to the console
 carries the 128-byte output buffer (`console_proto`), and a program that

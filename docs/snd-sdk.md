@@ -202,6 +202,8 @@ uint16_t snd_tick_rate(void);             /* active ZTR rate, else manual */
 int  snd_timer_period(uint32_t *counts);  /* recommended event period */
 int  snd_tick(uint16_t elapsed_ticks);   /* bounded musical advance */
 int  snd_service(void);                   /* foreground refill */
+int  snd_tick_ztr(uint16_t elapsed_ticks);/* the same, ZTR only */
+int  snd_ztr_service(void);               /* the same, ZTR only */
 ```
 
 - `snd_open` acquires once, calls `sound_info`, stores exact PSG ports/clock, and creates a clean muted shadow state. Failure leaves no acquired handle.
@@ -210,6 +212,7 @@ int  snd_service(void);                   /* foreground refill */
 - `snd_timer_period` rounds `39,062.5 / snd_tick_rate()` into timer counts and refuses unrepresentable periods. A fixed integer count may cause small long-term rate error; preserve the song's rate and document measured drift, rather than pretending the timer has sub-count resolution.
 - `snd_tick(n)` never performs file I/O or heap operations and never compiles a phrase. It advances at most a fixed, documented catch-up budget; excess ticks are reported/recorded rather than creating an unbounded burst of writes.
 - Never invoke `snd_service` from an event handler. It may call existing SDK storage functions and therefore belongs in the foreground.
+- A program that plays ZTR songs and nothing else calls `snd_tick_ztr` and `snd_ztr_service` instead: the same catch-up, ticks, flush and refill without the manual voice engine and the ZVG decoder, each its own archive member, so such a program links neither. In a placed program (architecture 7.2) the handler's resident closure is then the ZTR tick path alone.
 - `snd_close` stops playback and releases hardware, but does not close any borrowed song source.
 
 ### 4.2 ZTR player
@@ -223,9 +226,16 @@ int  snd_ztr_resume(void);
 int  snd_ztr_stop(void);
 void snd_ztr_close(void);                       /* forget source only */
 int  snd_ztr_get_status(struct snd_ztr_status *out);
+int  snd_ztr_tables(struct snd_ztr_tables *out);
 ```
 
 The status reports state (`EMPTY`, `PREPARING`, `READY`, `PLAYING`, `PAUSED`, `DONE`, `UNDERRUN`, `ERROR`), current order, row, tick-in-row, header tick rate, reserved channel mask, last reader error, tick overrun count and order-underrun count. `snd_ztr_close` does **not** call `kres_rclose`, `fclose`, or `close`; the borrowed source remains the caller's property.
+
+`snd_ztr_tables` lends a client that shows the song (a tracker view) the
+loaded song's resident orders (16 pattern numbers per order, `FFh` unused)
+and pattern directory (6 bytes per entry: channel, number, stream offset
+and length, in file order), valid until `snd_ztr_stop` or `snd_ztr_close`,
+so the client keeps no copy of its own.
 
 Loading a song is two distinct steps:
 

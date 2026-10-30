@@ -41,7 +41,7 @@ class ManifestError(Exception):
 
 
 def build_manifest(map_path, name, entry, stack_size, scratch, input_name=None,
-                   segments_path=None):
+                   segments_path=None, placement_path=None):
     text = Path(map_path).read_text()
     symbols = ihx.parse_map_symbols(text)
     for key in ("s__DATA", "l__DATA", "l__CODE"):
@@ -104,6 +104,25 @@ def build_manifest(map_path, name, entry, stack_size, scratch, input_name=None,
         if not isinstance(raw, list):
             raise ManifestError("segments must be a JSON list")
         manifest["segments"] = raw
+    # A placed program (tools/exeplace.py): its far segments and home zone
+    # come from the placement; `null` there means the program fits its
+    # bank and links as written.
+    if placement_path is not None:
+        try:
+            placement = json.loads(Path(placement_path).read_text())
+        except (OSError, ValueError) as exc:
+            raise ManifestError("cannot read placement: %s" % exc)
+        if placement is not None:
+            if segments_path is not None:
+                raise ManifestError("a placed program declares no segments "
+                                    "of its own")
+            manifest["segments"] = placement["segments"] or None
+            if not manifest["segments"]:
+                del manifest["segments"]
+            manifest["placement"] = {
+                "home_area": placement["home_area"] if placement["home"]
+                else None,
+                "objects": placement["objects"]}
     return manifest
 
 
@@ -117,11 +136,12 @@ def main(argv):
     parser.add_argument("--scratch", default=None)
     parser.add_argument("--input", default=None)
     parser.add_argument("--segments", default=None)
+    parser.add_argument("--placement", default=None)
     args = parser.parse_args(argv)
     try:
         manifest = build_manifest(args.map, args.name, args.entry,
                                   args.stack, args.scratch, args.input,
-                                  args.segments)
+                                  args.segments, args.placement)
     except (ManifestError, OSError, ValueError) as exc:
         print("exemanifest: %s" % exc, file=sys.stderr)
         return 1

@@ -35,7 +35,8 @@ _exe_runtime_error::
 
 ; Declare ordinary BSS after code even in NO_CRT0 programs.  The linker
 ; fixes _KOS_SDK_DATA at its independent low address, so it must not alter
-; the normal _CODE -> _DATA placement order.
+; the normal _CODE -> _RCONST -> _DATA placement order.
+	.area _RCONST
 	.area _DATA
 
 	.area _KOS_SDK_DATA

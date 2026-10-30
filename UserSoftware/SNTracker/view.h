@@ -16,6 +16,12 @@ struct view {
 	 * while a page is half drawn (a full redraw follows). */
 	uint8_t drawn[2];
 	uint8_t pending[2];
+	/* The title bar's transport: PLAY (1) or STOP and the elapsed
+	 * seconds, as set and as each page shows them. */
+	uint8_t playing;
+	uint16_t seconds;
+	uint8_t shown_playing[2];
+	uint16_t shown_seconds[2];
 	uint16_t drawn_order[2];
 	uint16_t drawn_top[2];
 };
@@ -36,6 +42,8 @@ void view_close(void);
 int view_draw_page(struct view *view, uint8_t page, uint16_t first_row);
 int view_begin_page(struct view *view, uint8_t page, uint16_t first_row);
 int view_draw_step(struct view *view, uint8_t page, uint8_t step);
+/* Redraw the page's transport when it differs from the view's. */
+int view_update_transport(struct view *view, uint8_t page);
 /* The cursor from viewport row `from` to `to`: two XOR fills. */
 int view_move_cursor(uint8_t page, uint8_t from, uint8_t to);
 int view_draw_row(uint8_t page, uint16_t row,

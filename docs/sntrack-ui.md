@@ -292,20 +292,34 @@ from that; a page left half drawn is drawn in full next time.
 The display catches up to the reported position; it never queues stale
 positions.
 
-## 13. Scrolling
+## 13. Playing
 
-`P` scrolls the cursor at the song's tempo, without sound: a row lasts
-`speed` ticks at the tick rate, timed by `/dev/timer`. It starts on the
-cursor's row and runs to the song's last row, flipping in each next page
-and order; `P` again stops it, and `P` after the song's end starts again
-at order 0. Space flips pages only while stopped; `Q` or Escape quits at
-any time. While scrolling, the console is polled after a cursor move or
-an idle wait, never between page steps.
+`P` plays the song through libsnd (`docs/snd-sdk.md`): the viewer loads
+the song with `snd_ztr_open` at start - its document borrows libsnd's
+resident orders and pattern directory (`snd_ztr_tables`) - and `P` starts
+it from order 0's first page. The timer handler ticks the engine
+(`snd_tick_ztr`); the foreground services it (`snd_ztr_service`) first in
+every loop and moves the cursor to the row the engine plays (the status
+names the next row; the one playing is the row before it). `P` again
+pauses and resumes; `P` after the song's end plays it again. Space flips
+pages only while stopped; `Q` or Escape quits at any time. The title bar
+shows `PLAY`/`STOP` and the elapsed time from the ticks played (section
+4), on the shown page when they change and on each page as it is drawn.
 
-The row due is the clock's; skipped rows count as late, and a page not
-drawn by its flip (finished before the switch) as a late page. At exit
-`sntview` prints `N rows, L late, P late pages` when it scrolled, then
-each loop step's measured cost, mean/max ms from clock read to clock
-read: `order` (the order load and decode), `panel`, `row`, `finish`
-(rules, status, cursor), `load` (a prefetch) and `move` (a cursor move,
-with any flip).
+Audio gets the deadlines; the display gets what remains. The handler
+preempts drawing, so the music never waits for a page; the cursor jumps
+when drawing falls behind, and nothing queues. While playing, the console
+is polled after a cursor move or an idle wait, never between page steps.
+
+At exit `sntview` prints `underruns U, overruns O, missed ticks M` once a
+song was loaded, and, when it played, `N rows, L late, P late pages`
+(skipped rows, pages not drawn by their flip) and each loop step's
+measured cost, mean/max ms from clock read to clock read: `order` (the
+order load and decode), `panel`, `row`, `finish` (rules, status, cursor),
+`load` (a prefetch), `move` (a cursor move, with any flip) and `refill`
+(the engine's order refill).
+
+`sntview` is a placed program (architecture 7.2): its timer handler is
+its one resident source (`sntview_tick.c`), and the toolchain spreads the
+viewer, libgfx and libsnd's foreground over the home zone and two far
+segments (`build/user/sntview/place/placement.txt`).

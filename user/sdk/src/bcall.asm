@@ -49,6 +49,7 @@
 	.globl _aperture_open
 	.globl _aperture_close
 	.globl _segmap
+	.globl _bcall_token
 
 	.area _CODE
 
@@ -93,7 +94,7 @@ _bcall_jump:
 ; A = the aperture token of the far segment in C, or 0 when C is not one
 ; of the program's far code segments (ids 1-4) or the map was refused.  A
 ; hit costs no syscall: the token is cached on the first call.
-_bcall_token:
+_bcall_token::
 	ld	a, c
 	dec	a		; the ids are 1-4
 	cp	#4

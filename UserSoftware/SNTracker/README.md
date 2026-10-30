@@ -37,7 +37,8 @@ CSM and Furnace authoring tools remain in `tools/`; example songs are in
 `sntview FILE.ZTR [ORDER]` opens a read-only GRAPHIC 6 view of one song
 order: metadata, stored order entries, instruments and the explicit event
 fields for all sixteen channels. Space flips to the next 16-row page (and
-then the next order); `P` scrolls the cursor through the song at its tempo
-(no sound) and stops it again; `Q` or Escape returns to the console. On
-exit after scrolling it prints the rows scrolled and how many were late.
+then the next order); `P` plays the song (the cursor follows the row
+playing), pauses and resumes it; `Q` or Escape returns to the console. On
+exit it prints the audio counts and, after playing, the rows the display
+fell behind on and each drawing step's cost.
 The optional starting order is decimal.

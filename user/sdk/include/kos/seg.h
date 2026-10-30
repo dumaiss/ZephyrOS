@@ -76,6 +76,10 @@ int segmap(unsigned int segment);
  * -KOS_RT_EFARMAP (8-bit callers see the low byte). */
 #define KOS_RT_EFARMAP 0x30
 
+/* The runtime code a placed program's veneer call reports when calls
+ * through veneers nest deeper than the trampoline's frame stack (16). */
+#define KOS_RT_EVDEPTH 0x31
+
 /* A far function: the entry the linker placed at an address >= 8000h. */
 typedef int (*kos_far_fn)(int, int);
 

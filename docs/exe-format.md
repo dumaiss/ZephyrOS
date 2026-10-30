@@ -198,13 +198,16 @@ them at `8000h`: the packer reads each area's payload from its own
 stream.  With no `SEGMENTS=` the rule generates the declaration itself,
 one `FAR_CODE` row per option used.
 
-Every declaration is checked against the **far link rule**: a program
-with far code or far data must keep its primary image and BSS below
-`8000h` and its stack base at or above `C000h`, so the aperture
-`8000h-BFFFh` belongs to segments alone; a far area's `image + bss` is at most 16 KiB and each
-auxiliary bank holds at most one far segment.  `tools/exepack.py` rejects
-any violation, so the generic rule cannot pack a program that the kernel
-would later refuse.
+Every declaration is checked against the **link rule** (architecture
+7.2): nothing that can run or be touched while a segment is mapped lies
+in `8000h-BFFFh` of the primary image - the home zone there is reached
+only through veneers that close the aperture first - the stack lies above
+`C000h` when the primary image has a home zone, a far area's `image + bss`
+is at most 16 KiB and each auxiliary bank holds at most one far segment.
+The primary image may run from `0100h` to the home zone's end, and its
+BSS then starts at `C000h`.  `tools/exepack.py` checks the rule from the
+link's relocations and rejects any violation, so the generic rule cannot
+pack a program that the kernel would later refuse.
 
 ## 6. Load sequence
 

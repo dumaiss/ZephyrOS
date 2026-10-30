@@ -1,17 +1,16 @@
 /* SN-Track's read-only ZTR document (docs/sntrack-ui.md section 11).
  *
- * Open keeps the header values, the orders, the pattern directory and the
- * instruments resident, verifies the stamped content CRC, and validates
- * every sparse stream through one in-memory decoder.  Streams are read
- * again per order for display.
+ * The song is libsnd's: its open checked the layout, the capacities and
+ * the content CRC, and its resident orders and pattern directory are
+ * the document's.  Open adds the header's display values and the
+ * instruments, and validates every sparse stream through one in-memory
+ * decoder while typing the instruments.  Streams are read again per
+ * order for display.
  */
 
 #include "kos.h"
 #include "kos/errno.h"
 #include "ztrdoc.h"
-
-_Static_assert(sizeof(struct ztrdoc_pattern) == 8u,
-	       "the pattern directory is read straight into memory");
 
 static uint16_t word(const uint8_t *p)
 {
@@ -106,64 +105,13 @@ static int next_event(const uint8_t *buffer, uint16_t *at, uint16_t end,
 	return 0;
 }
 
-static uint16_t pattern_key(const struct ztrdoc_pattern *pattern)
+/* Directory entry `i` (libsnd's 6-byte resident form). */
+static void pattern_at(const struct ztrdoc *doc, uint16_t i,
+		       struct ztrdoc_pattern *out)
 {
-	return (uint16_t)(((uint16_t)pattern->channel << 8) | pattern->number);
-}
-
-/* The directory sorted by (channel, number), once at open: an insertion
- * sort, linear on the tools' already sorted directories.  A repeated key
- * is malformed. */
-static int sort_patterns(struct ztrdoc *doc)
-{
-	uint16_t i, j, key;
-	struct ztrdoc_pattern moving;
-	for (i = 1u; i < doc->pattern_count; ++i) {
-		moving = doc->patterns[i];
-		key = pattern_key(&moving);
-		for (j = i; j != 0u && pattern_key(&doc->patterns[j - 1u]) > key; --j)
-			doc->patterns[j] = doc->patterns[j - 1u];
-		doc->patterns[j] = moving;
-		if (j != 0u && pattern_key(&doc->patterns[j - 1u]) == key)
-			return -KOS_EINVAL;
-	}
-	return 0;
-}
-
-/* The sorted directory's first entry per channel; channel_start[16] is
- * the count. */
-static void index_channels(struct ztrdoc *doc)
-{
-	uint16_t i = 0u;
-	uint8_t channel;
-	for (channel = 0u; channel <= ZTRDOC_CHANNELS; ++channel) {
-		while (i < doc->pattern_count && doc->patterns[i].channel < channel)
-			++i;
-		doc->channel_start[channel] = i;
-	}
-}
-
-/* Patterns are usually numbered densely from 0, so the entry is first
- * looked for at start + number, then searched for within the channel. */
-int ztrdoc_find_pattern(const struct ztrdoc *doc, uint8_t channel,
-			uint8_t number, struct ztrdoc_pattern *out)
-{
-	uint16_t low = doc->channel_start[channel];
-	uint16_t high = doc->channel_start[channel + 1u];
-	uint16_t middle = (uint16_t)(low + number);
-	uint8_t at;
-	if (middle >= high || doc->patterns[middle].number != number) {
-		while (low < high) {
-			middle = (uint16_t)((low + high) >> 1);
-			at = doc->patterns[middle].number;
-			if (at == number) break;
-			if (at < number) low = (uint16_t)(middle + 1u);
-			else high = middle;
-		}
-		if (low >= high) return -KOS_ENOENT;
-	}
-	*out = doc->patterns[middle];
-	return 0;
+	const uint8_t *e = doc->patterns + i * SND_ZTR_DIR_BYTES;
+	out->channel = e[0]; out->number = e[1];
+	out->offset = word(e + 2u); out->length = word(e + 4u);
 }
 
 static void put_word(uint8_t *p, uint16_t value)
@@ -175,42 +123,62 @@ static void put_word(uint8_t *p, uint16_t value)
 int ztrdoc_load_order(const struct ztrdoc *doc, uint16_t order,
 		      uint8_t *buffer, uint16_t size)
 {
-	uint8_t channel;
-	uint16_t used = ZTRDOC_ORDER_TABLE;
+	const uint8_t *numbers;
+	struct ztrdoc_pattern pattern;
+	uint16_t used = ZTRDOC_ORDER_TABLE, i;
 	if (order >= doc->order_count || size < ZTRDOC_ORDER_TABLE)
 		return -KOS_EINVAL;
+	numbers = ZTRDOC_ORDER(doc, order);
 	memset(buffer, 0, ZTRDOC_ORDER_TABLE);
-	for (channel = 0u; channel < ZTRDOC_CHANNELS; ++channel) {
-		struct ztrdoc_pattern pattern;
-		uint8_t number = doc->orders[order][channel];
-		if (number == 0xFFu) continue;
-		if (ztrdoc_find_pattern(doc, channel, number, &pattern) < 0)
-			return -KOS_EINVAL;
+	/* One directory pass: each entry the order selects, at most once
+	 * per channel (the first match, as the engine takes it). */
+	for (i = 0u; i < doc->pattern_count; ++i) {
+		uint8_t *slot;
+		pattern_at(doc, i, &pattern);
+		slot = buffer + pattern.channel * 4u;
+		if (pattern.channel >= ZTRDOC_CHANNELS ||
+		    numbers[pattern.channel] != pattern.number ||
+		    word(slot + 2u) != 0u)
+			continue;
 		if (pattern.length > size - used) return -KOS_ENOSPC;
-		put_word(buffer + channel * 4u, used);
-		put_word(buffer + channel * 4u + 2u,
-			 (uint16_t)(used + pattern.length));
 		if (read_full(doc, pattern.offset, buffer + used,
 			      pattern.length) < 0) return -KOS_EIO;
+		put_word(slot, used);
 		used = (uint16_t)(used + pattern.length);
+		put_word(slot + 2u, used);
 	}
 	return (int)used;
 }
 
-int ztrdoc_decode_channel(const uint8_t *buffer, uint8_t channel,
-			  uint16_t first_row,
-			  struct ztrdoc_event out[ZTRDOC_VIEW_ROWS])
+/* An event starts with its row byte, so a cursor peeks the next row
+ * without decoding. */
+int ztrdoc_seek_rows(const uint8_t *buffer, uint16_t first_row,
+		     uint16_t at[ZTRDOC_CHANNELS])
 {
-	uint16_t at = word(buffer + channel * 4u);
-	uint16_t end = word(buffer + channel * 4u + 2u);
 	struct ztrdoc_event event;
-	uint8_t row;
-	memset(out, 0, sizeof(*out) * ZTRDOC_VIEW_ROWS);
-	while (at < end) {
-		if (next_event(buffer, &at, end, &row, &event) < 0)
+	uint8_t channel, row;
+	for (channel = 0u; channel < ZTRDOC_CHANNELS; ++channel) {
+		uint16_t end = word(buffer + channel * 4u + 2u);
+		at[channel] = word(buffer + channel * 4u);
+		while (at[channel] < end && buffer[at[channel]] < first_row)
+			if (next_event(buffer, &at[channel], end, &row, &event) < 0)
+				return -KOS_EINVAL;
+	}
+	return 0;
+}
+
+int ztrdoc_next_row(const uint8_t *buffer, uint16_t row,
+		    uint16_t at[ZTRDOC_CHANNELS],
+		    struct ztrdoc_event out[ZTRDOC_CHANNELS])
+{
+	uint8_t channel, event_row;
+	memset(out, 0, sizeof(*out) * ZTRDOC_CHANNELS);
+	for (channel = 0u; channel < ZTRDOC_CHANNELS; ++channel) {
+		uint16_t end = word(buffer + channel * 4u + 2u);
+		if (at[channel] < end && buffer[at[channel]] == row &&
+		    next_event(buffer, &at[channel], end, &event_row,
+			       &out[channel]) < 0)
 			return -KOS_EINVAL;
-		if (row >= first_row && row < first_row + ZTRDOC_VIEW_ROWS)
-			out[row - first_row] = event;
 	}
 	return 0;
 }
@@ -253,121 +221,22 @@ uint8_t ztrdoc_noise_control(const struct ztrdoc *doc,
 			 ((uint16_t)note & 3u));
 }
 
-static int check_header(struct ztrdoc *doc, const uint8_t *h)
+/* The header's display values and section offsets; libsnd checked the
+ * fixed layout and the capacities. */
+static int header_values(struct ztrdoc *doc, const uint8_t *h)
 {
-	uint8_t i;
-	uint16_t expected;
-	if (memcmp(h, "ZTR1", 4u) != 0 || h[4] != 1u || h[5] != 0x40u ||
-	    h[6] != 0u || h[7] != 16u || h[10] == 0u || h[11] == 0u ||
-	    h[11] > 16u || word(h + 12u) == 0u || word(h + 12u) > 256u ||
-	    word(h + 14u) == 0u || word(h + 14u) > ZTRDOC_MAX_ORDERS ||
-	    word(h + 16u) > ZTRDOC_MAX_PATTERNS || word(h + 18u) > 16u ||
-	    h[50] != 16u || h[51] != 16u || h[52] != 8u || h[53] != 96u)
-		return -KOS_EINVAL;
-	for (i = 0x37u; i < 0x40u; ++i) if (h[i] != 0u) return -KOS_EINVAL;
 	doc->rate = word(h + 8u); doc->speed = h[10]; doc->rows = word(h + 12u);
-	doc->order_count = word(h + 14u); doc->pattern_count = word(h + 16u);
 	doc->instrument_count = (uint8_t)word(h + 18u);
 	doc->clock_hz = dword(h + 24u); doc->strings_offset = 64u;
 	doc->strings_size = word(h + 48u); doc->orders_offset = word(h + 34u);
 	doc->instruments_offset = word(h + 36u); doc->macros_offset = word(h + 38u);
 	doc->patterns_offset = word(h + 40u); doc->pattern_data_offset = word(h + 42u);
 	doc->note_table_offset = word(h + 44u);
-	if (doc->rate == 0u || doc->rate > 180u ||
-	    word(h + 46u) != doc->reader->size || doc->strings_size == 0u)
-		return -KOS_EINVAL;
-	/* The sections in order, without gaps where their sizes are known. */
-	expected = (uint16_t)(64u + doc->strings_size);
-	if (doc->orders_offset != expected) return -KOS_EINVAL;
-	expected = (uint16_t)(expected + doc->order_count * ZTRDOC_CHANNELS);
-	if (doc->instruments_offset != expected) return -KOS_EINVAL;
-	expected = (uint16_t)(expected + doc->instrument_count * 16u);
-	if (doc->macros_offset != expected || doc->patterns_offset < expected)
-		return -KOS_EINVAL;
-	expected = (uint16_t)(doc->patterns_offset + doc->pattern_count * 8u);
-	if (doc->pattern_data_offset != expected ||
-	    doc->note_table_offset < expected ||
-	    (uint32_t)doc->note_table_offset + 192u != doc->reader->size)
+	if (doc->rate == 0u || doc->speed == 0u || doc->rows == 0u ||
+	    doc->rows > 256u || doc->instrument_count > ZTRDOC_MAX_INSTRUMENTS ||
+	    doc->strings_size == 0u)
 		return -KOS_EINVAL;
 	return 0;
-}
-
-/* The content CRC-16 of docs/ZTR-Format.md (16h), table for
- * poly 1021h init FFFFh, the same values libsnd feeds. */
-static const uint16_t crc_table[256] = {
-	0x0000u, 0x1021u, 0x2042u, 0x3063u, 0x4084u, 0x50A5u, 0x60C6u, 0x70E7u,
-	0x8108u, 0x9129u, 0xA14Au, 0xB16Bu, 0xC18Cu, 0xD1ADu, 0xE1CEu, 0xF1EFu,
-	0x1231u, 0x0210u, 0x3273u, 0x2252u, 0x52B5u, 0x4294u, 0x72F7u, 0x62D6u,
-	0x9339u, 0x8318u, 0xB37Bu, 0xA35Au, 0xD3BDu, 0xC39Cu, 0xF3FFu, 0xE3DEu,
-	0x2462u, 0x3443u, 0x0420u, 0x1401u, 0x64E6u, 0x74C7u, 0x44A4u, 0x5485u,
-	0xA56Au, 0xB54Bu, 0x8528u, 0x9509u, 0xE5EEu, 0xF5CFu, 0xC5ACu, 0xD58Du,
-	0x3653u, 0x2672u, 0x1611u, 0x0630u, 0x76D7u, 0x66F6u, 0x5695u, 0x46B4u,
-	0xB75Bu, 0xA77Au, 0x9719u, 0x8738u, 0xF7DFu, 0xE7FEu, 0xD79Du, 0xC7BCu,
-	0x48C4u, 0x58E5u, 0x6886u, 0x78A7u, 0x0840u, 0x1861u, 0x2802u, 0x3823u,
-	0xC9CCu, 0xD9EDu, 0xE98Eu, 0xF9AFu, 0x8948u, 0x9969u, 0xA90Au, 0xB92Bu,
-	0x5AF5u, 0x4AD4u, 0x7AB7u, 0x6A96u, 0x1A71u, 0x0A50u, 0x3A33u, 0x2A12u,
-	0xDBFDu, 0xCBDCu, 0xFBBFu, 0xEB9Eu, 0x9B79u, 0x8B58u, 0xBB3Bu, 0xAB1Au,
-	0x6CA6u, 0x7C87u, 0x4CE4u, 0x5CC5u, 0x2C22u, 0x3C03u, 0x0C60u, 0x1C41u,
-	0xEDAEu, 0xFD8Fu, 0xCDECu, 0xDDCDu, 0xAD2Au, 0xBD0Bu, 0x8D68u, 0x9D49u,
-	0x7E97u, 0x6EB6u, 0x5ED5u, 0x4EF4u, 0x3E13u, 0x2E32u, 0x1E51u, 0x0E70u,
-	0xFF9Fu, 0xEFBEu, 0xDFDDu, 0xCFFCu, 0xBF1Bu, 0xAF3Au, 0x9F59u, 0x8F78u,
-	0x9188u, 0x81A9u, 0xB1CAu, 0xA1EBu, 0xD10Cu, 0xC12Du, 0xF14Eu, 0xE16Fu,
-	0x1080u, 0x00A1u, 0x30C2u, 0x20E3u, 0x5004u, 0x4025u, 0x7046u, 0x6067u,
-	0x83B9u, 0x9398u, 0xA3FBu, 0xB3DAu, 0xC33Du, 0xD31Cu, 0xE37Fu, 0xF35Eu,
-	0x02B1u, 0x1290u, 0x22F3u, 0x32D2u, 0x4235u, 0x5214u, 0x6277u, 0x7256u,
-	0xB5EAu, 0xA5CBu, 0x95A8u, 0x8589u, 0xF56Eu, 0xE54Fu, 0xD52Cu, 0xC50Du,
-	0x34E2u, 0x24C3u, 0x14A0u, 0x0481u, 0x7466u, 0x6447u, 0x5424u, 0x4405u,
-	0xA7DBu, 0xB7FAu, 0x8799u, 0x97B8u, 0xE75Fu, 0xF77Eu, 0xC71Du, 0xD73Cu,
-	0x26D3u, 0x36F2u, 0x0691u, 0x16B0u, 0x6657u, 0x7676u, 0x4615u, 0x5634u,
-	0xD94Cu, 0xC96Du, 0xF90Eu, 0xE92Fu, 0x99C8u, 0x89E9u, 0xB98Au, 0xA9ABu,
-	0x5844u, 0x4865u, 0x7806u, 0x6827u, 0x18C0u, 0x08E1u, 0x3882u, 0x28A3u,
-	0xCB7Du, 0xDB5Cu, 0xEB3Fu, 0xFB1Eu, 0x8BF9u, 0x9BD8u, 0xABBBu, 0xBB9Au,
-	0x4A75u, 0x5A54u, 0x6A37u, 0x7A16u, 0x0AF1u, 0x1AD0u, 0x2AB3u, 0x3A92u,
-	0xFD2Eu, 0xED0Fu, 0xDD6Cu, 0xCD4Du, 0xBDAAu, 0xAD8Bu, 0x9DE8u, 0x8DC9u,
-	0x7C26u, 0x6C07u, 0x5C64u, 0x4C45u, 0x3CA2u, 0x2C83u, 0x1CE0u, 0x0CC1u,
-	0xEF1Fu, 0xFF3Eu, 0xCF5Du, 0xDF7Cu, 0xAF9Bu, 0xBFBAu, 0x8FD9u, 0x9FF8u,
-	0x6E17u, 0x7E36u, 0x4E55u, 0x5E74u, 0x2E93u, 0x3EB2u, 0x0ED1u, 0x1EF0u,
-};
-
-static uint16_t crc_feed(uint16_t crc, const uint8_t *data, uint16_t length)
-{
-	while (length-- != 0u)
-		crc = (uint16_t)((crc << 8) ^
-			crc_table[(uint8_t)(crc >> 8) ^ *data++]);
-	return crc;
-}
-
-/* One covered range, through the scratch window. */
-static int crc_sweep(const struct ztrdoc *doc, uint16_t *crc, uint16_t at,
-		     uint16_t end, uint8_t *scratch, uint16_t size)
-{
-	while (at < end) {
-		uint16_t chunk = (uint16_t)(end - at);
-		if (chunk > size) chunk = size;
-		if (read_full(doc, at, scratch, chunk) < 0) return -KOS_EIO;
-		*crc = crc_feed(*crc, scratch, chunk);
-		at = (uint16_t)(at + chunk);
-	}
-	return 0;
-}
-
-/* The stored CRC, when nonzero, over [0,16h) + [18h,pattern data) +
- * [note table,+192): a mismatch means the file is corrupt. */
-static int check_crc(struct ztrdoc *doc, const uint8_t *h,
-		     uint8_t *scratch, uint16_t size)
-{
-	uint16_t crc;
-	if (word(h + 0x16u) == 0u) return 0;
-	if (size == 0u) return -KOS_ENOSPC;
-	crc = crc_feed(0xFFFFu, h, 0x16u);
-	crc = crc_feed(crc, h + 0x18u, (uint16_t)(64u - 0x18u));
-	if (crc_sweep(doc, &crc, 64u, doc->pattern_data_offset,
-		      scratch, size) < 0 ||
-	    crc_sweep(doc, &crc, doc->note_table_offset,
-		      (uint16_t)(doc->note_table_offset + 192u),
-		      scratch, size) < 0)
-		return -KOS_EIO;
-	return crc == word(h + 0x16u) ? 0 : -KOS_EINVAL;
 }
 
 static int load_instruments(struct ztrdoc *doc)
@@ -398,13 +267,15 @@ static int load_instruments(struct ztrdoc *doc)
  * the directory says; each explicit instrument classifies its entry. */
 static int check_streams(struct ztrdoc *doc, uint8_t *scratch, uint16_t size)
 {
-	uint16_t i, at, count, window_at = 0u, window_end = 0u;
-	uint8_t row, previous, noise;
+	uint16_t i, at, window_at = 0u, window_end = 0u;
+	uint8_t row, previous, noise, first;
 	const uint8_t *stream;
 	struct ztrdoc_event event;
 	struct ztrdoc_instrument *ins;
 	for (i = 0u; i < doc->pattern_count; ++i) {
-		const struct ztrdoc_pattern *pattern = &doc->patterns[i];
+		struct ztrdoc_pattern entry;
+		const struct ztrdoc_pattern *pattern = &entry;
+		pattern_at(doc, i, &entry);
 		if (pattern->channel >= 16u ||
 		    pattern->offset < doc->pattern_data_offset ||
 		    pattern->length > doc->note_table_offset - pattern->offset)
@@ -424,13 +295,13 @@ static int check_streams(struct ztrdoc *doc, uint8_t *scratch, uint16_t size)
 		stream = scratch + (pattern->offset - window_at);
 		noise = (uint8_t)((pattern->channel & 3u) == 3u ?
 				  ZTRDOC_INSTR_NOISE : ZTRDOC_INSTR_TONE);
-		at = 0u; count = 0u; previous = 0u;
+		at = 0u; first = 1u; previous = 0u;
 		while (at < pattern->length) {
 			if (next_event(stream, &at, pattern->length, &row, &event) < 0 ||
-			    row >= doc->rows || (count != 0u && row <= previous))
+			    row >= doc->rows || (first == 0u && row <= previous))
 				return -KOS_EINVAL;
 			previous = row;
-			++count;
+			first = 0u;
 			if ((event.mask & 0x40u) == 0u) continue;
 			ins = (struct ztrdoc_instrument *)ztrdoc_instrument(
 				doc, event.instrument);
@@ -438,63 +309,30 @@ static int check_streams(struct ztrdoc *doc, uint8_t *scratch, uint16_t size)
 			if (ins->type == ZTRDOC_INSTR_UNUSED) ins->type = noise;
 			else if (ins->type != noise) return -KOS_ENOTSUP;
 		}
-		if (count != pattern->events) return -KOS_EINVAL;
-	}
-	return 0;
-}
-
-/* Orders name stored patterns, and each order's streams fit one buffer. */
-static int check_orders(const struct ztrdoc *doc)
-{
-	uint16_t order, used;
-	uint8_t channel;
-	struct ztrdoc_pattern pattern;
-	for (order = 0u; order < doc->order_count; ++order) {
-		used = ZTRDOC_ORDER_TABLE;
-		for (channel = 0u; channel < ZTRDOC_CHANNELS; ++channel) {
-			uint8_t number = doc->orders[order][channel];
-			if (number == 0xFFu) continue;
-			if (ztrdoc_find_pattern(doc, channel, number, &pattern) < 0)
-				return -KOS_EINVAL;
-			if (pattern.length > ZTRDOC_ORDER_BUFFER - used)
-				return -KOS_ENOSPC;
-			used = (uint16_t)(used + pattern.length);
-		}
 	}
 	return 0;
 }
 
 int ztrdoc_open(struct ztrdoc *doc, const kos_reader_t *reader,
+		const struct snd_ztr_tables *tables,
 		uint8_t *scratch, uint16_t size)
 {
 	uint8_t h[64];
-	char discard[2];
 	uint8_t i;
 	int result;
 	memset(doc, 0, sizeof(*doc));
 	doc->reader = reader;
+	doc->orders = tables->orders;
+	doc->patterns = tables->patterns;
+	doc->order_count = tables->order_count;
+	doc->pattern_count = tables->pattern_count;
 	for (i = 0u; i < ZTRDOC_MAX_INSTRUMENTS; ++i) doc->instrument_index[i] = -1;
-	if (reader->size < 256u || reader->size > 65535u ||
-	    read_full(doc, 0u, h, 64u) < 0) return -KOS_EINVAL;
-	result = check_header(doc, h);
+	if (read_full(doc, 0u, h, 64u) < 0) return -KOS_EINVAL;
+	result = header_values(doc, h);
 	if (result < 0) return result;
-	result = check_crc(doc, h, scratch, size);
-	if (result < 0) return result;
-	if (read_full(doc, doc->orders_offset, doc->orders,
-		      (uint16_t)(doc->order_count * ZTRDOC_CHANNELS)) < 0 ||
-	    read_full(doc, doc->patterns_offset, doc->patterns,
-		      (uint16_t)(doc->pattern_count * 8u)) < 0)
-		return -KOS_EIO;
-	result = sort_patterns(doc);
-	if (result < 0) return result;
-	index_channels(doc);
-	if (read_string(doc, word(h + 28u), doc->title, sizeof(doc->title)) < 0 ||
-	    read_string(doc, word(h + 30u), discard, sizeof(discard)) < 0 ||
-	    read_string(doc, word(h + 32u), discard, sizeof(discard)) < 0)
+	if (read_string(doc, word(h + 28u), doc->title, sizeof(doc->title)) < 0)
 		return -KOS_EINVAL;
 	result = load_instruments(doc);
 	if (result < 0) return result;
-	result = check_streams(doc, scratch, size);
-	if (result < 0) return result;
-	return check_orders(doc);
+	return check_streams(doc, scratch, size);
 }

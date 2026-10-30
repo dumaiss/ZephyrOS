@@ -52,7 +52,7 @@ import romfspack  # noqa: E402
 # with every relink of the monitor or of the libkos members it links.
 MONITOR_SIZE = 6313
 MONITOR_SHA256 = (
-    "d5de61f5eaa4f39a50b48ae0106a2afadcce2277512797a7ae5c667c019a52bc")
+    "bd4762cadb5f3f7f57c69d925cfdc599dd7ba1ba1a61246ae2724c3407970c5e")
 
 # The monitor's visible rows, decoded from the V9958 trace.
 PROMPT = "Z80> "

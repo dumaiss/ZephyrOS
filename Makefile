@@ -1161,6 +1161,15 @@ all: $(EXE_USER_ROOT)/readermap.exe
 $(eval $(call exe_program,gfxtest,tests/gfx,\
 	gfxtest.c,STACK=384,LIBS=gfx))
 
+# The placement probe (tests/test_exeplace.py): sources pinned to every
+# zone, so each kind of crossing goes through a veneer.
+$(eval $(call exe_program,placetest,tests/place,\
+	place_main.c place_res.c place_far1.c place_far2.c,STACK=512,\
+	RESIDENT=place_res.c,\
+	PLACE=place_main.c=home:place_far1.c=far1:place_far2.c=far2))
+
+all: $(EXE_USER_ROOT)/placetest.exe
+
 all: $(EXE_USER_ROOT)/gfxtest.exe
 
 # The KRES KonaOS edition outcome programs: card programs the KRES
@@ -1352,7 +1361,7 @@ SDK_INPUTS := $(wildcard abi/kos/*.h) \
 	$(wildcard user/sdk/template/*) $(wildcard user/sdk/examples/*) \
 	docs/sdk.md docs/tui.md docs/exe-format.md mk/kos.mk \
 	formats/include/exe.h \
-	tools/exepack.py tools/exemanifest.py tools/ihx.py tools/kimg.py \
+	tools/exepack.py tools/exemanifest.py tools/exeplace.py tools/ihx.py tools/kimg.py \
 	tools/sdkpack.py
 
 sdk: $(KOS_SDK_TARBALL)

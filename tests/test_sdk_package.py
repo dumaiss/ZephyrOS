@@ -121,6 +121,7 @@ SDK_FILES = {
     "lib/crt0.rel",
     "tools/exepack.py",
     "tools/exemanifest.py",
+    "tools/exeplace.py",
     "tools/ihx.py",
     "tools/kimg.py",
     "mk/kos.mk",
@@ -471,10 +472,10 @@ class TestSdkPackage(unittest.TestCase):
                                if dest.startswith("include/abi/")})
 
     def test_the_standalone_tools_use_the_standard_library_only(self):
-        """exepack, exemanifest and ihx ship inside the SDK: they must
-        import nothing but the Python 3 standard library (and each
-        other)."""
-        local = {"exepack", "exemanifest", "ihx"}
+        """exepack, exemanifest, exeplace and ihx ship inside the SDK:
+        they must import nothing but the Python 3 standard library (and
+        each other)."""
+        local = {"exepack", "exemanifest", "exeplace", "ihx"}
         violations = []
         for name in sorted(local):
             source = _read(os.path.join(self.tree, "tools", "%s.py" % name))

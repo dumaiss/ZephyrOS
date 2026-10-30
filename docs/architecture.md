@@ -1170,25 +1170,80 @@ diagnostics, not a way around drivers. They never reach bank 7.
 
 A program is an EXE built from C with the SDK (`docs/sdk.md`). It
 includes only `kos.h`, links the startup code and `libkos`, and never
-writes entry assembly. A program that uses no far facility has
+writes entry assembly. A program whose code and data fit its own bank has
 `0000h-DFFFh` to itself and never sees P ≠ 0.
 
-### 7.2 Far code
+### 7.2 Placement: resident, home and far
 
-- A far-code source is built into segment n with `FARn=` (n = 1..4). Every
-  `__banked` function in it is called as plain C: SDCC emits the segment
-  id, the address and a call to `___sdcc_bcall_ehl`, and the SDK's
-  trampoline maps the segment (caching its token), opens the aperture,
-  calls, and restores the caller's latch. Far code may call other segments'
-  banked functions.
-- `farcall(segment, fn, a, b)` is the primitive under it, for code that
-  maps explicitly.
-- **Link rule:** code, stack and data used while the aperture is open live
-  outside `8000h-BFFFh` of the primary image. Far code may call primary
-  code and use pointers into primary memory outside the aperture. A
-  pointer into another far segment is not valid.
-- Syscalls from far code are ordinary: the gate saves and restores the
-  whole latch, P included.
+A program larger than its bank is placed by the toolchain, not by hand.
+The unit is the **object module**: a program source's object or a linked
+SDK library member. The placer gives each module a zone:
+
+| zone | addresses | holds |
+|---|---|---|
+| **resident** | `0100h-7FFFh`, and `C000h-DFFFh` below the stack | whatever can run or be touched while a far segment is mapped |
+| **home** | `8000h-BFFFh` of the program's own bank | code and data used only while the aperture is closed |
+| **far** | segments of up to 16 KiB, each mapped at `8000h-BFFFh` in turn | code and its own data |
+
+**The rule.** The aperture is the only thing that hides memory: while far
+segment k is mapped, the home zone and every other segment are invisible,
+and the resident zone is always visible. So a reference is direct only
+when its target is resident or lies in the referrer's own zone (home to
+home, segment k to segment k). Every other call goes through a
+**veneer**. Data, and the address of code (a function pointer, a `const`
+table), never cross zones except to resident targets.
+
+**Pointers.** A pointer is not in the relocations, so whatever a pointer
+may reach stays visible from every zone: all data is resident, and so are
+a program's constants (its C sources compile with their `const` objects
+and string literals in a resident area of their own, `_RCONST`). The one
+exception is a library that declares its data private - it never hands
+out a pointer to its own state (libgfx) - whose data travels with its
+code. A library places as one unit, since its members hand each other
+pointers to their own constants.
+
+**Resident by necessity.** crt0 and libkos (the syscall stubs, event
+delivery, the veneer and banked-call trampolines), the sources a program
+declares resident (its event handlers: a handler runs wherever the
+program was interrupted, far code included), and every function those
+handlers reach directly. A ZTR player's handler calls `snd_tick_ztr`, so
+libsnd's tick path is resident and its open and refill are not.
+
+**Veneers.** The placer generates one resident veneer per veneered
+target. It maps the target's zone (a far segment by its cached token, the
+home zone by closing the aperture), calls, restores the caller's mapping
+and returns. The caller's return address is swapped in place for the
+veneer's, so the argument registers and the stack the callee reads are
+exactly the caller's, and any function can be a veneer target; nested
+veneer calls keep their return addresses and latches on a small resident
+frame stack. A veneer costs about a banked call.
+
+**Placing.** The resident set is fixed first, then the pins (`PLACE=`
+hints, `docs/sdk.md` section 3). The remaining code stays resident while
+the resident zone has room, the most-called first; the rest is grouped
+along the call graph - each library one group, merged with the groups it
+calls most while they fit one zone - and the groups go to the home zone
+and the far segments. The placement is deterministic and the build
+report lists every module's zone and every veneer.
+
+**Layout.** The loader is unchanged: it copies the primary image from
+`0100h` and zeroes the BSS after it. A placed image runs from `0100h` to
+`C000h`: resident code, the program's constants, the resident statics
+that do not fit above `C000h` (zeros in the image), then the home zone at
+`8000h`; the largest resident statics are the BSS from `C000h`, below
+the stack. A far segment's private library data is its segment BSS. The
+link lists the modules zone by zone, because the linker writes each
+module's bytes in turn and the zones at `8000h` overlap. The packer
+checks the rule again from the placed objects' relocations, naming the
+module and symbol of a violation.
+
+- `__banked` functions keep their own convention: SDCC emits the segment
+  id, the address and a call to `___sdcc_bcall_ehl`, which maps the
+  segment, opens the aperture, calls and restores the caller's latch.
+  `farcall(segment, fn, a, b)` maps a segment explicitly.
+- Syscalls from any zone are ordinary: the gate saves and restores the
+  whole latch, P included, and a buffer in `8000h-BFFFh` names whatever
+  the caller had mapped.
 
 ### 7.3 Far data
 
@@ -1203,9 +1258,10 @@ A data source with an initialized writable object is refused at build time:
 far data is either constant or zeroed. A file larger than one object is
 streamed, not loaded.
 
-**The one-window rule.** There is one aperture, `8000h-BFFFh`. Far code and
-mapped far data cannot be visible at the same time. Primary-image code can
-map data and use pointers; far code reaches far data by copy. Each far-code
+**The one-window rule.** There is one aperture, `8000h-BFFFh`. Far code,
+the home zone and mapped far data are never visible together. Resident
+code maps data and uses pointers (so a module that maps far data is
+resident, section 7.2); home and far code reach far data by copy. Each far-code
 segment and each mappable data segment occupies one auxiliary bank's
 aperture slice, so their number is bounded by the free banks (`run` returns
 `KOS_ENOSPC` when the banks run out).

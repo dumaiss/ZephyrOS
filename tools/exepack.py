@@ -162,6 +162,7 @@ CODE_BY_NAME = dict(RESULT_CODES)
 MANIFEST_KEYS = {
     "format", "name", "input", "map", "entry", "entry_offset",
     "image_size", "bss_size", "stack_size", "scratch", "segments",
+    "placement",
 }
 SEGMENT_MANIFEST_KEYS = {"id", "kind", "input", "area", "bss_area", "bss_size",
                         "flags"}
@@ -543,10 +544,16 @@ def _validate_segment_manifest(segments):
                 raise ExeError("EXE_EXEC_ERR_ARG",
                                "segment %d kind FAR_CODE needs an 'area' "
                                "name" % (index + 1))
-            if "input" in segment or "bss_area" in segment:
+            if "input" in segment:
                 raise ExeError("EXE_EXEC_ERR_ARG",
                                "segment %d kind FAR_CODE takes 'area', not "
-                               "'input'/'bss_area'" % (index + 1))
+                               "'input'" % (index + 1))
+            # A placed far segment carries the data private to its code
+            # in a linked BSS area; a hand-declared one gives bss_size.
+            if "bss_area" not in segment and "bss_size" not in segment:
+                raise ExeError("EXE_EXEC_ERR_ARG",
+                               "segment %d kind FAR_CODE needs 'bss_size' "
+                               "or 'bss_area'" % (index + 1))
         elif segment["kind"] == "DATA":
             if linked:
                 # A linked far-data row: the `DATAn=` areas.
@@ -659,7 +666,7 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
                                "the far code segments)"
                                % (index + 1, segment["id"], segment["id"],
                                   area))
-            bss_area = None
+            bss_area = segment.get("bss_area")
         elif "area" in segment:
             area = segment["area"]
             bss_area = segment["bss_area"]
@@ -681,7 +688,7 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
                            "segment %d: area %s is %d bytes, over the "
                            "%d-byte aperture"
                            % (index + 1, area, length, SEG_MAX_FAR_SIZE))
-        if length == 0:
+        if length == 0 and segment["kind"] != "FAR_CODE":
             raise ExeError("EXE_EXEC_ERR_SEGMENT",
                            "segment %d: area %s carries no const object; a "
                            "far-data segment needs an initialized table "
@@ -709,7 +716,20 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
                                % (index + 1, area, bss_area,
                                   length + bss_length, SEG_MAX_FAR_SIZE))
         far_entries.append((segment["id"], index, area, start, length))
-    far_entries.sort()
+    # A placed program's home zone: the primary bank's own 8000h-BFFFh,
+    # one more record stream at 8000h (linked before the far areas), its
+    # bytes copied into the primary image.
+    placement = manifest.get("placement")
+    home_area = placement.get("home_area") if placement else None
+    if home_area:
+        start = symbols.get("s_" + home_area)
+        length = symbols.get("l_" + home_area, 0)
+        if start != FAR_BASE:
+            raise ExeError("EXE_EXEC_ERR_ARG",
+                           "home area %s is linked at %04Xh, not %04Xh"
+                           % (home_area, start or 0, FAR_BASE))
+        far_entries.append((0, "home", home_area, start, length))
+    far_entries.sort(key=lambda entry: entry[0])
     far_ranges = [(entry[3], entry[4]) for entry in far_entries]
 
     # Which far areas cover each linked address, in link order: the
@@ -809,11 +829,24 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
                            "syscall argument window 0100h-1FFFh"
                            % (scratch["symbol"], address, scratch["size"]))
 
-    # The 7.2 link rule for far-using programs: code, stack and data
-    # used while the aperture is open live outside 8000h-BFFFh of the
-    # primary image, so the whole primary image and BSS end at 8000h and
-    # the stack begins at C000h or above.
-    if far_ranges:
+    # The 7.2 link rule.  A placed program: the placer's zones are
+    # verified again from the placed objects' relocations, and the stack
+    # lies above C000h.  A hand-declared far program: the primary image,
+    # BSS and stack stay outside 8000h-BFFFh.
+    if placement:
+        import exeplace
+        stack_base = STACK_TOP - stack_size
+        if stack_base < FAR_STACK_MIN:
+            raise ExeError("EXE_EXEC_ERR_ARG",
+                           "a placed program's stack base %04Xh is below "
+                           "%04Xh" % (stack_base, FAR_STACK_MIN))
+        objects = [_resolve(path, manifest_path, objdir)
+                   for path in placement["objects"]]
+        problems = exeplace.verify([str(path) for path in objects])
+        if problems:
+            raise ExeError("EXE_EXEC_ERR_ARG",
+                           "the link rule: %s" % "; ".join(problems[:4]))
+    elif far_ranges:
         bss_end = image_end + bss_size
         stack_base = STACK_TOP - stack_size
         if (image_end > FAR_IMAGE_END or bss_end > FAR_IMAGE_END or
@@ -834,6 +867,9 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
                            "outside the declared far areas"
                            % (addr, len(values)))
         image[addr - LOAD_BASE] = values[0]
+    if home_area:
+        home = far_payloads["home"]
+        image[FAR_BASE - LOAD_BASE:FAR_BASE - LOAD_BASE + len(home)] = home
     image = bytes(image)
 
     # --- container layout -------------------------------------------------
@@ -854,7 +890,8 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
                        and declared["kind"] != "FAR_CODE")
         if kind == KIND_FAR_CODE:
             payload = far_payloads[index]
-            row_bss = declared["bss_size"]
+            row_bss = (symbols.get("l_" + declared["bss_area"], 0)
+                       if "bss_area" in declared else declared["bss_size"])
         elif linked_area:
             # A far-data row: the image is the linked `area`, the zeroed
             # objects are the `bss_area` right after it.

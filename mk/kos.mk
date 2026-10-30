@@ -53,6 +53,18 @@
 #                       (primary image, BSS and stack outside 8000h-BFFFh)
 #                       and the 16 KiB aperture limit, naming the
 #                       segment.
+#   RESIDENT=SRC:SRC    sources that stay resident in a placed program
+#                       (architecture 7.2): its event handlers, which
+#                       run wherever the program was interrupted.  Any
+#                       RESIDENT= or PLACE= makes the program placed.
+#   PLACE=MOD=ZONE:..   placement pins, colon separated: a program source
+#                       (by its name) or a library member (as
+#                       lib<name>.lib(<member>.rel)) to `resident`,
+#                       `home` or `farN`.  A program whose code and data
+#                       do not fit its bank is placed without either:
+#                       tools/exeplace.py gives every object module a
+#                       zone and routes the calls between zones through
+#                       generated veneers (OBJDIR/place/placement.txt).
 #   DATA1..DATA4=SRC:SRC  far-data sources (relative to DIR) compiled into
 #                       the areas `_DATA<n>` (their `const` objects) and
 #                       `_DATA<n>B` (their zeroed objects), the pair linked
@@ -147,6 +159,8 @@ $(1)_AOBJS  := $$(addprefix $$($(1)_OBJDIR)/,$$(patsubst %.asm,%.rel,$$(notdir $
 $(1)_OBJS   := $$($(1)_COBJS) $$($(1)_AOBJS)
 $(1)_HEADERS:= $$(EXE_HEADERS) $$(wildcard $(2)/*.h)
 $(1)_OPTS   := $(4) $(5) $(6) $(7) $(8) $(9)
+$(1)_RESIDENT := $$(foreach s,$$(subst :, ,$$(patsubst RESIDENT=%,%,$$(filter RESIDENT=%,$$($(1)_OPTS)))),$$($(1)_OBJDIR)/$$(patsubst %.c,%.rel,$$(patsubst %.asm,%.rel,$$(notdir $$(s)))))
+$(1)_PINS   := $$(foreach p,$$(subst :, ,$$(patsubst PLACE=%,%,$$(filter PLACE=%,$$($(1)_OPTS)))),$$(if $$(findstring .lib,$$(p)),$$(p),$$($(1)_OBJDIR)/$$(basename $$(word 1,$$(subst =, ,$$(p)))).rel=$$(word 2,$$(subst =, ,$$(p)))))
 $(1)_STACK  := $$(if $$(filter STACK=%,$$($(1)_OPTS)),$$(patsubst STACK=%,%,$$(filter STACK=%,$$($(1)_OPTS))),256)
 $(1)_SCRATCH:= $$(if $$(filter SCRATCH=%,$$($(1)_OPTS)),$$(patsubst SCRATCH=%,%,$$(filter SCRATCH=%,$$($(1)_OPTS))),kos_scratch:16)
 $(1)_SCRATCHARG := $$(if $$($(1)_SCRATCH), --scratch $$($(1)_SCRATCH),)
@@ -221,7 +235,7 @@ $$($(1)_OBJDIR):
 
 $$($(1)_COBJS): $$($(1)_OBJDIR)/%.rel: $(2)/%.c $$($(1)_HEADERS) \
 		| $$($(1)_OBJDIR)
-	$(SDCC) $(EXE_CFLAGS) $$($(1)_INCFLAGS) -I $(2) -c $$< -o $$@
+	$(SDCC) $(EXE_CFLAGS) --constseg RCONST $$($(1)_INCFLAGS) -I $(2) -c $$< -o $$@
 
 $$($(1)_AOBJS): $$($(1)_OBJDIR)/%.rel: $(2)/%.asm | $$($(1)_OBJDIR)
 	$(SDASZ80) $(EXE_ASFLAGS) $$($(1)_INCFLAGS) -I$(2) -o $$@ $$<
@@ -288,7 +302,7 @@ $$($(1)_DATAOBJS): | $$($(1)_DATASTAMP)
 # streams of the areas that share 8000h, which the packer reads back.
 $$($(1)_ORDERASM): $$(KOS_RULES) | $$($(1)_OBJDIR)
 	{ \
-	  printf '%s\n' '	.module kos_order' '	.area _CODE' '	.area _DATA'; \
+	  printf '%s\n' '	.module kos_order' '	.area _CODE' '	.area _RCONST' '	.area _DATA'; \
 	  for n in $$($(1)_FARIDS); do \
 	    printf '%s\n' "	.area _FAR$$$${n}"; \
 	  done; \
@@ -347,14 +361,20 @@ $$($(1)_OBJDIR)/$(1).lk: $$($(1)_LINKOBJS) $$($(1)_LIBFILES) $$(EXE_LIBKOS) \
 	  printf '%s\n' '-e'; \
 	} > $$@
 
-$$($(1)_OBJDIR)/$(1).link: $$($(1)_OBJDIR)/$(1).lk
-	$(SDLDZ80) -f $$<
+# The placer turns the link script into the one actually run: the same
+# script for a program that fits its bank, else the placed objects, the
+# veneers and the zone bases (tools/exeplace.py).
+$$($(1)_OBJDIR)/$(1).link: $$($(1)_OBJDIR)/$(1).lk $$(KOS_TOOLS)/exeplace.py
+	$(KOS_PYTHON) $$(KOS_TOOLS)/exeplace.py link $$< $$($(1)_OBJDIR)/place \
+	    $$($(1)_STACK) $$($(1)_RESIDENT) $$($(1)_PINS)
+	$(SDLDZ80) -f $$($(1)_OBJDIR)/place/placed.lk
 	touch $$@
 
 $$($(1)_OBJDIR)/$(1).json: $$($(1)_OBJDIR)/$(1).link $$($(1)_SEGMENTSDEP)
 	$(KOS_PYTHON) $$(KOS_TOOLS)/exemanifest.py $$($(1)_OBJDIR)/$(1).map $$@ \
 	    --name $(1).exe --entry $$($(1)_ENTRY) --stack $$($(1)_STACK) \
-	    $$($(1)_SCRATCHARG) $$($(1)_SEGMENTSARG)
+	    $$($(1)_SCRATCHARG) $$($(1)_SEGMENTSARG) \
+	    --placement $$($(1)_OBJDIR)/place/placement.json
 
 $$($(1)_EXE): $$($(1)_OBJDIR)/$(1).json $$($(1)_BLOBCOPIES) \
 		$$(KOS_TOOLS)/exepack.py

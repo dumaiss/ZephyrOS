@@ -15,7 +15,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
-from replay import SHELL_PROMPT  # noqa: E402
+from replay import IocCommandPeer, SHELL_PROMPT  # noqa: E402
+from snd_harness import SoundPeer  # noqa: E402
 from test_gfx import (FRAME_TSTATES, GfxReplay, KEEP_CONTENT, KEEP_NAME,
                       OPS_ACQUIRE, RETRACE_TSTATES, load_font4)  # noqa: E402
 
@@ -183,9 +184,10 @@ class Page:
         return bytes((line[i] << 4) | line[i + 1] for i in range(0, 512, 2))
 
 
-def expected_page(font, song, order, first_row, order_top, cursor=0):
+def expected_page(font, song, order, first_row, order_top, cursor=0,
+                  playing=False, seconds=0):
     """The page as view_draw_page draws it, the cursor on viewport row
-    `cursor`."""
+    `cursor`, the title's transport PLAY or STOP and the elapsed time."""
     p = Page(font)
     rows = song["rows"]
     # Title bar.
@@ -196,8 +198,8 @@ def expected_page(font, song, order, first_row, order_top, cursor=0):
     mhz = (song["clock"] + 5000) // 10000
     p.text(268, 1, "%u.%02uMHZ" % (mhz // 100, mhz % 100), 4, 1)
     p.text(320, 1, "%uHZ" % song["rate"], 4, 1)
-    p.text(356, 1, "STOP", 7, 1)
-    p.text(492, 1, "00:00", 4, 1)
+    p.text(356, 1, "PLAY" if playing else "STOP", 6 if playing else 7, 1)
+    p.text(492, 1, "%02u:%02u" % (seconds // 60, seconds % 60), 4, 1)
     # Orders.
     p.fill(0, 9, 216, 89, 1)
     p.text(0, 10, "POS A1 A2 A3 AN B1 B2 B3 BN C1 C2 C3 CN D1 D2 D3 DN",
@@ -467,7 +469,12 @@ class TestSNTrackView(GfxReplay):
             files = {"/".join(KEEP_NAME): KEEP_CONTENT,
                      "SNTVIEW.EXE": handle.read()}
         files.update(songs)
-        z = self.start(files)
+        # The viewer loads the song through libsnd, which holds the card.
+        z = self.make_cpu()
+        z.sound_peer = SoundPeer()
+        z.hid = z.ioc_peer = IocCommandPeer(fs2_media=True,
+                                            fs2_files=files)
+        self.boot_to_shell(z, prompt=SHELL_PROMPT)
         z.vdp.frame_period = FRAME_TSTATES   # the retrace runs
         return z
 
@@ -498,9 +505,9 @@ class TestSNTrackView(GfxReplay):
                                 "the page switch landed in the retrace")
 
     def assert_page(self, z, page, song, order, first_row, order_top,
-                    cursor=0):
+                    cursor=0, playing=False, seconds=0):
         expected = expected_page(self.font, song, order, first_row,
-                                 order_top, cursor)
+                                 order_top, cursor, playing, seconds)
         base = page * 256 * 256
         for y in range(212):
             got = bytes(z.vdp.vram[base + y * 256:base + y * 256 + 256])
@@ -536,6 +543,10 @@ class TestSNTrackView(GfxReplay):
         self.turn(z, ops, 0)
         self.assert_page(z, 0, song, 1, 0x00, 0)
         self.quit(z, ops, since)
+        # The console turns its sprites off while it draws the exit
+        # report and the prompt, and back on once it has.
+        self.run_recording(z, ops, lambda z: z.vdp.regs[8] & 0x02 == 0,
+                           limit=LIMIT)
         self.assert_hold_sequence(ops)
         self.assert_restored(z, before)
 
@@ -568,31 +579,38 @@ class TestSNTrackView(GfxReplay):
         self.turn(z, ops, 0)
         self.assert_page(z, 0, song, 13, 0x00, 13)
 
-    def test_p_scrolls_to_the_song_end_at_its_tempo(self):
-        """P: the cursor walks every row at speed 2 / 60 Hz, the hidden
-        page flips in at each page end, and the cursor stops on the
-        song's last row; the exit line reports the rows scrolled, the
-        late rows and the pages not drawn in time."""
+    def test_p_plays_the_song_and_the_cursor_follows(self):
+        """P: libsnd plays the song on the card at speed 2 / 60 Hz, the
+        cursor follows the row playing, the hidden page flips in at each
+        page end, and at the song's end the cursor rests on its last row
+        with the title stopped at the time played; the exit reports the
+        rows followed, the late rows and the pages not drawn in time."""
         data = scroll_song()
         song = parse_ztr(data)
         z = self.boot({"SONG.ZTR": data})
         ops = []
         since = len(z.glyphs)
         self.launch(z, ops, b"/fs/sntview.exe /fs/song.ztr\r")
+        writes = len(z.sound_peer.writes)
         z.hid.hid_queue.extend(b"p")
         pressed = z.tstates
         self.run_recording(z, ops, lambda z: z.vdp.shown_page == 1,
                            limit=LIMIT)
-        # The page switch shows rows 10h-1Dh, the cursor on their first.
-        self.assert_page(z, 1, song, 0, 0x10, 0)
-        # 16 rows of 2 ticks at 60 Hz: 533 ms, plus the key's delivery.
+        # The page switch shows rows 10h-1Dh, the cursor on their first,
+        # the title playing.
+        self.assert_page(z, 1, song, 0, 0x10, 0, playing=True)
+        # 16 rows of 2 ticks at 60 Hz: 533 ms, plus the key's delivery and
+        # the playback's start (the engine's start window, the timer).
         elapsed = (z.tstates - pressed) / 10_000
         self.assertGreater(elapsed, 500)
-        self.assertLess(elapsed, 600)
+        self.assertLess(elapsed, 700)
         end = pressed + 2_100 * 10_000
         self.run_recording(z, ops, lambda z: z.tstates >= end, limit=LIMIT)
+        self.assertGreater(len(z.sound_peer.writes), writes + 60,
+                           "the card heard the song")
         self.assertEqual(z.vdp.shown_page, 1)
-        self.assert_page(z, 1, song, 1, 0x10, 0, cursor=13)
+        # The song's end: 60 rows of 2 ticks at 60 Hz, two seconds played.
+        self.assert_page(z, 1, song, 1, 0x10, 0, cursor=13, seconds=2)
         self.quit(z, ops, since)
         lines = "".join(z.glyphs[since:]).split("\n")
         line = next(text for text in lines if "late pages" in text)

@@ -187,7 +187,7 @@ int main(int argc, char **argv)
 			unsigned int waits = 0u;
 
 			while (snd_ztr_published != (uint8_t)order) {
-				(void)snd_service();
+				(void)snd_ztr_service();
 				if (++waits > 10000u) {
 					printf("ztr: stalled at order %u\n",
 					       (unsigned int)order);
@@ -310,7 +310,7 @@ int main(int argc, char **argv)
 			printf("checksum %u %04x\n", (unsigned int)order,
 			       (unsigned int)sum);
 			snd_ztr_consumed = (uint8_t)order;
-			(void)snd_service();
+			(void)snd_ztr_service();
 		}
 		if (failed != 0) {
 			snd_ztr_close();

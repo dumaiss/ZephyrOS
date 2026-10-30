@@ -38,7 +38,7 @@
 #define ZTR_PATTERN_BYTES     8u
 /* The resident pattern directory entry (the file's count field is
  * validation-only and dropped). */
-#define ZTR_DIR_BYTES         6u
+#define ZTR_DIR_BYTES         SND_ZTR_DIR_BYTES
 #define ZTR_MAX_FILE_BYTES    65535u
 
 /* The pattern directory windows and the string-pool feed: whole
@@ -866,14 +866,8 @@ int snd_ztr_prepare(void)
 	return snd_ztr_state == SND_ZTR_READY ? 0 : SND_NEED_MORE;
 }
 
-int snd_service(void)
+int snd_ztr_service(void)
 {
-	/* The ZVG arm: one bounded chunk per call. */
-	if (snd_zvg_state == SND_ZVG_PREPARED ||
-	    snd_zvg_state == SND_ZVG_PLAYING ||
-	    snd_zvg_state == SND_ZVG_UNDERRUN) {
-		(void)snd_zvg_refill();
-	}
 	/* The ZTR arm: one order refill per call, always the order
 	 * after the one the engine consumed.  A reader failure is
 	 * recorded; playback underruns when the next order change
@@ -989,6 +983,19 @@ int snd_ztr_stop(void)
 void snd_ztr_close(void)
 {
 	(void)snd_ztr_stop();
+}
+
+int snd_ztr_tables(struct snd_ztr_tables *out)
+{
+	if (out == (struct snd_ztr_tables *)0 ||
+	    snd_ztr_state == SND_ZTR_EMPTY || snd_ztr_state == SND_ZTR_ERROR) {
+		return -KOS_EINVAL;
+	}
+	out->orders = snd_ztr_orders;
+	out->patterns = snd_ztr_patterns;
+	out->order_count = snd_ztr_order_count;
+	out->pattern_count = pattern_count;
+	return 0;
 }
 
 int snd_ztr_get_status(struct snd_ztr_status *out)
