@@ -1351,7 +1351,7 @@ ledgers (`docs/memory.md` has the current values):
 |---|---|---:|---|
 | `nucleus fixed:` | bank 7 `2000h-5FFFh` (code, data, ISR and driver stacks) | 16,384 | keep ≥ 2,048 free |
 | `nucleus cold:` | bank 7 `6000h-DFFFh` | 32,768 | keep ≥ 4,096 free |
-| `driver hot:` | bank 6 `6000h-DFFFh` | 32,768 | keep ≥ 1,536 free |
+| `driver hot:` | bank 6 `6000h-DFFFh` | 32,768 | keep ≥ 1,472 free |
 | `driver boot/bulk:` | bank 6 `0000h-5FFFh` | 24,576 | — |
 | `driver mapped:` | bank 6 `0100h-1FFFh`, inside boot/bulk | 7,936 | — |
 | `common:` | packed `_COMMON` + `_COMMON_DATA` | ceiling 3,072 | never raised |

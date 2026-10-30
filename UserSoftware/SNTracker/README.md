@@ -31,3 +31,11 @@ sntrack night-market.ztr
 
 CSM and Furnace authoring tools remain in `tools/`; example songs are in
 `songs/`.
+
+## Static graphical view
+
+`sntview FILE.ZTR [ORDER]` opens a read-only GRAPHIC 6 view of one song
+order: metadata, stored order entries, instruments and the explicit event
+fields for all sixteen channels. Space flips to the next 25-row page (and
+then the next order); `Q` or Escape returns to the console. The optional
+starting order is decimal.

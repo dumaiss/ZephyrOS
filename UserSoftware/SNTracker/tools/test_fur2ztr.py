@@ -146,6 +146,8 @@ class ConverterTests(unittest.TestCase):
         macro_offset = struct.unpack_from("<H", data, instrument_offset + 4)[0]
         count = struct.unpack_from("<H", data, macro_offset + 10)[0]
         struct.pack_into("<H", data, macro_offset + 8, count)
+        # Re-stamp so decode reaches the structural check past the CRC.
+        data = bytearray(fur2ztr.stamp_content_crc(bytes(data)))
         with self.assertRaisesRegex(fur2ztr.ConversionError, "release is outside"):
             fur2ztr.decode_ztr(bytes(data))
 

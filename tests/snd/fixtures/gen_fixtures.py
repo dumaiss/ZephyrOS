@@ -8,19 +8,21 @@ root:
     python3 tests/snd/fixtures/gen_fixtures.py
 
 Sources:
-  - the two ZTR songs are copied byte for byte from the Zephyr-80 host
-    tree (../Zephyr-80/Code/HOST/SNTracker/songs/);
+  - the two ZTR songs come from the Zephyr-80 host tree
+    (../Zephyr-80/Code/HOST/SNTracker/songs/), re-encoded here with
+    UserSoftware/SNTracker/tools/fur2ztr.py: its stream layout and the
+    content CRC-16 the format header carries;
   - the ZVG fixtures are compiled from small VGM files written here with
     the Zephyr-80 compiler (../Zephyr-80/Code/HOST/VGMPlayer/tools/
     compile_vgm.py);
   - every malformed fixture is a one-byte (or one-cut) mutation of a good
     fixture, one per validation rule of ZTR-Format.md / the ZVGC header
-    and opcode checks.  The oracle's outcome for each is pinned in
+    and opcode checks, and keeps the CRC field zero so the structural
+    checks are what fail.  The oracle's outcome for each is pinned in
     tests/snd/golden/malformed.md.
 """
 
 import os
-import shutil
 import struct
 import subprocess
 import sys
@@ -31,6 +33,8 @@ Z80 = os.path.normpath(os.path.join(ROOT, "..", "Zephyr-80"))
 SONGS = os.path.join(Z80, "Code", "HOST", "SNTracker", "songs")
 COMPILER = os.path.join(Z80, "Code", "HOST", "VGMPlayer", "tools",
                         "compile_vgm.py")
+sys.path.insert(0, os.path.join(ROOT, "UserSoftware", "SNTracker", "tools"))
+import fur2ztr  # noqa: E402
 
 FIXTURES = os.path.join(HERE, "fixtures" if False else "")
 MALFORMED = os.path.join(HERE, "malformed")
@@ -41,6 +45,11 @@ ZVG_SONGS = ("run-shortwaits.zvg", "wait16.zvg")
 
 def u16(data, offset):
     return data[offset] | (data[offset + 1] << 8)
+
+
+def encode_ztr(data):
+    """The song as this tree's writer lays it out and stamps it."""
+    return fur2ztr.encode_ztr(fur2ztr.decode_ztr(data).song)
 
 
 def write(path, data):
@@ -135,8 +144,14 @@ def good_song_events():
 
 
 def ztr_mutations(data):
-    """name, mutated for every ZTR validation rule in ztr.c."""
+    """name, mutated for every ZTR validation rule in ztr.c.
+
+    The good fixture is stamped; the malformed ones keep 0x16 = 0000h,
+    so the structural checks are what fail."""
     out = []
+    base = bytearray(data)
+    base[0x16:0x18] = b"\0\0"
+    data = bytes(base)
     n = len(data)
     string_end = 64 + u16(data, 48)
     note_offset = u16(data, 44)
@@ -168,7 +183,8 @@ def ztr_mutations(data):
     add("values-pattern-length-high", bytes(blob))
     edit("values-order-count-zero", 14, 0)
     edit("values-instrument-count", 18, 17)
-    edit("values-reserved", 22, 1)
+    # 55h is the first reserved header byte (16h is the content CRC).
+    edit("values-reserved", 55, 1)
     edit("values-clock", 24, 1)
     edit("values-file-size", 46, 0)
     edit("values-entry-sizes", 50, 8)
@@ -345,9 +361,9 @@ def main():
     os.makedirs(MALFORMED, exist_ok=True)
     for name in ZTR_SONGS:
         source = os.path.join(SONGS, name)
-        shutil.copyfile(source, os.path.join(FIXTURES, name))
         with open(source, "rb") as handle:
-            data = handle.read()
+            data = encode_ztr(handle.read())
+        write(os.path.join(FIXTURES, name), data)
         for bad, blob in ztr_mutations(data):
             write(os.path.join(MALFORMED, bad + ".ztr"), blob)
 

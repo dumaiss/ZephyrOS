@@ -36,15 +36,17 @@ else
 include $(KOS_SDK_ROOT)/mk/kos.mk
 
 $(eval $(call exe_program,sntrack,.,sntracker.c,STACK=1024,LIBS=snd))
+$(eval $(call exe_program,sntview,.,sntview.c ztrdoc.c view.c,STACK=768,LIBS=gfx))
 
 .PHONY: all clean test
 .DEFAULT_GOAL := all
 
-all: sntrack
+all: sntrack sntview
 
-test: sntrack
+test: sntrack sntview
 	python3 -m unittest discover -s tests -p 'test_*.py' -v
 	$(KOS_PYTHON) $(KOS_TOOLS)/exepack.py validate build/user/sntrack.exe
+	$(KOS_PYTHON) $(KOS_TOOLS)/exepack.py validate build/user/sntview.exe
 
 clean:
 	rm -rf build

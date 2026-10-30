@@ -295,12 +295,12 @@ struct snd_ztr_status {
 	uint16_t underruns;      /* rows that were not resident          */
 };
 
-/* Validate the whole song through the borrowed reader (magic, header
- * values, section bounds, strings, instruments and macros, the
- * pattern streams and the note table - docs/ZTR-Format.md), keep the
- * tick's tables resident and reserve the voices the orders use.  On
- * failure nothing changes.  The source is borrowed; close forgets it
- * and closes nothing. */
+/* Load the song through the borrowed reader: check the signature, the
+ * fixed layout and the capacities, keep the tick's tables resident and
+ * verify the stamped content CRC (docs/ZTR-Format.md); ztrcheck holds
+ * the full structural validation.  Reserve the voices the orders use.
+ * On failure nothing changes.  The source is borrowed; close forgets
+ * it and closes nothing. */
 int snd_ztr_open(const kos_reader_t *source);
 
 /* Fill the prepared-row queue from the reader until it is full (a

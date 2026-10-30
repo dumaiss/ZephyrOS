@@ -57,7 +57,7 @@ opcode with its stream offset).
 | values-pattern-length-high.ztr | ztr-load | `unsupported ZTR values (-2)` |
 | values-pattern-length-zero.ztr | ztr-load | `unsupported ZTR values (-2)` |
 | values-rate-high-byte.ztr | ztr-load | `unsupported ZTR values (-2)` |
-| values-reserved.ztr | ztr-load | `unsupported ZTR values (-2)` |
+| values-reserved.ztr | ztr-load | `reserved header byte (-2)` |
 | values-source-channels.ztr | ztr-load | `unsupported ZTR values (-2)` |
 | values-speed-zero.ztr | ztr-load | `unsupported ZTR values (-2)` |
 | values-tick-rate-high.ztr | ztr-load | `unsupported ZTR values (-2)` |

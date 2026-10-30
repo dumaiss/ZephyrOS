@@ -8,14 +8,15 @@
  * notation, and renders the channels into the library's descriptors
  * (compare-and-write).  No C runs on the tick.
  *
- * Open validates the whole song through the borrowed reader before any
- * hardware change: the header, the section bounds, the strings, the
- * instruments and their macros, every pattern stream and the note
- * table (docs/ZTR-Format.md).  What the tick needs stays resident: the
- * header fields, the divisor table (split into a lo page and the
- * following hi page), the order list, the remapped instrument
- * directory and the macro data.  Pattern streams are read in bounded
- * chunks, never whole.
+ * Open checks the magic, the fixed layout and the capacities, then
+ * reads the resident sections through the borrowed reader in one
+ * forward pass.  When the header stamps a nonzero content CRC-16
+ * (docs/ZTR-Format.md), the reads feed it and open verifies it before
+ * the remap; structural validation is ztrcheck's, not the player's.
+ * What the tick needs stays resident: the header fields, the divisor
+ * table (split into a lo page and the following hi page), the order
+ * list, the remapped instrument directory and the macro data.  Pattern
+ * streams are read in bounded chunks, never whole.
  *
  * The queue holds prepared rows, fixed-size and already decoded: a
  * record's first two bytes are the order and row, then one 10-byte
@@ -38,14 +39,12 @@
 /* The resident pattern directory entry (the file's count field is
  * validation-only and dropped). */
 #define ZTR_DIR_BYTES         6u
-#define ZTR_MACRO_HEADER      12u
 #define ZTR_MAX_FILE_BYTES    65535u
-#define ZTR_CLOCK_HZ          3579545ul
 
-/* The validation window: whole chunks through the borrowed reader
- * (the order buffers double as the scratch), so the walk loops make
- * no C call per byte.  256-byte windows keep the walk cursors 8-bit. */
-#define ZTR_WINDOW_BYTES      256u
+/* The pattern directory windows and the string-pool feed: whole
+ * windows through the borrowed reader (the order buffers double as
+ * the scratch), so the loops make no C call per byte. */
+#define ZTR_WINDOW_BYTES      1024u
 
 /* A page-aligned base inside an area; the host build (HOST_ZTR)
  * publishes no pages, so only the Z80 half exists. */
@@ -121,6 +120,14 @@ static uint16_t cursor_next[ZTR_CHANNELS];
 static uint16_t cursor_end[ZTR_CHANNELS];
 static uint8_t cursor_active[ZTR_CHANNELS];
 
+/* The largest-order scan's transient pointers and counter, static: the
+ * loop bodies are all indexed access, which an ix frame taxes. */
+static const uint8_t *scan_entry;
+static const uint8_t *scan_selection;
+static uint8_t *scan_total_at;
+static uint8_t *scan_work;
+static uint16_t scan_i;
+
 /* --- the reader --------------------------------------------------------- */
 
 /* One complete bounded read; -KOS_EIO at an early end. */
@@ -145,7 +152,7 @@ static int ztr_read_forward(void *dst, uint32_t offset, uint16_t length)
 		uint16_t amount = (uint16_t)(length - done);
 		int result;
 
-		if (amount > 256u) amount = 256u;
+		if (amount > ZTR_WINDOW_BYTES) amount = ZTR_WINDOW_BYTES;
 		result = ztr_read((uint8_t *)dst + done, offset + done, amount);
 		if (result < 0) return result;
 		done = (uint16_t)(done + amount);
@@ -153,26 +160,8 @@ static int ztr_read_forward(void *dst, uint32_t offset, uint16_t length)
 	return (int)length;
 }
 
-/* The window walkers: forward walks over file ranges (the strings
- * and the pattern streams).  Each walker reads whole windows into an
- * order buffer (free until the first refill) and the loops consume
- * bytes in memory, so no C call runs per byte; the pattern walk
- * shares buffer 1 with the directory/note windows, above them.  The
- * state is two named sets, not indexed arrays: every access is a
- * constant address. */
-static uint16_t ws0_pos;
-static uint16_t ws0_next;
-static uint16_t ws0_end;
-static uint8_t *ws0_cur;
-static uint8_t ws0_have;
-static uint8_t ws0_at;
-static uint16_t ws1_pos;
-static uint16_t ws1_next;
-static uint16_t ws1_end;
-static uint8_t *ws1_cur;
-static uint8_t ws1_have;
-static uint8_t ws1_at;
-
+/* The open pass reads whole windows into an order buffer (free until
+ * the first refill), so the loops make no C call per byte. */
 static uint8_t *ztr_order_buffer(uint8_t slot)
 {
 #ifdef HOST_ZTR
@@ -182,334 +171,115 @@ static uint8_t *ztr_order_buffer(uint8_t slot)
 #endif
 }
 
-static void zs_open_strings(uint16_t offset, uint16_t end)
+/* --- the content CRC ---------------------------------------------------- */
+
+/* CRC-16/CCITT-FALSE (poly 1021h, init FFFFh) over the song's fixed
+ * sections: the header less the CRC field itself, the strings, the
+ * orders, the instrument directory, the macro area, the pattern
+ * directory and the note table (docs/ZTR-Format.md).  The pattern
+ * streams are not covered.  Table-driven, libsnd-private; the same
+ * semantics as the KonaCommander lane CRC. */
+/* Split hi/lo byte tables: the step is all 8-bit (uint8_t is a
+ * genuine byte under the ABI on the card and the host alike), so
+ * neither width needs a mask. */
+static const uint8_t ztr_crc_hi[256] = {
+	0x00u, 0x10u, 0x20u, 0x30u, 0x40u, 0x50u, 0x60u, 0x70u, 0x81u, 0x91u, 0xA1u, 0xB1u, 0xC1u, 0xD1u, 0xE1u, 0xF1u,
+	0x12u, 0x02u, 0x32u, 0x22u, 0x52u, 0x42u, 0x72u, 0x62u, 0x93u, 0x83u, 0xB3u, 0xA3u, 0xD3u, 0xC3u, 0xF3u, 0xE3u,
+	0x24u, 0x34u, 0x04u, 0x14u, 0x64u, 0x74u, 0x44u, 0x54u, 0xA5u, 0xB5u, 0x85u, 0x95u, 0xE5u, 0xF5u, 0xC5u, 0xD5u,
+	0x36u, 0x26u, 0x16u, 0x06u, 0x76u, 0x66u, 0x56u, 0x46u, 0xB7u, 0xA7u, 0x97u, 0x87u, 0xF7u, 0xE7u, 0xD7u, 0xC7u,
+	0x48u, 0x58u, 0x68u, 0x78u, 0x08u, 0x18u, 0x28u, 0x38u, 0xC9u, 0xD9u, 0xE9u, 0xF9u, 0x89u, 0x99u, 0xA9u, 0xB9u,
+	0x5Au, 0x4Au, 0x7Au, 0x6Au, 0x1Au, 0x0Au, 0x3Au, 0x2Au, 0xDBu, 0xCBu, 0xFBu, 0xEBu, 0x9Bu, 0x8Bu, 0xBBu, 0xABu,
+	0x6Cu, 0x7Cu, 0x4Cu, 0x5Cu, 0x2Cu, 0x3Cu, 0x0Cu, 0x1Cu, 0xEDu, 0xFDu, 0xCDu, 0xDDu, 0xADu, 0xBDu, 0x8Du, 0x9Du,
+	0x7Eu, 0x6Eu, 0x5Eu, 0x4Eu, 0x3Eu, 0x2Eu, 0x1Eu, 0x0Eu, 0xFFu, 0xEFu, 0xDFu, 0xCFu, 0xBFu, 0xAFu, 0x9Fu, 0x8Fu,
+	0x91u, 0x81u, 0xB1u, 0xA1u, 0xD1u, 0xC1u, 0xF1u, 0xE1u, 0x10u, 0x00u, 0x30u, 0x20u, 0x50u, 0x40u, 0x70u, 0x60u,
+	0x83u, 0x93u, 0xA3u, 0xB3u, 0xC3u, 0xD3u, 0xE3u, 0xF3u, 0x02u, 0x12u, 0x22u, 0x32u, 0x42u, 0x52u, 0x62u, 0x72u,
+	0xB5u, 0xA5u, 0x95u, 0x85u, 0xF5u, 0xE5u, 0xD5u, 0xC5u, 0x34u, 0x24u, 0x14u, 0x04u, 0x74u, 0x64u, 0x54u, 0x44u,
+	0xA7u, 0xB7u, 0x87u, 0x97u, 0xE7u, 0xF7u, 0xC7u, 0xD7u, 0x26u, 0x36u, 0x06u, 0x16u, 0x66u, 0x76u, 0x46u, 0x56u,
+	0xD9u, 0xC9u, 0xF9u, 0xE9u, 0x99u, 0x89u, 0xB9u, 0xA9u, 0x58u, 0x48u, 0x78u, 0x68u, 0x18u, 0x08u, 0x38u, 0x28u,
+	0xCBu, 0xDBu, 0xEBu, 0xFBu, 0x8Bu, 0x9Bu, 0xABu, 0xBBu, 0x4Au, 0x5Au, 0x6Au, 0x7Au, 0x0Au, 0x1Au, 0x2Au, 0x3Au,
+	0xFDu, 0xEDu, 0xDDu, 0xCDu, 0xBDu, 0xADu, 0x9Du, 0x8Du, 0x7Cu, 0x6Cu, 0x5Cu, 0x4Cu, 0x3Cu, 0x2Cu, 0x1Cu, 0x0Cu,
+	0xEFu, 0xFFu, 0xCFu, 0xDFu, 0xAFu, 0xBFu, 0x8Fu, 0x9Fu, 0x6Eu, 0x7Eu, 0x4Eu, 0x5Eu, 0x2Eu, 0x3Eu, 0x0Eu, 0x1Eu,
+};
+static const uint8_t ztr_crc_lo[256] = {
+	0x00u, 0x21u, 0x42u, 0x63u, 0x84u, 0xA5u, 0xC6u, 0xE7u, 0x08u, 0x29u, 0x4Au, 0x6Bu, 0x8Cu, 0xADu, 0xCEu, 0xEFu,
+	0x31u, 0x10u, 0x73u, 0x52u, 0xB5u, 0x94u, 0xF7u, 0xD6u, 0x39u, 0x18u, 0x7Bu, 0x5Au, 0xBDu, 0x9Cu, 0xFFu, 0xDEu,
+	0x62u, 0x43u, 0x20u, 0x01u, 0xE6u, 0xC7u, 0xA4u, 0x85u, 0x6Au, 0x4Bu, 0x28u, 0x09u, 0xEEu, 0xCFu, 0xACu, 0x8Du,
+	0x53u, 0x72u, 0x11u, 0x30u, 0xD7u, 0xF6u, 0x95u, 0xB4u, 0x5Bu, 0x7Au, 0x19u, 0x38u, 0xDFu, 0xFEu, 0x9Du, 0xBCu,
+	0xC4u, 0xE5u, 0x86u, 0xA7u, 0x40u, 0x61u, 0x02u, 0x23u, 0xCCu, 0xEDu, 0x8Eu, 0xAFu, 0x48u, 0x69u, 0x0Au, 0x2Bu,
+	0xF5u, 0xD4u, 0xB7u, 0x96u, 0x71u, 0x50u, 0x33u, 0x12u, 0xFDu, 0xDCu, 0xBFu, 0x9Eu, 0x79u, 0x58u, 0x3Bu, 0x1Au,
+	0xA6u, 0x87u, 0xE4u, 0xC5u, 0x22u, 0x03u, 0x60u, 0x41u, 0xAEu, 0x8Fu, 0xECu, 0xCDu, 0x2Au, 0x0Bu, 0x68u, 0x49u,
+	0x97u, 0xB6u, 0xD5u, 0xF4u, 0x13u, 0x32u, 0x51u, 0x70u, 0x9Fu, 0xBEu, 0xDDu, 0xFCu, 0x1Bu, 0x3Au, 0x59u, 0x78u,
+	0x88u, 0xA9u, 0xCAu, 0xEBu, 0x0Cu, 0x2Du, 0x4Eu, 0x6Fu, 0x80u, 0xA1u, 0xC2u, 0xE3u, 0x04u, 0x25u, 0x46u, 0x67u,
+	0xB9u, 0x98u, 0xFBu, 0xDAu, 0x3Du, 0x1Cu, 0x7Fu, 0x5Eu, 0xB1u, 0x90u, 0xF3u, 0xD2u, 0x35u, 0x14u, 0x77u, 0x56u,
+	0xEAu, 0xCBu, 0xA8u, 0x89u, 0x6Eu, 0x4Fu, 0x2Cu, 0x0Du, 0xE2u, 0xC3u, 0xA0u, 0x81u, 0x66u, 0x47u, 0x24u, 0x05u,
+	0xDBu, 0xFAu, 0x99u, 0xB8u, 0x5Fu, 0x7Eu, 0x1Du, 0x3Cu, 0xD3u, 0xF2u, 0x91u, 0xB0u, 0x57u, 0x76u, 0x15u, 0x34u,
+	0x4Cu, 0x6Du, 0x0Eu, 0x2Fu, 0xC8u, 0xE9u, 0x8Au, 0xABu, 0x44u, 0x65u, 0x06u, 0x27u, 0xC0u, 0xE1u, 0x82u, 0xA3u,
+	0x7Du, 0x5Cu, 0x3Fu, 0x1Eu, 0xF9u, 0xD8u, 0xBBu, 0x9Au, 0x75u, 0x54u, 0x37u, 0x16u, 0xF1u, 0xD0u, 0xB3u, 0x92u,
+	0x2Eu, 0x0Fu, 0x6Cu, 0x4Du, 0xAAu, 0x8Bu, 0xE8u, 0xC9u, 0x26u, 0x07u, 0x64u, 0x45u, 0xA2u, 0x83u, 0xE0u, 0xC1u,
+	0x1Fu, 0x3Eu, 0x5Du, 0x7Cu, 0x9Bu, 0xBAu, 0xD9u, 0xF8u, 0x17u, 0x36u, 0x55u, 0x74u, 0x93u, 0xB2u, 0xD1u, 0xF0u,
+};
+
+/* The stored field (0 when the file is unprotected: nothing is fed or
+ * verified) and the running value. */
+static uint16_t ztr_crc_stored;
+static uint16_t ztr_crc;
+
+static void ztr_crc_feed(const uint8_t *data, uint16_t length)
 {
-	ws0_pos = offset;
-	ws0_next = offset;
-	ws0_end = end;
-	ws0_cur = ztr_order_buffer(0u);
-	ws0_have = 0u;
-	ws0_at = 0u;
+	uint8_t hi;
+	uint8_t lo;
+
+	if (ztr_crc_stored == 0u) {
+		return;
+	}
+	hi = (uint8_t)(ztr_crc >> 8);
+	lo = (uint8_t)ztr_crc;
+	while (length-- != 0u) {
+		uint8_t index = (uint8_t)(hi ^ *data++);
+
+		hi = (uint8_t)(lo ^ ztr_crc_hi[index]);
+		lo = ztr_crc_lo[index];
+	}
+	ztr_crc = (uint16_t)(((uint16_t)hi << 8) | (uint16_t)lo);
 }
 
-static void zs_open_patterns(uint16_t offset, uint16_t end)
+/* A forward read that also feeds the content CRC. */
+static int ztr_read_crc(void *dst, uint32_t offset, uint16_t length)
 {
-	ws1_pos = offset;
-	ws1_next = offset;
-	ws1_end = end;
-	ws1_cur = ztr_order_buffer(1u) + ZTR_WINDOW_BYTES;
-	ws1_have = 0u;
-	ws1_at = 0u;
+	int result = ztr_read_forward(dst, offset, length);
+
+	if (result >= 0) {
+		ztr_crc_feed((const uint8_t *)dst, length);
+	}
+	return result;
 }
 
-/* Fill the strings walk's window; 0 or a negative reader error. */
-static int zs_fill_strings(void)
-{
-	uint16_t left = (uint16_t)(ws0_end - ws0_next);
-	uint16_t want = left;
-	int result;
-
-	if (want > 254u) {
-		/* ws0_have is 8-bit: a full window would truncate */
-		want = 254u;
-	}
-	result = ztr_read(ws0_cur, (uint32_t)ws0_next, want);
-	if (result < 0) {
-		return result;
-	}
-	ws0_pos = ws0_next;
-	ws0_next = (uint16_t)(ws0_next + want);
-	ws0_have = (uint8_t)want;
-	ws0_at = 0u;
-	return 0;
-}
-
-/* Fill the pattern walk's window; 0 or a negative reader error.
- * An event may straddle the window end: compact the unread tail (at
- * most 12 bytes, the event cap) to the window's front and read the
- * continuation after it, so every reader request starts exactly
- * where the last one ended (the forward-only contract) and no event
- * bytes are dropped. */
-static int zs_fill_patterns(void)
-{
-	uint16_t slack = (uint16_t)(ws1_have - ws1_at);
-	uint16_t left;
-	uint16_t want;
-	int result;
-	{
-		uint8_t *to = ws1_cur;
-		const uint8_t *from = ws1_cur + ws1_at;
-		uint8_t count = (uint8_t)slack;
-
-		while (count-- != 0u) {
-			*to++ = *from++;
-		}
-	}
-	left = (uint16_t)(ws1_end - ws1_next);
-	want = left;
-	if (want > 254u - slack) {
-		/* ws1_have is 8-bit: a full window would truncate */
-		want = 254u - slack;
-	}
-	result = ztr_read(ws1_cur + slack, (uint32_t)ws1_next, want);
-	if (result < 0) {
-		return result;
-	}
-	ws1_pos = (uint16_t)(ws1_next - slack);
-	ws1_next = (uint16_t)(ws1_next + want);
-	ws1_have = (uint8_t)(slack + want);
-	ws1_at = 0u;
-	return 0;
-}
-
-/* --- validation --------------------------------------------------------- */
+/* --- resident loading --------------------------------------------------- */
 
 static uint16_t u16_at(const uint8_t *p)
 {
 	return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
 }
 
-static uint32_t u32_at(const uint8_t *p)
+/* Load the resident sections through the borrowed reader in one forward
+ * pass, feeding the content CRC: the strings (read only to feed a
+ * stamped CRC - the player keeps no strings), the orders, the
+ * instrument directory (scattered into its page by instrument number),
+ * the macro area, the pattern directory (compacted resident: the
+ * file's count field is the checker's, dropped here) and the note
+ * table (whole into the scratch; split after the CRC check). */
+static int load_sections(void)
 {
-	return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
-	       ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
-}
-
-static int string_ref_ok(uint16_t offset, uint16_t pool_end)
-{
-	return offset >= ZTR_HEADER_BYTES && offset < pool_end;
-}
-
-static int resident_macro_ok(uint16_t offset, uint8_t type,
-			     uint16_t macro_start, uint16_t macro_end_range)
-{
-	const uint8_t *m;
-	uint16_t end;
-	uint16_t count;
-	uint16_t loop;
-	uint16_t release;
+	uint32_t order_offset = u16_at(header + 34);
+	uint32_t instrument_offset = u16_at(header + 36);
+	uint32_t macro_offset = u16_at(header + 38);
 	uint16_t i;
-
-	if (offset < macro_start || offset >= macro_end_range ||
-	    offset + ZTR_MACRO_HEADER > macro_end_range) {
-		return 0;
-	}
-	m = snd_ztr_macro_area + 1u + (uint16_t)(offset - macro_start);
-	count = u16_at(m + 10);
-	loop = u16_at(m + 6);
-	release = u16_at(m + 8);
-	end = (uint16_t)(offset + ZTR_MACRO_HEADER + count +
-			 (count << 1));
-	if (m[0] != type || m[1] > 2u || (m[2] & 0xFEu) != 0u ||
-	    m[5] != 0u || count == 0u || end > macro_end_range ||
-	    (loop != 0xFFFFu && loop >= count) ||
-	    (release != 0xFFFFu && release >= count)) {
-		return 0;
-	}
-	for (i = 0u; i < count; ++i) {
-		if ((m[ZTR_MACRO_HEADER + i * 3u] & 0xFEu) != 0u) {
-			return 0;
-		}
-	}
-	return 1;
-}
-
-/* Every pattern stream, in file order: one window walker over the
- * whole pattern-data region, so the open pass pays at most one reader
- * call per 255 stream bytes.  The directory pass left each entry's
- * expected event count in the order scratch; the streams may leave
- * gaps (the walker jumps forward over them, all reads monotonic). */
-static int pattern_streams_ok(const uint8_t *counts)
-{
-	const uint8_t *entry = snd_ztr_patterns;
-	uint16_t i;
-
-	zs_open_patterns((uint16_t)pattern_data_offset,
-			 (uint16_t)note_offset);
-	for (i = 0u; i < pattern_count; ++i) {
-		uint16_t offset = u16_at(entry + 2);
-		uint16_t end = (uint16_t)(offset + u16_at(entry + 4));
-		uint16_t expected = u16_at(counts);
-		uint16_t events = 0u;
-		uint16_t last_row = 0u;
-		uint8_t first = 1u;
-		int result;
-
-		entry += ZTR_DIR_BYTES;
-		counts += 2u;
-
-		if (ws1_next < offset) {
-			/* jump the walker to this stream's first byte */
-			ws1_pos = offset;
-			ws1_next = offset;
-			ws1_have = 0u;
-			ws1_at = 0u;
-		} else {
-			ws1_at = (uint8_t)(offset - ws1_pos);
-		}
-		while ((uint16_t)(ws1_pos + ws1_at) < end) {
-			uint8_t row;
-			uint8_t mask;
-			uint8_t modifiers = 0u;
-			uint8_t byte;
-
-			/* One fill per event: an event is at most 13
-			 * bytes, so with the slack resident the walk
-			 * needs no further C call (a stream ending
-			 * inside the slack reads only its own bytes;
-			 * the end equality catches a truncated
-			 * event). */
-			if ((int)(ws1_have - ws1_at) < 13 &&
-			    ws1_next < ws1_end) {
-				result = zs_fill_patterns();
-				if (result < 0) {
-					return 0;
-				}
-			}
-			row = ws1_cur[ws1_at++];
-			mask = ws1_cur[ws1_at++];
-			if ((uint16_t)row >= snd_ztr_pattern_length ||
-			    (first == 0u && (uint16_t)row <= last_row) ||
-			    mask == 0u) {
-				return 0;
-			}
-			first = 0u;
-			last_row = row;
-			if ((mask & (ZTR_EVENT_OFF | ZTR_EVENT_RELEASE)) ==
-			    (ZTR_EVENT_OFF | ZTR_EVENT_RELEASE)) {
-				return 0;
-			}
-			if ((mask & ZTR_EVENT_NOTE) != 0u) {
-				byte = ws1_cur[ws1_at++];
-				if (byte >= ZTR_NOTE_COUNT) {
-					return 0;
-				}
-			}
-			if ((mask & ZTR_EVENT_INSTRUMENT) != 0u) {
-				byte = ws1_cur[ws1_at++];
-				if (byte >= ZTR_CHANNELS) {
-					return 0;
-				}
-			}
-			if ((mask & ZTR_EVENT_VOLUME) != 0u) {
-				byte = ws1_cur[ws1_at++];
-				if (byte > 15u) {
-					return 0;
-				}
-			}
-			if ((mask & ZTR_EVENT_EFFECT) != 0u) {
-				uint8_t effect;
-
-				effect = ws1_cur[ws1_at++];
-				byte = ws1_cur[ws1_at++];
-				if (effect == 0u || effect > ZTR_EFFECT_STOP) {
-					return 0;
-				}
-			}
-			if ((mask & ZTR_EVENT_LEGATO) != 0u &&
-			    (mask & ZTR_EVENT_NOTE) == 0u) {
-				return 0;
-			}
-			if ((mask & ZTR_EVENT_NOTE) != 0u &&
-			    (mask & (ZTR_EVENT_OFF | ZTR_EVENT_RELEASE)) !=
-			    0u) {
-				return 0;
-			}
-			if ((mask & ZTR_EVENT_MODIFIERS) != 0u) {
-				modifiers = ws1_cur[ws1_at++];
-				if ((modifiers & 0x07u) != 0u ||
-				    (modifiers & (ZTR_MOD_ARP_SET |
-						  ZTR_MOD_ARP_CLEAR)) ==
-				    (ZTR_MOD_ARP_SET | ZTR_MOD_ARP_CLEAR) ||
-				    (modifiers & (ZTR_MOD_HAIRPIN_SET |
-						  ZTR_MOD_HAIRPIN_CLEAR)) ==
-				    (ZTR_MOD_HAIRPIN_SET |
-				     ZTR_MOD_HAIRPIN_CLEAR)) {
-					return 0;
-				}
-				if ((modifiers & ZTR_MOD_ARP_SET) != 0u) {
-					byte = ws1_cur[ws1_at++];
-				}
-				if ((modifiers & ZTR_MOD_HAIRPIN_SET) != 0u) {
-					uint8_t ceiling;
-
-					byte = ws1_cur[ws1_at++];
-					if (byte == 0u ||
-					    (byte > 15u &&
-					     byte < (uint8_t)0xF1u)) {
-						return 0;
-					}
-					ceiling = ws1_cur[ws1_at++];
-					if (ceiling > 15u) {
-						return 0;
-					}
-				}
-			}
-			++events;
-		}
-		if ((uint16_t)(ws1_pos + ws1_at) != end ||
-		    events != expected) {
-			return 0;
-		}
-	}
-	return 1;
-}
-
-static int validate(void)
-{
-	uint32_t order_offset;
-	uint32_t instrument_offset;
-	uint32_t macro_offset;
-	uint16_t i;
-	uint8_t seen_instruments[2];
-	uint8_t byte;
 	int result;
 
-	seen_instruments[0] = 0u;
-	seen_instruments[1] = 0u;
-	if (ztr_size < ZTR_HEADER_BYTES || header[0] != 'Z' ||
-	    header[1] != 'T' || header[2] != 'R' || header[3] != '1' ||
-	    header[4] != 1u || header[5] != ZTR_HEADER_BYTES ||
-	    	    header[6] != 0u || header[7] != ZTR_CHANNELS) {
-		return -KOS_EINVAL;
-	}
-	for (i = 55u; i < 64u; ++i) {
-				if (header[i] != 0u) {
-			return -KOS_EINVAL;
-		}
-	}
-	if (u16_at(header + 8) == 0u || u16_at(header + 8) > 180u ||
-	    header[9] != 0u || header[10] == 0u || header[11] == 0u ||
-	    header[11] > ZTR_CHANNELS || u16_at(header + 12) == 0u ||
-	    u16_at(header + 12) > 256u || u16_at(header + 14) == 0u ||
-	    u16_at(header + 14) > 255u || u16_at(header + 18) > ZTR_CHANNELS ||
-	    header[22] != 0u || header[23] != 0u ||
-	    u32_at(header + 24) != ZTR_CLOCK_HZ ||
-	    u16_at(header + 46) != ztr_size || header[50] != ZTR_CHANNELS ||
-	    header[51] != ZTR_INSTRUMENT_BYTES ||
-	    	    header[52] != ZTR_PATTERN_BYTES || header[53] != ZTR_NOTE_COUNT) {
-		return -KOS_EINVAL;
-	}
 	string_end = (uint32_t)ZTR_HEADER_BYTES + u16_at(header + 48);
-	order_offset = u16_at(header + 34);
-	instrument_offset = u16_at(header + 36);
-	macro_offset = u16_at(header + 38);
 	pattern_dir_offset = u16_at(header + 40);
 	pattern_data_offset = u16_at(header + 42);
 	note_offset = u16_at(header + 44);
-	if ((uint32_t)ZTR_HEADER_BYTES + u16_at(header + 48) > ztr_size ||
-	    order_offset != string_end ||
-	    order_offset + ((uint32_t)u16_at(header + 14) << 4) !=
-	    instrument_offset ||
-	    instrument_offset + ((uint32_t)u16_at(header + 18) << 4) !=
-	    macro_offset ||
-	    macro_offset > pattern_dir_offset ||
-	    pattern_dir_offset + ((uint32_t)u16_at(header + 16) << 3) !=
-	    pattern_data_offset ||
-	    pattern_data_offset > note_offset ||
-	    	    note_offset + ((uint32_t)ZTR_NOTE_COUNT << 1) != ztr_size) {
-		return -KOS_EINVAL;
-	}
 	/* The header fields the engine and the producer keep. */
 	snd_ztr_rate = u16_at(header + 8);
 	snd_ztr_speed = header[10];
@@ -523,96 +293,56 @@ static int validate(void)
 	    SND_ZTR_MACRO_BYTES) {
 		return -KOS_ENOSPC;
 	}
-	/* Strings are one forward window.  The pool's final NUL guarantees
-	 * every in-range reference terminates without a seek back. */
-	if (!string_ref_ok(u16_at(header + 28), (uint16_t)string_end) ||
-	    !string_ref_ok(u16_at(header + 30), (uint16_t)string_end) ||
-	    !string_ref_ok(u16_at(header + 32), (uint16_t)string_end)) {
-		return -KOS_EINVAL;
-	}
-	zs_open_strings(ZTR_HEADER_BYTES, (uint16_t)string_end);
-	byte = 1u;
-	while ((uint16_t)(ws0_pos + ws0_at) < (uint16_t)string_end) {
-		if (ws0_at == ws0_have) {
-			result = zs_fill_strings();
-			if (result < 0) return result;
-		}
-		byte = ws0_cur[ws0_at++];
-	}
-	if (byte != 0u) return -KOS_EINVAL;
+	if (ztr_crc_stored != 0u) {
+		uint32_t at = ZTR_HEADER_BYTES;
 
-	/* Populate each resident section on its first encounter. */
-	result = ztr_read_forward(snd_ztr_orders, order_offset,
-			  (uint16_t)(snd_ztr_order_count * ZTR_CHANNELS));
-	if (result < 0) return result;
+		while (at < string_end) {
+			uint16_t amount = (uint16_t)(string_end - at);
+
+			if (amount > ZTR_WINDOW_BYTES) {
+				amount = ZTR_WINDOW_BYTES;
+			}
+			result = ztr_read_crc(ztr_order_buffer(0u), at, amount);
+			if (result < 0) {
+				return result;
+			}
+			at += amount;
+		}
+	}
+	result = ztr_read_crc(snd_ztr_orders, order_offset,
+			      (uint16_t)(snd_ztr_order_count * ZTR_CHANNELS));
+	if (result < 0) {
+		return result;
+	}
 	memset(snd_ztr_instr, 0, 256u);
-	/* The instrument table is one contiguous read: the window
-	 * loops must not pay one reader call per instrument. */
-	result = ztr_read_forward(ztr_order_buffer(1u), instrument_offset,
-				  (uint16_t)((uint16_t)instrument_count *
-					     ZTR_INSTRUMENT_BYTES));
+	/* The instrument table is one contiguous read: the loop must not
+	 * pay one reader call per instrument. */
+	result = ztr_read_crc(ztr_order_buffer(1u), instrument_offset,
+			      (uint16_t)((uint16_t)instrument_count *
+					 ZTR_INSTRUMENT_BYTES));
 	if (result < 0) {
 		return result;
 	}
 	for (i = 0u; i < instrument_count; ++i) {
 		const uint8_t *entry = ztr_order_buffer(1u) +
 			i * ZTR_INSTRUMENT_BYTES;
-		uint8_t number = entry[0];
 
-		if (number >= ZTR_CHANNELS ||
-		    (seen_instruments[number >> 3] &
-		     (uint8_t)(1u << (number & 7u))) != 0u ||
-		    entry[14] != 0u || entry[15] != 0u ||
-		    !string_ref_ok(u16_at(entry + 2),
-				   (uint16_t)string_end)) {
+		if (entry[0] >= ZTR_CHANNELS) {
 			return -KOS_EINVAL;
 		}
-		seen_instruments[number >> 3] |=
-			(uint8_t)(1u << (number & 7u));
-		memcpy(snd_ztr_instr + (uint16_t)number *
+		memcpy(snd_ztr_instr + (uint16_t)entry[0] *
 		       ZTR_INSTRUMENT_BYTES, entry, ZTR_INSTRUMENT_BYTES);
 	}
 	macro_used = (uint32_t)(pattern_dir_offset - macro_offset) + 1u;
 	snd_ztr_macro_area[0] = 0u;
 	if (macro_used > 1u) {
-		result = ztr_read_forward(snd_ztr_macro_area + 1u, macro_offset,
-				  (uint16_t)(macro_used - 1u));
-		if (result < 0) return result;
-	}
-	/* Validate and remap the directory's absolute macro offsets to the
-	 * one-based resident macro area. */
-	for (i = 0u; i < ZTR_CHANNELS; ++i) {
-		uint8_t *entry;
-		uint8_t slot;
-
-		if ((seen_instruments[i >> 3] &
-		     (uint8_t)(1u << (i & 7u))) == 0u) continue;
-		entry = snd_ztr_instr + i * ZTR_INSTRUMENT_BYTES;
-		for (slot = 0u; slot < SND_ZTR_MACRO_SLOTS; ++slot) {
-			uint16_t offset = u16_at(entry + 4u + slot * 2u);
-			uint16_t resident = 0u;
-
-			if (offset != 0u) {
-				if (!resident_macro_ok(offset,
-						       (uint8_t)(slot + 1u),
-						       (uint16_t)macro_offset,
-						       (uint16_t)pattern_dir_offset)) {
-					return -KOS_EINVAL;
-				}
-				resident = (uint16_t)(1u + offset - macro_offset);
-			}
-			entry[4u + slot * 2u] = (uint8_t)resident;
-			entry[5u + slot * 2u] = (uint8_t)(resident >> 8);
+		result = ztr_read_crc(snd_ztr_macro_area + 1u, macro_offset,
+				      (uint16_t)(macro_used - 1u));
+		if (result < 0) {
+			return result;
 		}
 	}
-	/* The pattern directory, windowed through the order scratch:
-	 * every window is read first (one forward pass), each entry
-	 * validated and kept resident compacted (the count field is
-	 * validation-only and held in the other order buffer), then
-	 * every stream is walked in file order. */
 	{
-		uint8_t *counts = ztr_order_buffer(0u);
-		uint8_t *count = counts;	/* advancing */
 		uint8_t *resident = snd_ztr_patterns;
 		uint16_t done = 0u;
 
@@ -624,120 +354,251 @@ static int validate(void)
 				window = ZTR_WINDOW_BYTES /
 					ZTR_PATTERN_BYTES;
 			}
-			result = ztr_read(ztr_order_buffer(1u),
-					  pattern_dir_offset +
-					  (uint32_t)done * ZTR_PATTERN_BYTES,
-					  (uint16_t)(window *
-						     ZTR_PATTERN_BYTES));
-			if (result < 0) return result;
+			result = ztr_read_crc(ztr_order_buffer(1u),
+					      pattern_dir_offset +
+					      (uint32_t)done *
+					      ZTR_PATTERN_BYTES,
+					      (uint16_t)(window *
+							 ZTR_PATTERN_BYTES));
+			if (result < 0) {
+				return result;
+			}
 			for (j = 0u; j < window; ++j) {
-				const uint8_t *entry =
-					ztr_order_buffer(1u) + j *
-					ZTR_PATTERN_BYTES;
-				uint16_t index = (uint16_t)(done + j);
-				uint16_t offset = u16_at(entry + 2);
-				uint16_t length = u16_at(entry + 4);
+				const uint8_t *entry = ztr_order_buffer(1u) +
+					j * ZTR_PATTERN_BYTES;
 
-				if (entry[0] >= ZTR_CHANNELS ||
-				    offset < pattern_data_offset ||
-				    (uint16_t)(offset + length) >
-				    note_offset) {
-					return -KOS_EINVAL;
-				}
-				if (index != 0u) {
-					uint16_t prior = (uint16_t)(
-						u16_at(resident - 6u + 2u) +
-						u16_at(resident - 6u + 4u));
-
-					if (offset < prior) {
-						return -KOS_EINVAL;
-					}
-				}
-				memcpy(resident, entry, ZTR_DIR_BYTES);
-				count[0] = entry[6];
-				count[1] = entry[7];
+				/* Six byte copies inline: a memcpy call per
+				 * entry costs more than the bytes. */
+				resident[0] = entry[0];
+				resident[1] = entry[1];
+				resident[2] = entry[2];
+				resident[3] = entry[3];
+				resident[4] = entry[4];
+				resident[5] = entry[5];
 				resident += ZTR_DIR_BYTES;
-				count += 2u;
 			}
 			done = (uint16_t)(done + window);
 		}
-		if (!pattern_streams_ok(counts)) {
-			return -KOS_EINVAL;
+	}
+	return ztr_read_crc(ztr_order_buffer(1u), note_offset,
+			    (uint16_t)(ZTR_NOTE_COUNT << 1));
+}
+
+/* After the last covered read: verify a stamped CRC, then remap the
+ * resident instrument entries' file macro offsets to the one-based
+ * resident area and split the note table into its lo/hi pages. */
+static int remap_and_split(void)
+{
+	uint16_t macro_offset = u16_at(header + 38);
+	uint16_t i;
+	uint16_t note;
+
+	if (ztr_crc_stored != 0u && ztr_crc != ztr_crc_stored) {
+		return -KOS_EINVAL;
+	}
+	for (i = 0u; i < ZTR_CHANNELS; ++i) {
+		uint8_t *entry = snd_ztr_instr + i * ZTR_INSTRUMENT_BYTES;
+		uint8_t slot;
+
+		for (slot = 0u; slot < SND_ZTR_MACRO_SLOTS; ++slot) {
+			uint16_t offset = u16_at(entry + 4u + slot * 2u);
+			uint16_t resident = 0u;
+
+			if (offset != 0u) {
+				resident = (uint16_t)(1u + offset -
+						      macro_offset);
+			}
+			entry[4u + slot * 2u] = (uint8_t)resident;
+			entry[5u + slot * 2u] = (uint8_t)(resident >> 8);
 		}
 	}
-	/* The note table: one whole-window read into the scratch, then
-	 * the divisors into the split pages. */
 	{
-		uint16_t note;
+		const uint8_t *table = ztr_order_buffer(1u);
 		uint8_t *lo_page = snd_ztr_div_lo;
 		uint8_t *hi_page = lo_page + 256u;
-		const uint8_t *table = ztr_order_buffer(1u);
 
-		result = ztr_read(ztr_order_buffer(1u), note_offset,
-				  (uint16_t)(ZTR_NOTE_COUNT << 1));
-		if (result < 0) {
-			return -KOS_EIO;
-		}
 		for (note = 0u; note < ZTR_NOTE_COUNT; ++note) {
-			uint8_t lo = table[note << 1];
-			uint8_t hi = table[(note << 1) + 1u];
-
-			if (lo == 0u && hi == 0u) {
-				return -KOS_EINVAL;
-			}
-			if ((uint16_t)((uint16_t)lo |
-				       ((uint16_t)hi << 8)) > 1023u) {
-				return -KOS_EINVAL;
-			}
-			lo_page[note] = lo;
-			hi_page[note] = hi;
+			lo_page[note] = table[note << 1];
+			hi_page[note] = table[(note << 1) + 1u];
 		}
 	}
 	return 0;
 }
 
-/* --- resident loading --------------------------------------------------- */
-
 static int load_resident(void)
 {
-	uint16_t i;
-	/* The loudness page: base<<4|macro -> base*macro/15. */
+	/* The loudness page: base<<4|macro -> base*macro/15.  The
+	 * remainder walks base per step (base < 16, so one conditional
+	 * subtraction): the library links no 8-bit divide. */
 	{
 		uint8_t *loud = snd_ztr_loud;
 		uint8_t base;
 
 		for (base = 0u; base < 16u; ++base) {
+			uint16_t remainder = 0u;
+			uint8_t value = 0u;
 			uint8_t macro;
 
 			for (macro = 0u; macro < 16u; ++macro) {
-				uint16_t product = (uint16_t)base *
-					(uint16_t)macro;
-				uint8_t value = 0u;
-
-				/* base*macro/15, by repeated subtraction:
-				 * the library links no 8-bit divide. */
-				while (product >= 15u) {
-					product -= 15u;
+				*loud++ = value;
+				remainder = (uint16_t)(remainder + base);
+				if (remainder >= 15u) {
+					remainder -= 15u;
 					++value;
 				}
-				loud[((uint16_t)base << 4) | macro] = value;
 			}
 		}
 	}
-	/* The reserved mask: every channel used by any order. */
+	/* The reserved mask: every channel used by any order.  Channel
+	 * outer so the bit walks a register and the first use ends the
+	 * channel's scan. */
 	snd_ztr_mask = 0u;
-	for (i = 0u; i < snd_ztr_order_count; ++i) {
+	{
+		const uint8_t *sel = snd_ztr_orders;
+		uint16_t bit = 1u;
 		uint8_t channel;
 
-		for (channel = 0u; channel < ZTR_CHANNELS; ++channel) {
-			if (snd_ztr_orders[(uint16_t)i * ZTR_CHANNELS +
-					   channel] != 0xFFu) {
-				snd_ztr_mask |=
-					(uint16_t)(1u << channel);
+		for (channel = 0u; channel < ZTR_CHANNELS;
+		     ++channel, ++sel, bit = (uint16_t)(bit << 1)) {
+			const uint8_t *scan = sel;
+			uint16_t i;
+
+			for (i = 0u; i < snd_ztr_order_count;
+			     ++i, scan += ZTR_CHANNELS) {
+				if (*scan != 0xFFu) {
+					snd_ztr_mask |= bit;
+					break;
+				}
 			}
 		}
 	}
 	return 0;
+}
+
+/* The largest order's stream total, from the resident directory.  A
+ * per-channel scan of the whole directory would multiply the entry
+ * count by sixteen, so the entries are bucketed by channel first - one
+ * count pass and one scatter pass over the resident copy, the index
+ * pairs and cursors in order-buffer slot 1 (48 B of tables, then two
+ * bytes per entry).  Per channel the bucket fills pattern-number ->
+ * stream-length byte tables (lo page at +0, hi page at +256, so no
+ * 16-bit index arithmetic) in reverse, so the first directory match
+ * wins as setup_order_for resolves; then every order's sixteen
+ * selections total from them, the totals kept as byte pairs (lo at
+ * +512, hi past the lo run) so the accumulation is 8-bit throughout.
+ * The tables live in order-buffer slot 0, free until the first refill.
+ * FFh/FFh marks an unset slot: a stream length is bounded by the
+ * 64 KiB file less its offset. */
+static uint16_t largest_order_total(void)
+{
+	uint8_t *bucket = ztr_order_buffer(1u);
+	uint16_t largest = 0u;
+	uint16_t order;
+	uint8_t channel;
+
+	memset(bucket, 0, ZTR_CHANNELS);
+	scan_entry = snd_ztr_patterns;
+	for (scan_i = 0u; scan_i < pattern_count;
+	     ++scan_i, scan_entry += ZTR_DIR_BYTES) {
+		if (scan_entry[0] < ZTR_CHANNELS) {
+			++bucket[scan_entry[0]];
+		}
+	}
+	{
+		uint16_t at = (uint16_t)(16u + (ZTR_CHANNELS << 1));
+		uint8_t c;
+
+		for (c = 0u; c < ZTR_CHANNELS; ++c) {
+			bucket[ZTR_CHANNELS + (c << 1)] = (uint8_t)at;
+			bucket[ZTR_CHANNELS + (c << 1) + 1u] =
+				(uint8_t)(at >> 8);
+			at = (uint16_t)(at + ((uint16_t)bucket[c] << 1));
+		}
+	}
+	scan_entry = snd_ztr_patterns;
+	for (scan_i = 0u; scan_i < pattern_count;
+	     ++scan_i, scan_entry += ZTR_DIR_BYTES) {
+		if (scan_entry[0] < ZTR_CHANNELS) {
+			uint8_t *cursor = bucket + ZTR_CHANNELS +
+				((uint16_t)scan_entry[0] << 1);
+			uint16_t at = u16_at(cursor);
+			uint16_t next = (uint16_t)(at + 2u);
+
+			bucket[at] = (uint8_t)scan_i;
+			bucket[at + 1u] = (uint8_t)(scan_i >> 8);
+			cursor[0] = (uint8_t)next;
+			cursor[1] = (uint8_t)(next >> 8);
+		}
+	}
+	scan_work = ztr_order_buffer(0u);
+	memset(scan_work + 512u, 0, SND_ZTR_MAX_ORDERS << 1);
+	{
+		uint16_t bit = 1u;
+
+		for (channel = 0u; channel < ZTR_CHANNELS;
+		     ++channel, bit = (uint16_t)(bit << 1)) {
+			uint16_t end;
+			uint16_t at;
+
+			/* A channel no order selects contributes nothing. */
+			if ((snd_ztr_mask & bit) == 0u) {
+				continue;
+			}
+			end = u16_at(bucket + ZTR_CHANNELS +
+				     ((uint16_t)channel << 1));
+			at = (uint16_t)(end -
+				((uint16_t)bucket[channel] << 1));
+
+			memset(scan_work, 0xFF, 512u);
+			while (end != at) {
+				uint16_t index;
+
+				end = (uint16_t)(end - 2u);
+				index = (uint16_t)((uint16_t)bucket[end] |
+					((uint16_t)bucket[end + 1u] << 8));
+				scan_entry = snd_ztr_patterns +
+					(uint16_t)((index << 2) + (index << 1));
+				scan_work[scan_entry[1]] = scan_entry[4];
+				scan_work[256u + scan_entry[1]] = scan_entry[5];
+			}
+			scan_selection = snd_ztr_orders + channel;
+			scan_total_at = scan_work + 512u;
+			for (order = 0u; order < snd_ztr_order_count;
+			     ++order, scan_selection += ZTR_CHANNELS,
+			     ++scan_total_at) {
+				uint8_t sel = *scan_selection;
+				uint8_t len_lo;
+				uint8_t len_hi;
+
+				if (sel == 0xFFu) {
+					continue;
+				}
+				len_lo = scan_work[sel];
+				len_hi = scan_work[256u + sel];
+				if (len_lo != 0xFFu || len_hi != 0xFFu) {
+					uint8_t old = *scan_total_at;
+					uint8_t sum = (uint8_t)(old + len_lo);
+
+					*scan_total_at = sum;
+					scan_total_at[SND_ZTR_MAX_ORDERS] =
+						(uint8_t)(
+						scan_total_at[SND_ZTR_MAX_ORDERS] +
+						len_hi + (sum < old ? 1u : 0u));
+				}
+			}
+		}
+	}
+	for (order = 0u; order < snd_ztr_order_count; ++order) {
+		uint16_t total = (uint16_t)(
+			(uint16_t)scan_work[512u + order] |
+			((uint16_t)scan_work[512u + SND_ZTR_MAX_ORDERS +
+					    order] << 8));
+
+		if (total > largest) {
+			largest = total;
+		}
+	}
+	return largest;
 }
 
 /* --- the producer ------------------------------------------------------- */
@@ -920,8 +781,7 @@ int snd_ztr_open(const kos_reader_t *source)
 	}
 	ztr_size = source->size;
 	/* A file copied through CP/M may hold complete 128-byte records:
-	 * accept exactly that representation of the logical size.  Its
-	 * padding is checked after the logical song's forward pass. */
+	 * accept exactly that representation of the logical size. */
 	logical = u16_at(header + 46);
 	if (logical >= ZTR_HEADER_BYTES && logical < ztr_size) {
 		rounded = (logical + 127u) & 0xFF80u;
@@ -933,7 +793,32 @@ int snd_ztr_open(const kos_reader_t *source)
 	}
 	ztr_reset_state();
 	ztr_publish_pages();
-	result = validate();
+	/* The magic and the fixed layout the loader's arithmetic
+	 * assumes; the content itself is the stamped CRC's job. */
+	if (header[0] != 'Z' || header[1] != 'T' || header[2] != 'R' ||
+	    header[3] != '1' || header[4] != 1u ||
+	    header[5] != ZTR_HEADER_BYTES || header[7] != ZTR_CHANNELS ||
+	    u16_at(header + 14) == 0u ||
+	    u16_at(header + 18) > ZTR_CHANNELS ||
+	    header[50] != ZTR_CHANNELS ||
+	    header[51] != ZTR_INSTRUMENT_BYTES ||
+	    header[52] != ZTR_PATTERN_BYTES || header[53] != ZTR_NOTE_COUNT) {
+		result = -KOS_EINVAL;
+		goto fail;
+	}
+	ztr_crc_stored = u16_at(header + 22);
+	ztr_crc = 0xFFFFu;
+	ztr_crc_feed(header, 22u);
+	ztr_crc_feed(header + 24u, ZTR_HEADER_BYTES - 24u);
+	result = load_sections();
+	if (result < 0) {
+		goto fail;
+	}
+	result = remap_and_split();
+	if (result < 0) {
+		goto fail;
+	}
+	result = load_resident();
 	if (result < 0) {
 		goto fail;
 	}
@@ -941,57 +826,10 @@ int snd_ztr_open(const kos_reader_t *source)
 		result = -KOS_EBUSY;
 		goto fail;
 	}
-	result = load_resident();
-	if (result < 0) {
+	/* A larger order than the order buffer is -KOS_ENOSPC. */
+	if (largest_order_total() > SND_ZTR_ORDER_STREAM) {
+		result = -KOS_ENOSPC;
 		goto fail;
-	}
-	/* The largest order's stream total, over the resident
-	 * directory: a larger one is -KOS_ENOSPC. */
-	{
-		uint16_t largest = 0u;
-		uint16_t order;
-
-		for (order = 0u; order < snd_ztr_order_count; ++order) {
-			uint16_t total = 0u;
-			uint8_t channel;
-
-			setup_order_for(order);
-			for (channel = 0u; channel < ZTR_CHANNELS;
-			     ++channel) {
-				if (cursor_active[channel] != 0u) {
-					total = (uint16_t)(total +
-						(uint16_t)(cursor_end[channel] -
-							   cursor_next[channel]));
-				}
-			}
-			if (total > largest) {
-				largest = total;
-			}
-		}
-		if (largest > SND_ZTR_ORDER_STREAM) {
-			result = -KOS_ENOSPC;
-			goto fail;
-		}
-	}
-	if (source->size > ztr_size) {
-		/* The CP/M padding (at most one 128-byte record, all
-		 * 1Ah): one whole read through the scratch, then a
-		 * pointer walk. */
-		const uint8_t *pad = ztr_order_buffer(0u);
-		uint16_t left = (uint16_t)(source->size - ztr_size);
-
-		result = ztr_read(ztr_order_buffer(0u), ztr_size, left);
-		if (result < 0) {
-			goto fail;
-		}
-		while (left != 0u) {
-			if (*pad != 0x1Au) {
-				result = -KOS_EINVAL;
-				goto fail;
-			}
-			++pad;
-			--left;
-		}
 	}
 	snd_ztr_reset_channels();
 	snd_reserved_voices |= snd_ztr_mask;

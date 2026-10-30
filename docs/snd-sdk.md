@@ -215,7 +215,7 @@ int  snd_service(void);                   /* foreground refill */
 ### 4.2 ZTR player
 
 ```c
-int  snd_ztr_open(const kos_reader_t *source);  /* validate, initialize */
+int  snd_ztr_open(const kos_reader_t *source);  /* magic, capacity, CRC */
 int  snd_ztr_prepare(void);                     /* load the first order */
 int  snd_ztr_play(void);
 int  snd_ztr_pause(void);
@@ -229,7 +229,7 @@ The status reports state (`EMPTY`, `PREPARING`, `READY`, `PLAYING`, `PAUSED`, `D
 
 Loading a song is two distinct steps:
 
-1. **Open/validate:** one forward pass over the file (section 6), keeping everything but the pattern data resident. Malformed source fails *before* playing registers.
+1. **Open:** one forward pass over the file (section 6), keeping everything but the pattern data resident and verifying the stamped content CRC. A corrupt source fails *before* playing registers.
 2. **Prepare:** load order 0's pattern streams into an order buffer. `snd_ztr_play` requires it and never blocks on storage.
 
 `pause` holds a documented muted state rather than leaving an uncontrolled note stuck; `resume` restores the current musical state from the engine shadow. `stop` silences ZTR-owned channels. The ZTR `stop song` effect (ID 6) terminates playback deterministically. Looping is **not** implied by ZTR v1; an application may explicitly replay a finished song.
@@ -371,10 +371,7 @@ ZTR is **not a raw PSG-register recording**: it has order lists, sparse channel-
 
 ### 6.1 Two phases
 
-**Open: one forward pass.** The header gives every section's offset and count, and the sections come in a fixed order without overlap, so `snd_ztr_open` validates in a single forward read through sequential windows, never seeking back:
-
-- the header; the strings; the orders, the instrument directory, the macro data and the pattern directory, each kept resident as it is checked; the pattern streams, each checked (rows, masks, payloads, references, length and count); the divisor table, kept resident;
-- references are checked against what is already resident, or when their target arrives: instrument numbers against the header's count, macro offsets against the instrument directory, stream offsets against the pattern directory, and each order's pattern numbers against the directory once it is read.
+**Open: one forward pass.** The header gives every section's offset and count, and the sections come in a fixed order without overlap, so `snd_ztr_open` loads in a single forward read through sequential windows, never seeking back. It checks the signature, the fixed layout and the compile-time capacities, keeps everything but the pattern data resident, and verifies the header-stamped content CRC (docs/ZTR-Format.md) over the bytes it just read: a nonzero stamp that mismatches refuses the song, a zero stamp passes unchecked. The structural validation of the strings, instruments, macros, pattern streams and note table lives in ztrcheck (UserSoftware/ZTRCheck), not in the player.
 
 **Play: the order double buffer** (the ZVG model: the foreground copies raw bytes, the tick decodes). Rows never cross an order, so the unit of streaming is the order: its 16 channel-pattern streams, each read whole at the offset and length its directory entry gives.
 
@@ -398,7 +395,7 @@ The tick decodes raw stream bytes exactly as the reference player does over its 
 ### 6.2 Work-space and memory policy
 
 - **Resident:** the header fields, the orders, the instrument directory, the macro data, the pattern directory (compacted to 6 bytes per entry: channel, number, offset, length) and the 96 divisors, in library storage sized by compile-time capacities (`SND_ZTR_*`); exceeding one refuses the song at open (`-KOS_ENOSPC`).
-- **Order buffers:** two, each `SND_ZTR_ORDER_BYTES` (1,024: a 64-byte table of per-channel start/end cursors, then the raw streams); the validation pass records the largest order's total stream bytes, and a larger order refuses the song at open.
+- **Order buffers:** two, each `SND_ZTR_ORDER_BYTES` (1,024: a 64-byte table of per-channel start/end cursors, then the raw streams); open totals each order's stream bytes from the pattern directory, and a larger order refuses the song at open.
 - The capacities: 136 orders × 16 selections, 400 pattern entries × 6 bytes, 6,640 macro bytes; night-market's largest order is 871 stream bytes, RunawayCircuit's 370. The pattern data never sits in RAM whole.
 - Data the tick reads is directly visible during the tick: no far-mapped pointers retained across callbacks.
 
@@ -544,7 +541,7 @@ user/sdk/
     src/snd_manual.c            note/instrument compile to voice programs (C)
     src/snd_phrase.c            optional tokenizer + phrase compile (C)
     src/snd_zvg.c               ZVG validate / prefetch (C)
-    src/snd_ztr.c               ZTR validate, resident tables, order refill (C)
+    src/snd_ztr.c               ZTR open / CRC, resident tables, order refill (C)
     src/snd_private.h           private shared state
     src/snd_tick.asm            snd_tick dispatch, catch-up bound
     src/snd_out.asm             register shadow, latch encoding, direct/batch flush

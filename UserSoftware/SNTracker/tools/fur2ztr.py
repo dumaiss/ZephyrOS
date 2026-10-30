@@ -8,6 +8,7 @@ compact, bounded binary structures documented in docs/ZTR-Format.md.
 from __future__ import annotations
 
 import argparse
+import binascii
 import math
 import re
 import struct
@@ -73,6 +74,29 @@ EFFECT_NAMES = {native: name for _, (native, name) in EFFECTS.items()}
 
 INSTRUMENT_ENTRY_SIZE = 16
 PATTERN_ENTRY_SIZE = 8
+
+# Header offset of the content CRC-16 (CCITT-FALSE) stamp; zero means
+# unprotected (docs/ZTR-Format.md).
+CRC_FIELD_OFFSET = 0x16
+
+
+def content_crc(data: bytes) -> int:
+    """The content CRC-16 over the fixed sections: the header less the CRC
+    field itself, then everything up to the pattern data, then the note
+    divisor table.  The pattern streams are not covered."""
+    pattern_data_offset = struct.unpack_from("<H", data, 0x2A)[0]
+    note_table_offset = struct.unpack_from("<H", data, 0x2C)[0]
+    crc = binascii.crc_hqx(data[:CRC_FIELD_OFFSET], 0xFFFF)
+    crc = binascii.crc_hqx(data[CRC_FIELD_OFFSET + 2:pattern_data_offset], crc)
+    return binascii.crc_hqx(data[note_table_offset:note_table_offset + NOTE_COUNT * 2], crc)
+
+
+def stamp_content_crc(data: bytes) -> bytes:
+    """Zero the CRC field, compute the content CRC, store it, in that order."""
+    blob = bytearray(data)
+    struct.pack_into("<H", blob, CRC_FIELD_OFFSET, 0)
+    struct.pack_into("<H", blob, CRC_FIELD_OFFSET, content_crc(bytes(blob)))
+    return bytes(blob)
 
 
 class ConversionError(ValueError):
@@ -803,6 +827,23 @@ def build_note_table(tuning: int, playback_transpose: int) -> list[int]:
     return result
 
 
+def pattern_layout(song: Song) -> list[tuple[int, int]]:
+    """The channel-patterns in first-use order: order by order, channel by
+    channel, then any pattern no order selects.  One order's streams then
+    sit together, so a player's order refill reads one span instead of a
+    stream per channel scattered over the file."""
+    layout: list[tuple[int, int]] = []
+    placed: set[tuple[int, int]] = set()
+    for order in song.orders:
+        for channel, pattern in enumerate(order):
+            key = (channel, pattern)
+            if key in song.patterns and key not in placed:
+                layout.append(key)
+                placed.add(key)
+    layout += sorted(key for key in song.patterns if key not in placed)
+    return layout
+
+
 def encode_ztr(song: Song) -> bytes:
     string_pool = bytearray(b"\0")
     string_offsets: dict[str, int] = {"": 0}
@@ -858,7 +899,7 @@ def encode_ztr(song: Song) -> bytes:
             0,
         )
 
-    pattern_keys = sorted(song.patterns)
+    pattern_keys = pattern_layout(song)
     pattern_dir_offset = macro_data_offset + len(macro_data)
     pattern_data_offset = pattern_dir_offset + len(pattern_keys) * PATTERN_ENTRY_SIZE
     pattern_data = bytearray()
@@ -919,7 +960,7 @@ def encode_ztr(song: Song) -> bytes:
         "<BBBB", header, 50, CHANNEL_COUNT, INSTRUMENT_ENTRY_SIZE, PATTERN_ENTRY_SIZE, NOTE_COUNT
     )
     struct.pack_into("<b", header, 54, song.playback_transpose)
-    return bytes(
+    return stamp_content_crc(
         header
         + string_pool
         + order_data
@@ -1091,7 +1132,7 @@ def decode_ztr(data: bytes) -> DecodedZtr:
         pattern_count,
         instrument_count,
         tuning,
-        reserved,
+        stamped_crc,
         psg_clock,
     ) = struct.unpack_from("<HHHHHHI", data, 12)
     (
@@ -1111,8 +1152,12 @@ def decode_ztr(data: bytes) -> DecodedZtr:
         "<BBBB", data, 50
     )
     playback_transpose = struct.unpack_from("<b", data, 54)[0]
-    if reserved or any(data[55:64]) or psg_clock != PSG_CLOCK:
+    if any(data[55:64]) or psg_clock != PSG_CLOCK:
         raise ConversionError("unsupported ZTR reserved data/PSG clock")
+    if stamped_crc and stamped_crc != content_crc(data):
+        raise ConversionError(
+            f"ZTR content CRC mismatch: stored {stamped_crc:04X}, computed {content_crc(data):04X}"
+        )
     if file_size != len(data):
         raise ConversionError(f"header size {file_size} does not match file size {len(data)}")
     if (

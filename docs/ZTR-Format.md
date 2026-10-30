@@ -7,8 +7,9 @@ files are limited to 65,535 bytes so every offset can be handled directly by a
 Z80.
 
 Multi-byte integers are unsigned unless explicitly described as signed.
-Reserved bytes and bits must be zero. A reader must reject a file whose bounds,
-counts, or reserved fields are invalid.
+Reserved bytes and bits must be zero. A player checks the signature, the
+capacities it can hold, and the content CRC at `16h`; the full structural
+validation lives in ztrcheck (UserSoftware/ZTRCheck).
 
 ## Header
 
@@ -29,7 +30,7 @@ The header is exactly 64 bytes.
 | `10h` | 2 | channel-pattern directory entry count |
 | `12h` | 2 | instrument count, 0 through 16 |
 | `14h` | 2 | tuning frequency for A4 in Hz |
-| `16h` | 2 | reserved |
+| `16h` | 2 | content CRC-16; `0000h` means unprotected |
 | `18h` | 4 | PSG clock in Hz; `00369E99h` (3,579,545) |
 | `1Ch` | 2 | title string offset |
 | `1Eh` | 2 | author string offset |
@@ -55,6 +56,23 @@ The sections occur in this order and do not overlap:
 header, strings, orders, instrument directory, macro data,
 pattern directory, pattern data, note divisor table
 ```
+
+## Content CRC
+
+Offset `16h` holds a CRC-16 (CCITT-FALSE: polynomial `1021h`, initial value
+`FFFFh`) over everything the player reads at open:
+
+- `[0, 16h)` and `[18h, 40h)`: the header around the CRC field itself;
+- `[40h, pattern-data offset)`: strings, orders, instrument directory,
+  macro data and pattern directory;
+- `[note-table offset, +192)`: the note divisor table.
+
+The pattern-data streams are not covered; the player streams and decodes
+them during playback. Producers stamp the field after assembly: zero it,
+compute, store. The player feeds the bytes it already reads while loading
+and refuses the song when a nonzero stored value mismatches. `0000h` means
+unprotected and always passes; a file whose computed CRC is `0000h` is
+stored as-is, so that file is indistinguishable from an unprotected one.
 
 ## Strings
 
@@ -145,6 +163,12 @@ eight-byte directory entry is:
 | `02h` | 2 | absolute stream offset |
 | `04h` | 2 | encoded stream length |
 | `06h` | 2 | event count |
+
+Directory entries follow file order: each stream starts at or after the end
+of the previous entry's stream. Producers place streams in first-use order
+(order by order, channel by channel, then any stream no order selects), so
+one order's streams sit together and a player's order refill reads a few
+nearby spans.
 
 A stream contains only non-empty cells, sorted by row. No terminator is stored;
 the directory length and event count must agree. Each event starts with:

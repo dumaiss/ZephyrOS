@@ -3,8 +3,9 @@
 
 Four families:
 
-* fixtures: the two ZTR songs are byte-for-byte the Zephyr-80 sources,
-  the ZVG fixtures rebuild byte-for-byte from the checked-in generator;
+* fixtures: the two ZTR songs are the Zephyr-80 sources stamped with
+  the content CRC by the checked-in generator, the ZVG fixtures rebuild
+  byte-for-byte from the checked-in generator;
 * the oracle tools build on the host and reproduce the checked-in
   goldens byte for byte;
 * the malformed-fixture outcomes table matches the oracles' current
@@ -86,11 +87,22 @@ def sha256(path):
 
 
 class TestFixtures(unittest.TestCase):
-    def test_the_ztr_songs_are_the_zephyr80_sources(self):
+    def test_the_ztr_songs_are_the_encoded_zephyr80_sources(self):
+        """The good ZTRs are exactly encode_ztr() of the Zephyr-80
+        sources (the generator itself is not run here: it would
+        overwrite the committed fixtures)."""
+        spec = importlib.util.spec_from_file_location("gen", GEN)
+        gen = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gen)
         for name in ZTR_SONGS:
-            self.assertEqual(sha256(os.path.join(FIXTURES, name)),
-                             sha256(os.path.join(Z80_SONGS, name)),
-                             "%s differs from its Zephyr-80 source" % name)
+            with open(os.path.join(Z80_SONGS, name), "rb") as handle:
+                expected = gen.encode_ztr(handle.read())
+            with open(os.path.join(FIXTURES, name), "rb") as handle:
+                actual = handle.read()
+            self.assertEqual(actual, expected,
+                             "%s is not its encoded Zephyr-80 source" % name)
+            self.assertTrue(actual[0x16] or actual[0x17],
+                            "%s carries no content CRC" % name)
 
     def test_the_zvg_fixtures_have_the_zvgc_shape(self):
         for name in ZVG_SONGS:

@@ -28,7 +28,7 @@ class SoundApiTests(unittest.TestCase):
         self.assertNotIn("ztr.c player.c psg.c", self.makefile)
 
     def test_empty_console_poll_idles_until_an_interrupt(self):
-        self.assertIn("if (console_poll() > 0)", self.source)
+        self.assertIn("console_poll() > 0", self.source)
         self.assertIn("idle();", self.source)
 
 

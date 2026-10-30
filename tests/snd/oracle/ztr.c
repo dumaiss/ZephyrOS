@@ -190,7 +190,7 @@ static int validate(void)
 	    h[10] == 0u || h[11] == 0u || h[11] > ZTR_CHANNELS ||
 	    ztr_u16(h + 12) == 0u || ztr_u16(h + 12) > 256u ||
 	    ztr_u16(h + 14) == 0u || ztr_u16(h + 14) > 255u ||
-	    ztr_u16(h + 18) > ZTR_CHANNELS || h[22] != 0u || h[23] != 0u ||
+	    ztr_u16(h + 18) > ZTR_CHANNELS ||
 	    ztr_u32(h + 24) != 3579545ul || ztr_u16(h + 46) != ztr_size ||
 	    h[50] != ZTR_CHANNELS || h[51] != ZTR_INSTRUMENT_BYTES ||
 	    h[52] != ZTR_PATTERN_BYTES || h[53] != ZTR_NOTE_COUNT) {

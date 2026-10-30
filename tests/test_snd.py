@@ -13,6 +13,7 @@
   or KRES member.
 """
 
+import binascii
 import json
 import os
 import re
@@ -45,6 +46,12 @@ KRES_TOOL = os.path.join(ROOT, "build", "host", "kres")
 SNTEST_MAP = os.path.join(ROOT, "build", "user", "sndtest", "sndtest.map")
 SOUND_REPORT = os.path.join(ROOT, "build", "modules", "sound.report.json")
 SNTEST_SYMS = read_symbols(SNTEST_MAP) if os.path.exists(SNTEST_MAP) else {}
+
+ZTRCHECK_DIR = os.path.join(ROOT, "UserSoftware", "ZTRCheck")
+ZTRCHECK_HOST = os.path.join(ZTRCHECK_DIR, "build", "host", "ztrcheck")
+ZTRCHECK_EXE = os.path.join(ZTRCHECK_DIR, "build", "user", "ztrcheck.exe")
+ZTRCHECK_GOLDEN = os.path.join(ROOT, "tests", "snd", "golden",
+                               "ztrcheck.md")
 
 
 def app_mapped(z):
@@ -760,6 +767,9 @@ class TestSndZtrLoad(SndCase):
             check=True, cwd=ROOT)
         if not os.path.exists(KRES_TOOL):
             subprocess.run(["make", "kres-host"], check=True, cwd=ROOT)
+        if not os.path.exists(ZTRCHECK_HOST):
+            subprocess.run(["make", "-C", ZTRCHECK_DIR, "all"],
+                           check=True, cwd=ROOT)
         import test_snd_oracle
         test_snd_oracle.build_tools()
 
@@ -794,17 +804,135 @@ class TestSndZtrLoad(SndCase):
                 len(self.checksums(normal.stdout)),
                 {"night-market": 30, "RunawayCircuit": 136}[song], song)
 
-    def test_sdk_loader_refuses_every_malformed_ztr(self):
-        directory = os.path.join(ZVG_MALFORMED)
+    # The structural verdicts belong to ztrcheck (golden ztrcheck.md);
+    # the loader trusts the stamp and keeps only its magic/capacity/CRC
+    # checks, so open refuses exactly these unstamped fixtures.
+    OPEN_REFUSED = frozenset({
+        "header-channels.ztr", "header-magic.ztr", "header-size.ztr",
+        "header-truncated.ztr", "header-version.ztr",
+        "padding-wrong-size.ztr", "values-entry-sizes.ztr",
+        "values-file-size.ztr", "values-instrument-count.ztr",
+        "values-order-count-zero.ztr",
+    })
+
+    def test_sdk_loader_open_partition_of_the_malformed_ztr(self):
+        directory = ZVG_MALFORMED
         for name in sorted(item for item in os.listdir(directory)
                            if item.endswith(".ztr")):
             result = subprocess.run(
                 [HOST_ZTR, os.path.join(directory, name)],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 check=True, cwd=ROOT, text=True)
-            self.assertTrue(result.stdout.startswith("ztr: refused "),
-                            "%s was accepted: %s" %
-                            (name, result.stdout.splitlines()[:1]))
+            refused = result.stdout.startswith("ztr: refused ")
+            self.assertEqual(refused, name in self.OPEN_REFUSED,
+                             "%s: %s" % (name,
+                                         result.stdout.splitlines()[:1]))
+
+    def test_host_ztrcheck_verdicts_match_the_golden(self):
+        """Every malformed fixture's verdict line and the two stamped
+        songs' OK summaries, pinned by tests/snd/golden/ztrcheck.md."""
+        rows = []
+        with open(ZTRCHECK_GOLDEN) as handle:
+            for line in handle:
+                match = re.match(r"\| ([^|]+\.ztr) \| `([^`]+)` \|", line)
+                if match:
+                    rows.append((match.group(1), match.group(2)))
+        self.assertTrue(rows)
+        for name, want in rows:
+            directory = ZVG_FIXTURES if name in \
+                ("night-market.ztr", "RunawayCircuit.ztr") else ZVG_MALFORMED
+            result = subprocess.run(
+                [ZTRCHECK_HOST, os.path.join(directory, name)],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                check=False, cwd=ROOT, text=True)
+            self.assertEqual(result.stdout.splitlines()[-1], want, name)
+            self.assertEqual(result.returncode,
+                             0 if directory == ZVG_FIXTURES else 4, name)
+
+    def stamped_copy(self, directory, name="night-market"):
+        path = os.path.join(directory, name + ".ztr")
+        shutil.copyfile(os.path.join(ZVG_FIXTURES, name + ".ztr"), path)
+        return path
+
+    def test_a_covered_byte_flip_fails_open_with_einval(self):
+        """A stamped fixture with one covered byte changed: the CRC
+        catch is -KOS_EINVAL at open."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.stamped_copy(directory)
+            with open(path, "r+b") as handle:
+                handle.seek(100)
+                byte = handle.read(1)
+                handle.seek(100)
+                handle.write(bytes([byte[0] ^ 0x01]))
+            result = subprocess.run([HOST_ZTR, path], stdout=subprocess.PIPE,
+                                    check=True, cwd=ROOT, text=True)
+            self.assertEqual(result.stdout, "ztr: refused -2\n")
+
+    def test_a_pattern_data_byte_flip_passes_open(self):
+        """The pattern streams are outside the covered ranges (the CRC
+        protects what open reads); a flip there still opens."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.stamped_copy(directory)
+            with open(path, "r+b") as handle:
+                handle.seek(0x2A)
+                pattern_data = handle.read(1)[0] | (handle.read(1)[0] << 8)
+                handle.seek(pattern_data + 5)
+                byte = handle.read(1)
+                handle.seek(pattern_data + 5)
+                handle.write(bytes([byte[0] ^ 0x01]))
+            result = subprocess.run([HOST_ZTR, path], stdout=subprocess.PIPE,
+                                    check=True, cwd=ROOT, text=True)
+            self.assertFalse(result.stdout.startswith("ztr: refused "),
+                             result.stdout.splitlines()[:1])
+
+    def test_a_computed_zero_crc_opens_unprotected(self):
+        """The documented blind spot: a file whose covered bytes compute
+        to 0000h, stored as-is, is indistinguishable from an unprotected
+        file and opens."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.stamped_copy(directory)
+            with open(path, "r+b") as handle:
+                data = bytearray(handle.read())
+                data[0x16:0x18] = b"\0\0"
+                pattern_data = data[0x2A] | (data[0x2B] << 8)
+                note_table = data[0x2C] | (data[0x2D] << 8)
+                crc = binascii.crc_hqx(bytes(data[:0x16]), 0xFFFF)
+                crc = binascii.crc_hqx(bytes(data[0x18:pattern_data]), crc)
+                crc = binascii.crc_hqx(
+                    bytes(data[note_table:note_table + 190]), crc)
+                pair = next(
+                    (a, b) for a in range(256) for b in range(256)
+                    if binascii.crc_hqx(bytes([a, b]), crc) == 0)
+                data[-2:] = bytes(pair)
+                handle.seek(0)
+                handle.write(data)
+            result = subprocess.run([HOST_ZTR, path], stdout=subprocess.PIPE,
+                                    check=True, cwd=ROOT, text=True)
+            self.assertFalse(result.stdout.startswith("ztr: refused "),
+                             result.stdout.splitlines()[:1])
+
+    @unittest.skipUnless(os.path.exists(ZTRCHECK_EXE), "run make")
+    def test_ztrcheck_exe_reports_a_defect_on_target(self):
+        with open(os.path.join(ZVG_MALFORMED, "patterns-mask.ztr"),
+                  "rb") as handle:
+            data = handle.read()
+        out = self.target_output(
+            ZTRCHECK_EXE, {"BAD.ZTR": data},
+            "/fs/ztrcheck.exe /fs/bad.ztr\r",
+            "FAIL stream at 18B8")
+        self.assertIn("FAIL stream at 18B8: an event stream is malformed",
+                      out)
+
+    @unittest.skipUnless(os.path.exists(ZTRCHECK_EXE), "run make")
+    def test_ztrcheck_exe_summarizes_a_stamped_song_on_target(self):
+        with open(os.path.join(ZVG_FIXTURES, "night-market.ztr"),
+                  "rb") as handle:
+            data = handle.read()
+        out = self.target_output(
+            ZTRCHECK_EXE, {"SONG.ZTR": data},
+            "/fs/ztrcheck.exe /fs/song.ztr\r",
+            "crc=ok 136F")
+        self.assertIn("OK: Night Market / Electric Keet / TI-99/4A", out)
 
     def target_output(self, program_path, files, command, done):
         with open(program_path, "rb") as handle:

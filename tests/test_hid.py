@@ -337,10 +337,10 @@ class TestHidSourceDiscipline(unittest.TestCase):
     def test_stuck_penalty_applied_and_cleared(self):
         # A failure starts at KHID_STUCK_PENALTY and each consecutive
         # one doubles it, up to KHID_STUCK_PENALTY_MAX.
-        self.assertIn("state->backoff = KHID_STUCK_PENALTY;", self.driver)
+        self.assertIn("(uint8_t)((state->backoff << 1) | KHID_STUCK_PENALTY)",
+                      self.driver)
         self.assertIn("state->penalty = state->backoff;", self.driver)
         self.assertIn("state->backoff < KHID_STUCK_PENALTY_MAX", self.driver)
-        self.assertIn("(uint8_t)(state->backoff << 1)", self.driver)
         self.assertIn("--state->penalty", self.driver)
         # Successful data or a released doorbell clears both.
         self.assertIn("state->penalty = 0u;", self.driver)
