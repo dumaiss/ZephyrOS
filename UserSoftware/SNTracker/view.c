@@ -3,6 +3,15 @@
 #include "view.h"
 
 #define PAGE_Y(page) ((uint16_t)(page) * 256u)
+/* Page 0's spare lines hold a dotted row on each background (0, 1):
+ * a row starts as one copy of it. */
+#define TEMPLATE_Y 212u
+/* The regions' y within a page: panels 9-97, channel headers 98-108,
+ * pattern rows 109-204 (ZTRDOC_VIEW_ROWS of 6 lines). */
+#define PANEL_H 89u
+#define HEADER_Y 98u
+#define GRID_Y 109u
+#define GRID_END 204u
 #define MINOR_HILITE 4u
 #define MAJOR_HILITE 16u
 
@@ -101,35 +110,59 @@ static void draw_title(const struct view *v, uint8_t page)
 	(void)text(492u, y + 1u, "00:00", 4u, 1u);
 }
 
-static void draw_orders(const struct view *v, uint8_t page)
+/* The panels draw in two halves (`half` 0: ground, heading and the first
+ * lines; 1: the rest), each a step shorter than a row. */
+#define HALF_LINES 7u
+
+static void draw_orders(const struct view *v, uint8_t page, uint8_t half)
 {
-	uint16_t y = PAGE_Y(page), order; uint8_t line, ch; char b[4];
-	(void)gfx_fill_rect(0u, y + 9u, 216u, 35u, 1u, GFX_OP_COPY);
-	(void)text(0u, y + 10u,
-		"POS A1 A2 A3 AN B1 B2 B3 BN C1 C2 C3 CN D1 D2 D3 DN", 3u, 1u);
-	for (line = 0u; line < 4u; ++line) {
+	uint16_t y = PAGE_Y(page), order; uint8_t line, ch, end; char b[51];
+	if (half == 0u) {
+		(void)gfx_fill_rect(0u, y + 9u, 216u, PANEL_H, 1u, GFX_OP_COPY);
+		(void)text(0u, y + 10u,
+			"POS A1 A2 A3 AN B1 B2 B3 BN C1 C2 C3 CN D1 D2 D3 DN", 3u, 1u);
+	}
+	line = half == 0u ? 0u : HALF_LINES;
+	end = half == 0u ? HALF_LINES : VIEW_PANEL_LINES;
+	for (; line < end; ++line) {
 		order = v->order_top + line;
 		if (order >= v->doc->order_count) continue;
-		hex2(b, (uint8_t)order); b[2] = ' '; b[3] = '\0';
-		(void)draw_text(0u, y + 19u + line * 6u, b, 3u, 4u, 1u);
-		for (ch = 0u; ch < 16u; ++ch) {
-			if (v->doc->orders[order][ch] == 0xFFu) continue;
-			hex2(b, v->doc->orders[order][ch]);
-			(void)draw_text(12u + (uint16_t)ch * 12u,
-				y + 19u + line * 6u, b, 2u, 4u, 1u);
-		}
+		/* One run per line: an unused channel is two spaces. */
+		memset(b, ' ', sizeof(b));
+		hex2(b, (uint8_t)order);
+		for (ch = 0u; ch < 16u; ++ch)
+			if (v->doc->orders[order][ch] != 0xFFu)
+				hex2(b + 3u + ch * 3u, v->doc->orders[order][ch]);
+		(void)draw_text(0u, y + 19u + line * 6u, b, 50u, 4u, 1u);
 		if (order == v->order)
 			(void)gfx_fill_rect(0u, y + 19u + line * 6u, 204u, 6u,
 					    8u, GFX_OP_XOR);
 	}
 }
 
-static void draw_instruments(const struct view *v, uint8_t page)
+/* The order highlight from the page's drawn order to the current one,
+ * the window unchanged: an XOR off, an XOR on (each when visible). */
+static void move_order_highlight(const struct view *v, uint8_t page)
 {
-	uint16_t y = PAGE_Y(page); uint8_t line; char b[21];
-	(void)gfx_fill_rect(216u, y + 9u, 130u, 35u, 1u, GFX_OP_COPY);
-	(void)text(218u, y + 10u, "INSTRUMENT", 3u, 1u);
-	for (line = 0u; line < 4u && v->instrument_top + line < v->doc->instrument_count; ++line) {
+	uint16_t y = PAGE_Y(page) + 19u, order = v->drawn_order[page];
+	uint8_t pass;
+	for (pass = 0u; pass < 2u; ++pass, order = v->order)
+		if (order >= v->order_top && order < v->doc->order_count &&
+		    order < v->order_top + VIEW_PANEL_LINES)
+			(void)gfx_fill_rect(0u, y + (order - v->order_top) * 6u,
+					    204u, 6u, 8u, GFX_OP_XOR);
+}
+
+static void draw_instruments(const struct view *v, uint8_t page, uint8_t half)
+{
+	uint16_t y = PAGE_Y(page); uint8_t line, end; char b[21];
+	if (half == 0u) {
+		(void)gfx_fill_rect(216u, y + 9u, 130u, PANEL_H, 1u, GFX_OP_COPY);
+		(void)text(218u, y + 10u, "INSTRUMENT", 3u, 1u);
+	}
+	line = half == 0u ? 0u : HALF_LINES;
+	end = half == 0u ? HALF_LINES : VIEW_PANEL_LINES;
+	for (; line < end && v->instrument_top + line < v->doc->instrument_count; ++line) {
 		const struct ztrdoc_instrument *ins =
 			&v->doc->instruments[v->instrument_top + line];
 		uint8_t n = 3u, k = 0u;
@@ -146,10 +179,18 @@ static void draw_instruments(const struct view *v, uint8_t page)
 	}
 }
 
+static void draw_pos(const struct view *v, uint8_t page)
+{
+	char b[6];
+	hex2(b, (uint8_t)v->order);
+	b[2]='/'; hex2(b + 3u, (uint8_t)v->doc->order_count);
+	(void)draw_text(364u, PAGE_Y(page) + 34u, b, 5u, 4u, 1u);
+}
+
 static void draw_song(const struct view *v, uint8_t page)
 {
-	uint16_t y = PAGE_Y(page), tempo; char b[12], n[6];
-	(void)gfx_fill_rect(346u, y + 9u, 166u, 35u, 1u, GFX_OP_COPY);
+	uint16_t y = PAGE_Y(page), tempo; char n[6];
+	(void)gfx_fill_rect(346u, y + 9u, 166u, PANEL_H, 1u, GFX_OP_COPY);
 	(void)text(348u, y + 10u, "SONG", 3u, 1u);
 	(void)text(348u, y + 16u, "TITLE", 3u, 1u);
 	(void)draw_text(372u, y + 16u, v->doc->title,
@@ -166,9 +207,7 @@ static void draw_song(const struct view *v, uint8_t page)
 	(void)text(368u, y + 28u, n, 4u, 1u);
 	(void)text(390u, y + 28u, "HILITE", 3u, 1u);
 	(void)text(418u, y + 28u, "04/10", 4u, 1u);
-	(void)text(348u, y + 34u, "POS", 3u, 1u); hex2(b, (uint8_t)v->order);
-	b[2]='/'; hex2(b + 3u, (uint8_t)v->doc->order_count);
-	(void)draw_text(364u, y + 34u, b, 5u, 4u, 1u);
+	(void)text(348u, y + 34u, "POS", 3u, 1u); draw_pos(v, page);
 	(void)text(390u, y + 34u, "PAT", 3u, 1u);
 }
 
@@ -217,18 +256,15 @@ int view_draw_row(uint8_t page, uint16_t row,
 		  const struct ztrdoc_event events[ZTRDOC_CHANNELS])
 {
 	uint16_t y, actual; uint8_t channel, bg; char b[4];
-	if (active_view == 0 || page > 1u || row >= 25u || events == 0) return -1;
-	actual = active_view->first_row + row; y = PAGE_Y(page) + 55u + row * 6u;
-	bg = actual < active_view->doc->rows && actual % MINOR_HILITE == 0u ? 1u : 0u;
-	(void)gfx_fill_rect(0u, y, 512u, 6u, bg, GFX_OP_COPY);
-	if (actual >= active_view->doc->rows) return 0;
+	if (active_view == 0 || page > 1u || row >= ZTRDOC_VIEW_ROWS || events == 0) return -1;
+	actual = active_view->first_row + row; y = PAGE_Y(page) + GRID_Y + row * 6u;
+	if (actual >= active_view->doc->rows)
+		return gfx_fill_rect(0u, y, 512u, 6u, 0u, GFX_OP_COPY) < 0 ? -1 : 0;
+	bg = actual % MINOR_HILITE == 0u ? 1u : 0u;
+	/* Every slot starts as a dot; present fields are drawn over it. */
+	(void)gfx_copy_rect(0u, TEMPLATE_Y + bg * 6u, 0u, y, 512u, 6u);
 	hex2(b, (uint8_t)actual);
 	(void)draw_text(0u, y, b, 2u, actual % MAJOR_HILITE == 0u ? 5u : 3u, bg);
-	/* Every slot starts as a dot; present fields are drawn over it. */
-	for (channel = 0u; channel < 4u; ++channel) {
-		(void)draw_text(cell_x[channel * 4u], y, dots, 27u, 2u, bg);
-		(void)draw_text(cell_x[channel * 4u + 3u], y, dots, 3u, 2u, bg);
-	}
 	for (channel = 0u; channel < 16u; ++channel) {
 		if ((channel & 3u) == 3u) draw_noise(cell_x[channel], y, &events[channel], bg);
 		else draw_tone(cell_x[channel], y, &events[channel], bg);
@@ -239,14 +275,14 @@ int view_draw_row(uint8_t page, uint16_t row,
 static void draw_headers(const struct view *v, uint8_t page)
 {
 	uint16_t y = PAGE_Y(page); uint8_t ch; char b[2];
-	(void)gfx_fill_rect(0u, y + 44u, 512u, 11u, 0u, GFX_OP_COPY);
+	(void)gfx_fill_rect(0u, y + HEADER_Y, 512u, 11u, 0u, GFX_OP_COPY);
 	for (ch = 0u; ch < 16u; ++ch) {
 		b[0]=(char)('A' + (ch >> 2)); b[1]=(ch & 3u)==3u ? 'N' : (char)('1' + (ch & 3u));
-		(void)draw_text(cell_x[ch], y + 46u, b, 2u, 4u, 0u);
+		(void)draw_text(cell_x[ch], y + HEADER_Y + 2u, b, 2u, 4u, 0u);
 		/* A channel the order does not use: M in its last slot. */
 		if (v->doc->orders[v->order][ch] == 0xFFu)
 			(void)draw_text(cell_x[ch] + ((ch & 3u) == 3u ? 8u : 32u),
-					y + 46u, "M", 1u, 7u, 0u);
+					y + HEADER_Y + 2u, "M", 1u, 7u, 0u);
 	}
 }
 
@@ -254,13 +290,13 @@ static void draw_rules(uint8_t page)
 {
 	uint16_t y = PAGE_Y(page), o; uint8_t chip;
 	for (chip=0u; chip<5u; ++chip) {
-		o=12u+(uint16_t)chip*124u; (void)gfx_line(o,y+44u,o,y+204u,2u,GFX_OP_COPY);
+		o=12u+(uint16_t)chip*124u; (void)gfx_line(o,y+HEADER_Y,o,y+GRID_END,2u,GFX_OP_COPY);
 	}
 	for (chip=0u; chip<4u; ++chip) {
 		o=12u+(uint16_t)chip*124u;
-		(void)gfx_line(o+37u,y+44u,o+37u,y+204u,2u,GFX_OP_COPY);
-		(void)gfx_line(o+73u,y+44u,o+73u,y+204u,2u,GFX_OP_COPY);
-		(void)gfx_line(o+110u,y+44u,o+110u,y+204u,2u,GFX_OP_COPY);
+		(void)gfx_line(o+37u,y+HEADER_Y,o+37u,y+GRID_END,2u,GFX_OP_COPY);
+		(void)gfx_line(o+73u,y+HEADER_Y,o+73u,y+GRID_END,2u,GFX_OP_COPY);
+		(void)gfx_line(o+110u,y+HEADER_Y,o+110u,y+GRID_END,2u,GFX_OP_COPY);
 	}
 }
 
@@ -277,23 +313,84 @@ static void draw_status(const struct view *v, uint8_t page)
 	(void)draw_text(0u,y,b,n,4u,1u);
 }
 
-int view_draw_page(struct view *v, uint8_t page, uint16_t first_row)
+int view_begin_page(struct view *v, uint8_t page, uint16_t first_row)
 {
-	struct ztrdoc_event row_events[ZTRDOC_CHANNELS]; uint8_t ch, row;
+	uint8_t ch;
 	if (v == 0 || page > 1u) return -1;
 	active_view=v; v->first_row=first_row;
+	if (v->pending[page] != 0u) v->drawn[page]=0u;
+	v->pending[page]=1u;
 	for (ch=0u; ch<16u; ++ch)
 		if (ztrdoc_decode_channel(v->order_buffer,ch,first_row,decoded[ch])<0) return -1;
-	gfx_begin(); draw_title(v,page); draw_orders(v,page); draw_instruments(v,page);
-	draw_song(v,page); draw_headers(v,page);
-	for (row=0u; row<25u; ++row) {
-		for (ch=0u; ch<16u; ++ch) row_events[ch]=decoded[ch][row];
-		(void)view_draw_row(page,row,row_events);
+	return 0;
+}
+
+int view_draw_step(struct view *v, uint8_t page, uint8_t step)
+{
+	struct ztrdoc_event row_events[ZTRDOC_CHANNELS]; uint8_t ch, full, window, moved;
+	if (v == 0 || page > 1u || step >= VIEW_STEPS) return -1;
+	active_view=v;
+	/* A page drawn before keeps its title, instruments and song panel;
+	 * the order's parts change only with the order (or the window). */
+	full = (uint8_t)(v->drawn[page] == 0u);
+	window = (uint8_t)(full || v->drawn_top[page] != v->order_top);
+	moved = (uint8_t)(v->drawn_order[page] != v->order);
+	gfx_begin();
+	if (step == 0u) { if (full) draw_title(v,page); }
+	else if (step <= 2u) {
+		if (window) draw_orders(v,page,(uint8_t)(step - 1u));
+		else if (step == 1u && moved) move_order_highlight(v,page);
 	}
-	draw_rules(page); draw_status(v,page);
-	(void)gfx_fill_rect(0u,PAGE_Y(page)+55u,508u,6u,8u,GFX_OP_XOR);
-	v->highlighted_row[page]=1u; v->highlighted_order[page]=1u;
-	v->highlighted_instrument[page]=1u;
+	else if (step <= 4u) { if (full) draw_instruments(v,page,(uint8_t)(step - 3u)); }
+	else if (step == 5u) {
+		if (full) draw_song(v,page);
+		else if (moved) draw_pos(v,page);
+	}
+	else if (step == 6u) { if (full || moved) draw_headers(v,page); }
+	else if (step < VIEW_PANEL_STEPS + ZTRDOC_VIEW_ROWS) {
+		for (ch=0u; ch<16u; ++ch) row_events[ch]=decoded[ch][step - VIEW_PANEL_STEPS];
+		(void)view_draw_row(page,(uint16_t)(step - VIEW_PANEL_STEPS),row_events);
+	} else {
+		draw_rules(page); draw_status(v,page);
+		(void)gfx_fill_rect(0u,PAGE_Y(page)+GRID_Y,508u,6u,8u,GFX_OP_XOR);
+		v->drawn[page]=1u; v->pending[page]=0u;
+		v->drawn_order[page]=v->order; v->drawn_top[page]=v->order_top;
+	}
+	return gfx_end();
+}
+
+int view_draw_page(struct view *v, uint8_t page, uint16_t first_row)
+{
+	uint8_t step;
+	if (view_begin_page(v,page,first_row)<0) return -1;
+	gfx_begin();
+	for (step=0u; step<VIEW_STEPS; ++step) (void)view_draw_step(v,page,step);
+	return gfx_end();
+}
+
+int view_move_cursor(uint8_t page, uint8_t from, uint8_t to)
+{
+	uint16_t y = PAGE_Y(page) + GRID_Y;
+	if (page > 1u || from >= ZTRDOC_VIEW_ROWS || to >= ZTRDOC_VIEW_ROWS) return -1;
+	gfx_begin();
+	(void)gfx_fill_rect(0u,y+(uint16_t)from*6u,508u,6u,8u,GFX_OP_XOR);
+	(void)gfx_fill_rect(0u,y+(uint16_t)to*6u,508u,6u,8u,GFX_OP_XOR);
+	return gfx_end();
+}
+
+/* The dotted rows view_draw_row copies, in page 0's spare lines. */
+static int draw_templates(void)
+{
+	uint16_t y; uint8_t bg, chip;
+	gfx_begin();
+	for (bg = 0u; bg < 2u; ++bg) {
+		y = TEMPLATE_Y + bg * 6u;
+		(void)gfx_fill_rect(0u, y, 512u, 6u, bg, GFX_OP_COPY);
+		for (chip = 0u; chip < 4u; ++chip) {
+			(void)draw_text(cell_x[chip * 4u], y, dots, 27u, 2u, bg);
+			(void)draw_text(cell_x[chip * 4u + 3u], y, dots, 3u, 2u, bg);
+		}
+	}
 	return gfx_end();
 }
 
@@ -302,14 +399,15 @@ int view_open(struct view *v, const struct ztrdoc *doc,
 {
 	int result; uint8_t i;
 	memset(v,0,sizeof(*v)); v->doc=doc; v->order_buffer=order_buffer; v->order=order;
-	v->selected_instrument=0u; v->order_top=order >= 4u ? order : 0u;
+	v->selected_instrument=0u; v->order_top=order >= VIEW_PANEL_LINES ? order : 0u;
 	for (i=0u; i<doc->instrument_count; ++i) if (doc->instruments[i].number==0u) {
-		if (i>=4u) v->instrument_top=(uint8_t)(i-3u); break;
+		if (i>=VIEW_PANEL_LINES) v->instrument_top=(uint8_t)(i-(VIEW_PANEL_LINES-1u)); break;
 	}
 	active_view=v;
 	result=gfx_open(); if (result<0) return result;
 	result=gfx_set_mode(GFX_MODE_512x212_16); if (result<0) { gfx_close(); return result; }
 	result=gfx_set_palette(0u,16u,sntrack_palette); if (result<0) { gfx_close(); return result; }
+	result=draw_templates(); if (result<0) { gfx_close(); return result; }
 	return 0;
 }
 

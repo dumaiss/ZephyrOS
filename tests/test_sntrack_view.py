@@ -6,6 +6,7 @@ the peer's VRAM must equal it pixel for pixel.
 """
 
 import os
+import re
 import struct
 import sys
 import unittest
@@ -22,6 +23,10 @@ SNTVIEW = os.path.join(ROOT, "UserSoftware", "SNTracker", "build",
                        "user", "sntview.exe")
 SONGS = os.path.join(ROOT, "UserSoftware", "SNTracker", "songs")
 LIMIT = 200_000_000
+ROWS = 16          # pattern rows per page
+LINES = 13         # orders and instruments panel lines
+HEADER_Y = 98
+GRID_Y = 109
 
 PALETTE = ((0, 0, 1), (1, 1, 2), (2, 2, 3), (4, 4, 5),
            (6, 6, 6), (5, 5, 7), (3, 5, 5), (6, 5, 3),
@@ -178,8 +183,9 @@ class Page:
         return bytes((line[i] << 4) | line[i + 1] for i in range(0, 512, 2))
 
 
-def expected_page(font, song, order, first_row, order_top):
-    """The page as view_draw_page draws it."""
+def expected_page(font, song, order, first_row, order_top, cursor=0):
+    """The page as view_draw_page draws it, the cursor on viewport row
+    `cursor`."""
     p = Page(font)
     rows = song["rows"]
     # Title bar.
@@ -193,10 +199,10 @@ def expected_page(font, song, order, first_row, order_top):
     p.text(356, 1, "STOP", 7, 1)
     p.text(492, 1, "00:00", 4, 1)
     # Orders.
-    p.fill(0, 9, 216, 35, 1)
+    p.fill(0, 9, 216, 89, 1)
     p.text(0, 10, "POS A1 A2 A3 AN B1 B2 B3 BN C1 C2 C3 CN D1 D2 D3 DN",
            3, 1)
-    for line in range(4):
+    for line in range(LINES):
         number = order_top + line
         if number >= len(song["orders"]):
             continue
@@ -208,16 +214,16 @@ def expected_page(font, song, order, first_row, order_top):
         if number == order:
             p.xor(0, y, 204, 6)
     # Instruments.
-    p.fill(216, 9, 130, 35, 1)
+    p.fill(216, 9, 130, 89, 1)
     p.text(218, 10, "INSTRUMENT", 3, 1)
-    for line, ins in enumerate(song["instruments"][:4]):
+    for line, ins in enumerate(song["instruments"][:LINES]):
         y = 19 + line * 6
         text = ("%02X %s" % (ins["number"], ins["name"][:15])).ljust(18)
         p.text(218, y, text + ins["type"], 7 if ins["type"] == "M" else 4, 1)
         if ins["number"] == 0:
             p.xor(216, y, 130, 6)
     # Song.
-    p.fill(346, 9, 166, 35, 1)
+    p.fill(346, 9, 166, 89, 1)
     p.text(348, 10, "SONG", 3, 1)
     p.text(348, 16, "TITLE", 3, 1)
     p.text(372, 16, song["title"], 4, 1)
@@ -235,16 +241,17 @@ def expected_page(font, song, order, first_row, order_top):
     p.text(390, 34, "PAT", 3, 1)
     # Channel headers.
     refs = song["orders"][order]
-    p.fill(0, 44, 512, 11, 0)
+    p.fill(0, HEADER_Y, 512, 11, 0)
     for ch in range(16):
         name = "ABCD"[ch >> 2] + ("N" if ch & 3 == 3 else str((ch & 3) + 1))
-        p.text(TEXT_X[ch], 46, name, 4, 0)
+        p.text(TEXT_X[ch], HEADER_Y + 2, name, 4, 0)
         if refs[ch] == 0xFF:
-            p.text(TEXT_X[ch] + (8 if ch & 3 == 3 else 32), 46, "M", 7, 0)
+            p.text(TEXT_X[ch] + (8 if ch & 3 == 3 else 32), HEADER_Y + 2,
+                   "M", 7, 0)
     # Pattern rows.
-    for i in range(25):
+    for i in range(ROWS):
         row = first_row + i
-        y = 55 + i * 6
+        y = GRID_Y + i * 6
         bg = 1 if row < rows and row % 4 == 0 else 0
         p.fill(0, y, 512, 6, bg)
         if row >= rows:
@@ -264,16 +271,16 @@ def expected_page(font, song, order, first_row, order_top):
             p.cells(TEXT_X[ch], y, cells, bg)
     # Rules.
     for chip in range(5):
-        p.vline(12 + chip * 124, 44, 204, 2)
+        p.vline(12 + chip * 124, HEADER_Y, 204, 2)
     for chip in range(4):
         for offset in (37, 73, 110):
-            p.vline(12 + chip * 124 + offset, 44, 204, 2)
+            p.vline(12 + chip * 124 + offset, HEADER_Y, 204, 2)
     # Status line.
     p.fill(0, 205, 512, 7, 1)
     p.text(0, 205, "OCT 4  STEP 1  INS 00  ROW %02X/%02X  FOCUS CHIP A  "
            "F1 HELP" % (first_row, (rows - 1) & 0xFF), 4, 1)
-    # The play cursor on the page's first row.
-    p.xor(0, 55, 508, 6)
+    # The play cursor.
+    p.xor(0, GRID_Y + 6 * cursor, 508, 6)
     return p
 
 
@@ -361,7 +368,8 @@ def build_ztr(title, rows, orders, instruments, patterns, rate=60,
 
 
 def fields_song():
-    """Every field, in 64-row patterns (pages 00, 19h and 32h)."""
+    """Every field, in 64-row patterns (pages 00, 10h, 20h and 30h), over
+    16 orders."""
     tone = [
         event_bytes(0x00, note=48, ins=0, vol=15, eff=(1, 0x37)),
         event_bytes(0x01, off=True),
@@ -390,7 +398,7 @@ def fields_song():
     second = [event_bytes(0x00, note=24, ins=5, vol=4),
               event_bytes(0x1B, note=25)]
     orders = []
-    for index in range(6):
+    for index in range(16):
         order = [0xFF] * 16
         order[0] = 0
         order[3] = 0
@@ -405,6 +413,25 @@ def fields_song():
     patterns = {(0, 0): tone, (3, 0): noise,
                 (5, 0): second, (5, 1): second[:1]}
     return build_ztr("FIELD TEST", 64, orders, instruments, patterns)
+
+
+def scroll_song():
+    """Two orders of 30 rows at speed 2: 60 rows, 2 s at 60 Hz."""
+    lead = [event_bytes(row, note=36 + row, ins=0, vol=15)
+            for row in range(0, 30, 3)]
+    bass = [event_bytes(row, note=60 - row, ins=0, vol=8)
+            for row in range(1, 30, 4)]
+    hats = [event_bytes(row, note=48, ins=1, vol=9) for row in range(0, 30, 2)]
+    orders = []
+    for index in range(2):
+        order = [0xFF] * 16
+        order[0] = index
+        order[3] = 0
+        orders.append(order)
+    return build_ztr("SCROLL", 30, orders,
+                     [(0, "LEAD", None, None), (1, "HAT", None, None)],
+                     {(0, 0): lead, (0, 1): bass,
+                      (3, 0): hats}, speed=2)
 
 
 def mixed_song():
@@ -470,9 +497,10 @@ class TestSNTrackView(GfxReplay):
         self.assertGreaterEqual(clock, FRAME_TSTATES - RETRACE_TSTATES,
                                 "the page switch landed in the retrace")
 
-    def assert_page(self, z, page, song, order, first_row, order_top):
+    def assert_page(self, z, page, song, order, first_row, order_top,
+                    cursor=0):
         expected = expected_page(self.font, song, order, first_row,
-                                 order_top)
+                                 order_top, cursor)
         base = page * 256 * 256
         for y in range(212):
             got = bytes(z.vdp.vram[base + y * 256:base + y * 256 + 256])
@@ -504,7 +532,7 @@ class TestSNTrackView(GfxReplay):
         self.assertEqual(z.vdp.shown_page, 0)
         self.assert_page(z, 0, song, 0, 0x00, 0)
         self.turn(z, ops, 1)
-        self.assert_page(z, 1, song, 0, 0x19, 0)
+        self.assert_page(z, 1, song, 0, 0x10, 0)
         self.turn(z, ops, 0)
         self.assert_page(z, 0, song, 1, 0x00, 0)
         self.quit(z, ops, since)
@@ -519,7 +547,7 @@ class TestSNTrackView(GfxReplay):
         z = self.boot({"SONG.ZTR": data})
         ops = []
         self.launch(z, ops, b"/fs/sntview.exe /fs/song.ztr 4\r")
-        self.assert_page(z, 0, song, 4, 0x00, 4)
+        self.assert_page(z, 0, song, 4, 0x00, 0)
 
     def test_fields_pages_and_order_window(self):
         data = fields_song()
@@ -528,15 +556,57 @@ class TestSNTrackView(GfxReplay):
                          ["T", "N", "M", "N", "N", "T"])
         z = self.boot({"SONG.ZTR": data})
         ops = []
-        self.launch(z, ops, b"/fs/sntview.exe /fs/song.ztr 3\r")
-        self.assert_page(z, 0, song, 3, 0x00, 0)
+        self.launch(z, ops, b"/fs/sntview.exe /fs/song.ztr 12\r")
+        self.assert_page(z, 0, song, 12, 0x00, 0)
         self.turn(z, ops, 1)
-        self.assert_page(z, 1, song, 3, 0x19, 0)
+        self.assert_page(z, 1, song, 12, 0x10, 0)
         self.turn(z, ops, 0)
-        self.assert_page(z, 0, song, 3, 0x32, 0)
-        # Order 4 leaves the window 0-3: the window starts at 4.
+        self.assert_page(z, 0, song, 12, 0x20, 0)
         self.turn(z, ops, 1)
-        self.assert_page(z, 1, song, 4, 0x00, 4)
+        self.assert_page(z, 1, song, 12, 0x30, 0)
+        # Order 13 leaves the window 0-12: the window starts at 13.
+        self.turn(z, ops, 0)
+        self.assert_page(z, 0, song, 13, 0x00, 13)
+
+    def test_p_scrolls_to_the_song_end_at_its_tempo(self):
+        """P: the cursor walks every row at speed 2 / 60 Hz, the hidden
+        page flips in at each page end, and the cursor stops on the
+        song's last row; the exit line reports the rows scrolled, the
+        late rows and the pages not drawn in time."""
+        data = scroll_song()
+        song = parse_ztr(data)
+        z = self.boot({"SONG.ZTR": data})
+        ops = []
+        since = len(z.glyphs)
+        self.launch(z, ops, b"/fs/sntview.exe /fs/song.ztr\r")
+        z.hid.hid_queue.extend(b"p")
+        pressed = z.tstates
+        self.run_recording(z, ops, lambda z: z.vdp.shown_page == 1,
+                           limit=LIMIT)
+        # The page switch shows rows 10h-1Dh, the cursor on their first.
+        self.assert_page(z, 1, song, 0, 0x10, 0)
+        # 16 rows of 2 ticks at 60 Hz: 533 ms, plus the key's delivery.
+        elapsed = (z.tstates - pressed) / 10_000
+        self.assertGreater(elapsed, 500)
+        self.assertLess(elapsed, 600)
+        end = pressed + 2_100 * 10_000
+        self.run_recording(z, ops, lambda z: z.tstates >= end, limit=LIMIT)
+        self.assertEqual(z.vdp.shown_page, 1)
+        self.assert_page(z, 1, song, 1, 0x10, 0, cursor=13)
+        self.quit(z, ops, since)
+        lines = "".join(z.glyphs[since:]).split("\n")
+        line = next(text for text in lines if "late pages" in text)
+        # The step costs follow: "ms mean/max", then name mean/max pairs.
+        costs = next(text for text in lines if "ms mean/max" in text)
+        self.assertRegex(costs, r"( (order|panel|row|finish|load|move) "
+                                r"\d+/\d+)+")
+        rows, late, pages = (int(word) for word in
+                             re.findall(r"\d+", line))
+        # Rows the cursor moved after its first; lateness is the
+        # measurement, reported, not pinned.
+        self.assertEqual(rows, 59)
+        self.assertLessEqual(late, rows)
+        self.assertLessEqual(pages, 3)
 
     def test_refusals_print_and_never_open_the_display(self):
         truncated = self.song("night-market")[:5000]

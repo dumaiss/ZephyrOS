@@ -9,7 +9,7 @@
 #define ZTRDOC_MAX_PATTERNS 400u
 #define ZTRDOC_ORDER_BUFFER 1024u
 #define ZTRDOC_ORDER_TABLE 64u
-#define ZTRDOC_VIEW_ROWS 25u
+#define ZTRDOC_VIEW_ROWS 16u
 
 #define ZTRDOC_INSTR_UNUSED 0u
 #define ZTRDOC_INSTR_TONE   1u
@@ -82,7 +82,8 @@ int ztrdoc_open(struct ztrdoc *doc, const kos_reader_t *reader,
 /* The order's streams after a 16-entry start/end table; the used size. */
 int ztrdoc_load_order(const struct ztrdoc *doc, uint16_t order,
 		      uint8_t *buffer, uint16_t size);
-/* One channel's events for rows first_row..first_row+24 of a loaded order. */
+/* One channel's events for the ZTRDOC_VIEW_ROWS rows from first_row of a
+ * loaded order. */
 int ztrdoc_decode_channel(const uint8_t *buffer, uint8_t channel,
 			  uint16_t first_row,
 			  struct ztrdoc_event out[ZTRDOC_VIEW_ROWS]);

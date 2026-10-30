@@ -42,9 +42,9 @@ Coordinates are logical pixels, inclusive.
 | Region | Y | Height |
 |---|---|---:|
 | Title bar | 0-8 | 9 |
-| Panels | 9-43 | 35 |
-| Channel headers | 44-54 | 11 |
-| Pattern rows | 55-204 | 150 (25 × 6) |
+| Panels | 9-97 | 89 |
+| Channel headers | 98-108 | 11 |
+| Pattern rows | 109-204 | 96 (16 × 6) |
 | Status line | 205-211 | 7 |
 
 ### 1.2 Panels
@@ -105,13 +105,14 @@ Column `n` is logical channel `n - 1`, the order entry's byte `n - 1`.
 Values are the stored pattern numbers in hex; an unused channel (`FFh`)
 is blank. Never substitute the previous order's number.
 
-Four orders are visible. The current order is highlighted (XOR). The
+Thirteen orders are visible, text at y 19 + 6i. The current order is
+highlighted (XOR). The
 window holds while the current order stays inside it and scrolls to
 include it when it leaves. Read-only.
 
 ## 6. Instruments panel (x 216-345, heading `INSTRUMENT`)
 
-Four entries, text at x 218: `II NAME... T`. `II` is the directory's
+Thirteen entries, text at x 218, y 19 + 6i: `II NAME... T`. `II` is the directory's
 instrument number in hex, the name its string (clipped, never over the
 type), `T` the derived type:
 
@@ -166,7 +167,7 @@ x 508-511 is margin. Rules (colour 2, 1 px, full grid height):
 - between tone cells at O + 37 and O + 73, inside the blank last glyph
   column of tone 1 and tone 2.
 
-### 8.2 Channel headers (y 44-54)
+### 8.2 Channel headers (y 98-108, text at y 100)
 
 `A1 A2 A3 AN`, `B1`... `DN`, at each cell's text x. An `M` in colour 7,
 in the cell's last character slot (text x + 32 for tone, + 8 for noise),
@@ -214,16 +215,27 @@ shown; the decoded event keeps them.
 
 ### 8.5 Rows and pages
 
-Row `i` (0-24) of the viewport is at `y = 55 + 6i`. The page holding
-row `r` starts at `25 × (r / 25)`. Rows past the pattern's end are blank.
-A new order starts at page 0. No scrolling, no recentring.
+Row `i` (0-15) of the viewport is at `y = 109 + 6i`. The page holding
+row `r` starts at `16 × (r / 16)`, so a pattern of a multiple of 16
+rows fills whole pages. Rows past the pattern's end are blank.
+A new order starts at page 0. The cursor moves; the viewport never
+scrolls or recentres.
+
+A row starts as one copy of a dotted template row: page 0's spare lines
+hold one per background (y 212-217 colour 0, y 218-223 colour 1), drawn
+at open. The row number and the present fields are drawn over the copy.
 
 Row backgrounds (`HILITE`): colour 1 on rows that are a multiple of the
 minor interval, colour 0 otherwise; the major interval's rows draw their
 row number in colour 5. The play cursor is an XOR over a background.
 
 **Page flipping.** The hidden page receives the next viewport while the
-shown one plays; at the boundary `gfx_show_page` switches. Static regions
+shown one plays, in steps between cursor moves, each shorter than a row
+(the decode, then the title, the orders and the instruments in two halves
+each, the song panel, the headers, each row, and the rules, status and
+cursor); at the boundary `gfx_show_page` switches. Once the
+hidden page is drawn its rows are decoded, so the order of the page after
+it is loaded then, not inside a short page's time. Static regions
 are identical on both pages: anything changed on the shown page is
 repeated (or copied with `gfx_copy_rect`, even x) onto the hidden one
 before it is shown. Playback never waits for drawing.
@@ -264,14 +276,36 @@ Renderers take decoded events, never raw bytes.
 
 | Item | Redrawn when |
 |---|---|
-| Title, song panel, headers | song load |
-| Instrument list | load, scroll |
+| Title, instrument list, song panel | a page's first drawing; the instrument list also on scroll |
+| `POS`, channel headers | the page's order changes |
 | Order rows | the current order leaves the window |
-| Order highlight | the order changes |
+| Order highlight | the order changes (an XOR off, an XOR on) |
 | Pattern viewport | page or order change |
 | Cursor | row change |
 | Time | the shown second changes |
 | `ROW` | row change |
 
+Each page keeps what it shows: whether its static parts are drawn, its
+order and its orders window. Preparing a page redraws only what differs
+from that; a page left half drawn is drawn in full next time.
+
 The display catches up to the reported position; it never queues stale
 positions.
+
+## 13. Scrolling
+
+`P` scrolls the cursor at the song's tempo, without sound: a row lasts
+`speed` ticks at the tick rate, timed by `/dev/timer`. It starts on the
+cursor's row and runs to the song's last row, flipping in each next page
+and order; `P` again stops it, and `P` after the song's end starts again
+at order 0. Space flips pages only while stopped; `Q` or Escape quits at
+any time. While scrolling, the console is polled after a cursor move or
+an idle wait, never between page steps.
+
+The row due is the clock's; skipped rows count as late, and a page not
+drawn by its flip (finished before the switch) as a late page. At exit
+`sntview` prints `N rows, L late, P late pages` when it scrolled, then
+each loop step's measured cost, mean/max ms from clock read to clock
+read: `order` (the order load and decode), `panel`, `row`, `finish`
+(rules, status, cursor), `load` (a prefetch) and `move` (a cursor move,
+with any flip).
