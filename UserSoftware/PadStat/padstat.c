@@ -9,6 +9,9 @@
  * /W watches instead: it polls both pages every 250 ms and prints one compact
  * line whenever anything changes, so plugging and unplugging a device leaves a
  * trail.  Any key ends it.
+ *
+ * /M reads CMD_HID_MOUSE every 100 ms, the way the OS will: each read returns
+ * and clears the motion and presses since the one before.
  */
 
 #include "kos.h"
@@ -23,6 +26,10 @@
 #define IOC_CMD_HID_STATUS    0x0Du
 #define IOC_RSP_HID_STATUS    0x8Du
 #define IOC_RSP_UNKNOWN       0xFEu
+#define IOC_CMD_HID_MOUSE     0x12u
+#define IOC_RSP_HID_MOUSE     0x92u
+#define HID_MOUSE_LEN         9u
+#define MOUSE_PERIOD_US       100000ul
 #define HID_PAGE_STATUS       0x00u
 #define HID_PAGE_GAMEPAD      0x06u
 #define HID_PAGE_OTHER        0x07u
@@ -515,10 +522,65 @@ static int dump_page(unsigned char page)
 	return 0;
 }
 
+/* /M: CMD_HID_MOUSE as the OS will use it.  Prints every read that carries
+ * motion, a press or a button change, and keeps a position from the deltas. */
+static int mouse_watch(void)
+{
+	unsigned char m[HID_MOUSE_LEN];
+	unsigned char held = 0xFFu;
+	int timer = timer_open();
+	int result;
+	int x = 0;
+	int y = 0;
+	int wheel = 0;
+	int dx;
+	int dy;
+	int dw;
+	char key;
+
+	if (timer < 0) {
+		printf("padstat: /dev/timer unavailable (%d)\r\n", timer);
+		return 2;
+	}
+	console_puts("Reading CMD_HID_MOUSE every 100 ms; any key stops.\r\n");
+	for (;;) {
+		result = ioc_command(IOC_CMD_HID_MOUSE, m, 0u, IOC_RSP_HID_MOUSE,
+				     m, HID_MOUSE_LEN);
+		if (result == -KOS_ENOSYS) {
+			console_puts("padstat: the controller has no HID_MOUSE (diagnostic or older firmware)\r\n");
+			return 2;
+		}
+		if (result < 0) {
+			printf("padstat: HID_MOUSE failed (%d)\r\n", result);
+			return 2;
+		}
+		dx = (int)le16(&m[3]);
+		dy = (int)le16(&m[5]);
+		dw = (int)le16(&m[7]);
+		if (dx != 0 || dy != 0 || dw != 0 || m[2] != 0u || m[1] != held) {
+			x += dx;
+			y += dy;
+			wheel += dw;
+			printf("flags %02x buttons %02x pressed %02x  d %d,%d w %d  at %d,%d w %d\r\n",
+			       m[0], m[1], m[2], dx, dy, dw, x, y, wheel);
+			console_flush();
+			held = m[1];
+		}
+		if (console_read(&key, 1u) > 0) {
+			return 0;
+		}
+		if (timer_wait_us(timer, MOUSE_PERIOD_US) < 0) {
+			console_puts("padstat: /dev/timer stopped\r\n");
+			return 2;
+		}
+	}
+}
+
 static void usage(void)
 {
-	console_puts("usage: padstat [/w | /p n]\r\n");
+	console_puts("usage: padstat [/w | /m | /p n]\r\n");
 	console_puts("  /w    watch: print a line on every USB/HID change\r\n");
+	console_puts("  /m    read the mouse through CMD_HID_MOUSE\r\n");
 	console_puts("  /p n  dump HID_STATUS page n (1-5 need the diagnostic firmware)\r\n");
 }
 
@@ -541,6 +603,7 @@ static int open_ioc(void)
 int main(int argc, char **argv)
 {
 	unsigned char watching = 0u;
+	unsigned char mousing = 0u;
 	unsigned char page = 0xFFu;
 	int status;
 	int result;
@@ -557,6 +620,8 @@ int main(int argc, char **argv)
 		}
 		if (option == 'w' || option == 'W') {
 			watching = 1u;
+		} else if (option == 'm' || option == 'M') {
+			mousing = 1u;
 		} else if ((option == 'p' || option == 'P') && i + 1 < argc &&
 			   argv[i + 1][0] >= '0' && argv[i + 1][0] <= '6' &&
 			   argv[i + 1][1] == '\0') {
@@ -566,7 +631,7 @@ int main(int argc, char **argv)
 			return 1;
 		}
 	}
-	if (watching != 0u && page != 0xFFu) {
+	if ((unsigned char)(watching + mousing + (page != 0xFFu)) > 1u) {
 		usage();
 		return 1;
 	}
@@ -580,6 +645,8 @@ int main(int argc, char **argv)
 
 	if (watching != 0u) {
 		status = watch();
+	} else if (mousing != 0u) {
+		status = mouse_watch();
 	} else if (page != 0xFFu) {
 		status = dump_page(page);
 	} else {

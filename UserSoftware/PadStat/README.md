@@ -54,6 +54,13 @@ Fields, in order: devices, mounts, unmounts, last device address and
 VID:PID, last HID address and protocol, keyboard address and speed, then
 each pad's address and report count.
 
+`/m` reads the mouse the way KonaOS will, through `CMD_HID_MOUSE` every
+100 ms. Each read returns and clears the motion, wheel and button presses
+since the one before, so a line appears only when something happened; it
+shows the flags (bit 0 a second HID interface is mounted, bit 1 its reports
+decode as the mouse), the buttons held and pressed, the deltas, and a
+position summed from them. Needs firmware level 75 in the normal profile.
+
 `/p n` dumps HID_STATUS page `n` (0-6) as raw bytes and names the
 fields of page 1 (host controller registers and the enumeration
 milestones: attach, device descriptor, configuration descriptor,
