@@ -27,7 +27,7 @@
 #define HID_PAGE_GAMEPAD      0x06u
 #define HID_PAGE_OTHER        0x07u
 #define HID_PAGE_LEN          26u
-#define HID_OTHER_LEN         14u
+#define HID_OTHER_LEN         21u
 
 /* Page 0 payload offsets. */
 #define P0_STATUS             0u
@@ -68,6 +68,10 @@
 #define P7_REPORTS            3u
 #define P7_LEN                5u
 #define P7_LAST               6u
+#define P7_BUTTONS            14u
+#define P7_X                  15u
+#define P7_Y                  17u
+#define P7_WHEEL              19u
 
 #define F310_VID              0x046Du
 #define F310_DIRECTINPUT_PID  0xC216u
@@ -189,6 +193,15 @@ static void print_other_line(void)
 	       page7[P7_LEN], r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]);
 }
 
+/* The same interface decoded as a mouse: running totals since the
+ * controller started (they wrap), and the buttons held now. */
+static void print_mouse_line(void)
+{
+	printf("Mouse: x %d  y %d  wheel %d  buttons %02x\r\n",
+	       (int)le16(&page7[P7_X]), (int)le16(&page7[P7_Y]),
+	       (int)le16(&page7[P7_WHEEL]), page7[P7_BUTTONS]);
+}
+
 static const char *controller_name(unsigned char status)
 {
 	switch (status) {
@@ -294,6 +307,7 @@ static void print_report(void)
 	print_pad(1u, &page6[P6_PAD1]);
 	if (have_page7 != 0u) {
 		print_other_line();
+		print_mouse_line();
 	}
 	print_verdict();
 }
@@ -377,9 +391,14 @@ static int watch(void)
 			console_flush();
 		}
 		if (first == 0u && have_page7 != 0u &&
-		    (le16(&page7[P7_REPORTS]) != le16(&last7[P7_REPORTS]) ||
-		     page7[P7_ADDR] != last7[P7_ADDR])) {
+		    page7[P7_ADDR] != last7[P7_ADDR]) {
 			print_other_line();
+			console_flush();
+		}
+		if (first == 0u && have_page7 != 0u &&
+		    memcmp(&page7[P7_BUTTONS], &last7[P7_BUTTONS],
+			   HID_OTHER_LEN - P7_BUTTONS) != 0) {
+			print_mouse_line();
 			console_flush();
 		}
 		memcpy(last7, page7, HID_OTHER_LEN);
