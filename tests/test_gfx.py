@@ -439,6 +439,34 @@ class GfxReplay(HwtestReplay):
         return z
 
     # -- dispatch observation ------------------------------------------
+    def step(self, z):
+        """One instruction, with every interrupt service timed.  A step
+        that takes a pending request (interrupts on before, off and the
+        request gone after) opens a service; it closes when execution is
+        back at the interrupted PC with the interrupted SP, past the
+        handler's RETI.  The timing figures leave those spans out
+        (irq_time): a timer tick that lands inside a measured window is
+        not the measured call's cost."""
+        spans = self.__dict__.setdefault("irq_spans", [])
+        service = self.__dict__.get("irq_open")
+        taking = z.int_pending and z.iff1
+        if taking:
+            begin = (z.tstates, z.pc, z.sp)
+        z.step()
+        if taking and not z.iff1 and not z.int_pending:
+            self.irq_open = begin
+        elif service is not None and z.pc == service[1] and \
+                z.sp == service[2]:
+            spans.append((service[0], z.tstates))
+            self.irq_open = None
+
+    def irq_time(self, start, end):
+        """The T-states of the interrupt services wholly inside
+        [start, end)."""
+        return sum(after - before for before, after
+                   in self.__dict__.get("irq_spans", ())
+                   if start <= before and after <= end)
+
     def run_recording(self, z, ops, until, limit=EXEC_BUDGET):
         """Step with the video dispatch entry watched (HL = the frame,
         the sdcccall(0) argument), recording the op of every hit, until
@@ -451,7 +479,7 @@ class GfxReplay(HwtestReplay):
                 ops.append(z.rd(z.hl))
             self.skip_delay(z)
             self.feed(z)
-            z.step()
+            self.step(z)
             if step % 0x1FF == 0:
                 self.pump(z)
             if until(z):
@@ -537,7 +565,7 @@ class GfxReplay(HwtestReplay):
                 return
             self.skip_delay(z)
             self.feed(z)
-            z.step()
+            self.step(z)
         self.fail("the peer never settled (PC=%04X)" % z.pc)
 
     def snapshot(self, z):
@@ -1301,7 +1329,7 @@ class TestGfxShapes(GfxReplay):
         for _step in range(EXEC_BUDGET * 3):
             self.skip_delay(z)
             self.feed(z)
-            z.step()
+            self.step(z)
             now = len(draws())
             if now >= 24 and now == count:
                 steady += 1
@@ -1386,7 +1414,7 @@ class TestGfxShapes(GfxReplay):
         for _step in range(EXEC_BUDGET * 3):
             self.skip_delay(z)
             self.feed(z)
-            z.step()
+            self.step(z)
             now = len(draws())
             if now >= 200 and now == count:
                 steady += 1
@@ -1517,9 +1545,10 @@ class TestGfxTiming(GfxReplay):
 
         def figure(index):
             """(total, waits) of the index'th window: a wait is a run
-            of back-to-back status polls (the CE and VR loops)."""
+            of back-to-back status polls (the CE and VR loops) or an
+            interrupt service (irq_time)."""
             start, end = pairs[index]
-            waits = 0
+            waits = self.irq_time(start, end)
             inside = [t for t in reads if start <= t < end]
             for before, after in zip(inside, inside[1:]):
                 if after - before <= 48:
@@ -1638,7 +1667,7 @@ class TestGfxPages(GfxReplay):
             for _step in range(EXEC_BUDGET * 3):
                 self.skip_delay(z)
                 self.feed(z)
-                z.step()
+                self.step(z)
                 now = len(draws())
                 if now >= count and now == seen:
                     steady += 1
@@ -2080,7 +2109,7 @@ class TestGfxAtlas(GfxReplay):
             for _step in range(EXEC_BUDGET * 3):
                 self.skip_delay(z)
                 self.feed(z)
-                z.step()
+                self.step(z)
                 now = len(draws())
                 if now >= count and now == seen:
                     steady += 1
@@ -2098,7 +2127,7 @@ class TestGfxAtlas(GfxReplay):
             for _step in range(EXEC_BUDGET):
                 self.skip_delay(z)
                 self.feed(z)
-                z.step()
+                self.step(z)
                 if len(draws()) >= count:
                     self.assertEqual(len(draws()), count, label)
                     return
@@ -2329,9 +2358,10 @@ class TestGfxAtlas(GfxReplay):
 
         def cpu(start, end):
             """The window's CPU T-states with the engine waits (runs of
-            back-to-back status polls) taken out."""
+            back-to-back status polls) and the interrupt services
+            (irq_time) taken out."""
             inside = [t for t in reads if start <= t < end]
-            return (end - start) - sum(
+            return (end - start) - self.irq_time(start, end) - sum(
                 after - before for before, after in zip(inside, inside[1:])
                 if after - before <= 48)
         row128, g6s, build, trans4, stale, g7opaque, g7trans = \
