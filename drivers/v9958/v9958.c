@@ -123,16 +123,22 @@ static const uint8_t v9958_palette[32] = {
 	0x00u, 0x05u, 0x67u, 0x00u, 0x55u, 0x05u, 0x77u, 0x07u
 };
 
-/* Sprite cursor assets and the console's colour pairs: two pixels of a
- * font row (the left one in the high bit) to one GRAPHIC 6 byte, normal
- * (white on blue) and reverse. The pattern is the six-pixel top bar of a
- * text cell. */
-static const uint8_t v9958_cursor_pattern[8] = {
-	0xE0u, 0xE0u, 0xE0u, 0xE0u, 0xE0u, 0xE0u, 0xE0u, 0xE0u
+/* Sprite assets and the console's colour pairs: two pixels of a font
+ * row (the left one in the high bit) to one GRAPHIC 6 byte, normal
+ * (white on blue) and reverse.  The patterns are the cursor (the
+ * six-pixel top bar of a text cell), the pointer (an arrow, hot spot at
+ * its top-left pixel) and the blank pattern of a hidden slot; the
+ * colours are slot 0's (yellow) and slot 1's (white). */
+static const uint8_t v9958_sprite_patterns[V9958_SPRITE_PATTERNS * 8u] = {
+	0xE0u, 0xE0u, 0xE0u, 0xE0u, 0xE0u, 0xE0u, 0xE0u, 0xE0u,
+	0x80u, 0xC0u, 0xE0u, 0xF0u, 0xF8u, 0xE0u, 0xB0u, 0x18u,
+	0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u
 };
-static const uint8_t v9958_cursor_colors[V9958_CURSOR_COLORS] = {
+static const uint8_t v9958_sprite_colors[V9958_SPRITE_COLORS] = {
 	0x0Bu, 0x0Bu, 0x0Bu, 0x0Bu, 0x0Bu, 0x0Bu, 0x0Bu, 0x0Bu,
-	0x0Bu, 0x0Bu, 0x0Bu, 0x0Bu, 0x0Bu, 0x0Bu, 0x0Bu, 0x0Bu
+	0x0Bu, 0x0Bu, 0x0Bu, 0x0Bu, 0x0Bu, 0x0Bu, 0x0Bu, 0x0Bu,
+	0x0Fu, 0x0Fu, 0x0Fu, 0x0Fu, 0x0Fu, 0x0Fu, 0x0Fu, 0x0Fu,
+	0x0Fu, 0x0Fu, 0x0Fu, 0x0Fu, 0x0Fu, 0x0Fu, 0x0Fu, 0x0Fu
 };
 static const uint8_t v9958_pair_normal[4] = {
 	0x44u, 0x4Fu, 0xF4u, 0xFFu
@@ -263,19 +269,21 @@ static uint8_t v9958_row_vram_y(uint8_t row)
 			 v9958_state.scroll_origin);
 }
 
-/* Sprite cursor SAT: Y is the scanline above the cursor cell (the
- * hidden terminator when the cursor is off), X uses the sprite
- * coordinate space (three units per 6-pixel logical column). */
+/* Slot 0, the text cursor: Y is the scanline above the cursor cell (a
+ * sprite is drawn one line below its Y), X uses the sprite coordinate
+ * space (three units per 6-pixel logical column).  A hidden cursor shows
+ * the blank pattern at the fixed hidden Y; a Y of D8h, the terminator, is
+ * drawn one line higher. */
 static void v9958_cursor_write_sat(void)
 {
-	uint8_t sat[V9958_CURSOR_SAT_BYTES];
+	uint8_t sat[V9958_SAT_ENTRY];
 	uint8_t x = (uint8_t)(v9958_state.text_col * 3u);
 	uint8_t y;
 
 	if (v9958_state.cursor_visible != 0u) {
 		y = (uint8_t)(v9958_row_vram_y(v9958_state.text_row) - 1u);
 	} else {
-		y = V9958_CURSOR_TERMINATOR;
+		y = V9958_SPRITE_HIDDEN_Y;
 	}
 	if (v9958_state.cursor_sat_valid != 0u &&
 	    v9958_state.cursor_sat_visible == v9958_state.cursor_visible &&
@@ -284,19 +292,45 @@ static void v9958_cursor_write_sat(void)
 	      v9958_state.cursor_sat_y == y))) {
 		return;
 	}
-	sat[0] = y;
+	sat[0] = y == V9958_SAT_TERMINATOR ? (uint8_t)(y - 1u) : y;
 	sat[1] = x;
-	sat[2] = 0x00u;
+	sat[2] = v9958_state.cursor_visible != 0u ?
+		V9958_CURSOR_PATTERN : V9958_BLANK_PATTERN;
 	sat[3] = 0x00u;
-	sat[4] = V9958_CURSOR_TERMINATOR;
-	sat[5] = 0x00u;
-	sat[6] = 0x00u;
-	sat[7] = 0x00u;
-	v9958_write_vram(sat, V9958_CURSOR_SAT_ADDR, V9958_CURSOR_SAT_BYTES);
+	v9958_write_vram(sat, V9958_CURSOR_SAT_ADDR, V9958_SAT_ENTRY);
 	v9958_state.cursor_sat_valid = 1u;
 	v9958_state.cursor_sat_visible = v9958_state.cursor_visible;
 	v9958_state.cursor_sat_x = x;
 	v9958_state.cursor_sat_y = y;
+}
+
+/* Slot 1, the pointer: its pixel row on top of the circular R#23 origin
+ * (one line up, like the cursor), so a scroll re-places it at the same
+ * screen pixel; the same blank-pattern hide and D8h rule.  The entry is
+ * built in the cache and written only when it changed. */
+static void v9958_pointer_write_sat(void)
+{
+	uint8_t *sat = v9958_state.pointer_sat;
+	uint8_t x = 0u;
+	uint8_t y = V9958_SPRITE_HIDDEN_Y;
+	uint8_t pattern = V9958_BLANK_PATTERN;
+
+	if (v9958_state.pointer_visible != 0u) {
+		x = v9958_state.pointer_x;
+		y = (uint8_t)(v9958_state.pointer_y +
+			      v9958_state.scroll_origin - 1u);
+		if (y == V9958_SAT_TERMINATOR) {
+			--y;
+		}
+		pattern = V9958_POINTER_PATTERN;
+	}
+	if (sat[0] == y && sat[1] == x && sat[2] == pattern) {
+		return;
+	}
+	sat[0] = y;
+	sat[1] = x;
+	sat[2] = pattern;
+	v9958_write_vram(sat, V9958_POINTER_SAT_ADDR, V9958_SAT_ENTRY);
 }
 
 /* --- display state ------------------------------------------------------ */
@@ -384,18 +418,24 @@ static void v9958_clear_screen(void)
 	v9958_io_wait_command();
 }
 
-/* Step 5c: sprite cursor -- pattern, color table and SAT.  The SAT is
- * derived from the terminal cursor state (col/row/visibility), so the
- * cold bring-up and the runtime cursor updates share one writer. */
+/* Step 5c: sprites -- patterns, colour table and SAT.  The SAT is
+ * derived from the terminal cursor state (col/row/visibility) and the
+ * pointer state, so the cold bring-up and the runtime updates share the
+ * slot writers. */
 static void v9958_cursor_init(void)
 {
-	v9958_write_vram(v9958_cursor_pattern, V9958_CURSOR_PATTERN_ADDR, 8u);
-	v9958_write_vram(v9958_cursor_colors, V9958_CURSOR_COLOR_ADDR,
-			 V9958_CURSOR_COLORS);
-	/* A display reset rewrites VRAM, so the software cache cannot prove
-	 * that the SAT still contains its last remembered value. */
+	v9958_write_vram(v9958_sprite_patterns, V9958_CURSOR_PATTERN_ADDR,
+			 V9958_SPRITE_PATTERNS * 8u);
+	v9958_write_vram(v9958_sprite_colors, V9958_CURSOR_COLOR_ADDR,
+			 V9958_SPRITE_COLORS);
+	/* A display reset rewrites VRAM, so the software caches cannot prove
+	 * that the SAT still contains its last remembered value.  The
+	 * pointer's unknown mark is the terminator, which slot 2 takes. */
 	v9958_state.cursor_sat_valid = 0u;
 	v9958_cursor_write_sat();
+	v9958_state.pointer_sat[0] = V9958_SAT_TERMINATOR;
+	v9958_write_vram(v9958_state.pointer_sat, V9958_SAT_END_ADDR, 1u);
+	v9958_pointer_write_sat();
 }
 
 /* The complete bring-up in the proven order.  Re-establishing this on
@@ -530,6 +570,7 @@ static void v9958_term_sync(void)
 {
 	v9958_out_flush();
 	v9958_cursor_write_sat();
+	v9958_pointer_write_sat();
 	v9958_io_wait_command();
 }
 
@@ -628,6 +669,7 @@ void v9958_render_scroll(uint8_t top, uint8_t height, uint8_t direction,
 	v9958_io_wait_command();
 	v9958_io_reg((uint8_t)(origin - V9958_DISPLAY_OFFSET),
 		     KOS_V9958_REG_R23);
+	v9958_pointer_write_sat();
 }
 
 void v9958_render_finish_worker(void)
@@ -1556,13 +1598,41 @@ int v9958_send(void *vstate, uint8_t operation, const void *payload,
 	}
 }
 
+/* KVIDEO_OP_POINTER.  The SAT is written before R#8, so a pointer never
+ * shows at a stale position or outlives its hide by a frame. */
+int v9958_pointer(uint16_t x, uint16_t y)
+{
+	uint8_t visible = 0u;
+	uint8_t changed;
+
+	if (v9958_state.exclusive != 0u) {
+		return (-KOS_EBUSY);
+	}
+	if (x != KVIDEO_POINTER_HIDE) {
+		if (x >= V9958_PIXEL_WIDTH || y >= V9958_PIXEL_HEIGHT) {
+			return (-KOS_EINVAL);
+		}
+		v9958_state.pointer_x = (uint8_t)(x >> 1);
+		v9958_state.pointer_y = (uint8_t)y;
+		visible = 1u;
+	}
+	changed = (uint8_t)(visible ^ v9958_state.pointer_visible);
+	v9958_state.pointer_visible = visible;
+	v9958_pointer_write_sat();
+	if (changed != 0u) {
+		v9958_sprites_restore();
+	}
+	return 0;
+}
+
 /* The run-time display reset the native KVIDEO_RESET and the console's
- * reset both run: parser/cursor/rendition defaults, both font atlases
- * reloaded from ROMFS, circular bitmap cleared, cursor re-initialized,
- * present, display enabled. */
+ * reset both run: parser/cursor/rendition defaults, the pointer hidden,
+ * both font atlases reloaded from ROMFS, circular bitmap cleared, sprites
+ * re-initialized, present, display enabled. */
 int v9958_display_reset(void)
 {
 	v9958_term_set_defaults();
+	v9958_state.pointer_visible = 0u;
 	if (v9958_init_display() != V9958_OK) {
 		return (-KOS_ENODEV);
 	}

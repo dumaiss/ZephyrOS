@@ -76,8 +76,9 @@
 #define MOD_MAX_SEGMENTS     4u
 #define MOD_MAX_ENDPOINTS    8u
 #define MOD_MAX_DEPENDENCIES 8u
-/* Publications per image; the nucleus publication table is smaller (the
- * loader refuses a set that overflows it, VFS_NS_PUB_MAX). */
+/* Publications per image; the nucleus publication table holds the whole
+ * set's rows, grouping rows included (VFS_NS_PUB_MAX), and the loader
+ * refuses a set that overflows it. */
 #define MOD_MAX_PUBLICATIONS 12u
 
 /* Boot manifest bound: the loader's per-image loop. */

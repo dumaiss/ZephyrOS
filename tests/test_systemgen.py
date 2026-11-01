@@ -404,7 +404,7 @@ class TestTheRealSystems(unittest.TestCase):
                          [driver + ".mod" for driver in PRODUCTION_DRIVERS] +
                          ["drivers.man", "shell.exe", "monitor.exe",
                           "hwtest.exe", "timer.exe", "beat.exe",
-                          "xmem_selftest.exe",
+                          "mouse.exe", "xmem_selftest.exe",
                           "xmem_child.exe",
                           "xmem_far.exe", "fs_selftest.exe",
                           "fs_child.exe"])

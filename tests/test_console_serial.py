@@ -51,7 +51,8 @@ from test_console_acceptance import (  # noqa: E402
 SHELL_EXIT = b"boot: /system/shell.exe exit 0\r\n"
 
 # The production set with the serial console, in manifest (load) order,
-# with the endpoint class each image registers.
+# with the class of each image's first endpoint (hid also serves the
+# mouse, class 11).
 DRIVER_SET = (("sio.mod", 1), ("ioc.mod", 5), ("hid.mod", 4),
                ("v9958.mod", 2), ("console-serial.mod", 6),
                ("timer.mod", 10), ("iocfat.mod", 7))

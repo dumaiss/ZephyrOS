@@ -67,11 +67,11 @@ SHELL_EXIT = "boot: /system/shell.exe exit %d\n"
 # The banner the shell prints at every start (the build date follows
 # SDCC's __DATE__, so it is pinned by the compile, not the replay).  The
 # ABI level is the kernel's system-info record's; the IOC level is the
-# emulated controller's PING answer (4Ah, the deployed firmware's).
+# emulated controller's PING answer (4Bh, IOC_FW_LEVEL_PINNED).
 SHELL_BANNER_RE = (
     r"KonaOS v1\.0 \(build date: \d{4}-\d{2}-\d{2}\)\n"
     r"ABI version 1\n"
-    r"IOC version 74\n"
+    r"IOC version 75\n"
     r"Copyright \(C\) Sebastien Dumais 2026\n")
 
 
@@ -146,7 +146,7 @@ def file_session():
         ("ls /system", store_listing() + "/> ", "/> ", False),
         ("ls /dev", "serial/\nioc\ninput/\nvideo\nconsole\ntimer\nsound\n/> ",
          "/> ", False),
-        ("ls /dev/input", "keyboard\n/> ", "/> ", False),
+        ("ls /dev/input", "keyboard\nmouse\n/> ", "/> ", False),
         ("ls /SUB/ORIG.TXT", "ORIG.TXT  4\n/> ", "/> ", False),
         ("ls /SUB /system", "/SUB:\nORIG.TXT  4\n/system:\n"
          + store_listing() + "/> ", "/> ", False),

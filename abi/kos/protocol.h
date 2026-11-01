@@ -81,6 +81,8 @@
 #define KOS_CLASS_SOUND   9u  /* the sound card (type KOS_TYPE_SOUND) */
 #define KOS_CLASS_TIMER   10u /* the timer: the monotonic clock (type
                                * KOS_TYPE_TIMER) */
+#define KOS_CLASS_MOUSE   11u /* the mouse, served by the HID driver
+                               * (type KOS_TYPE_MOUSE) */
 
 /* The instance every device-facing driver registers (one instance). */
 #define KOS_CLASS_INSTANCE 0u
@@ -197,6 +199,38 @@
 #define KHID_OP_GETC      2u
 #define KHID_OP_READY     3u
 
+/* --- mouse (class KOS_CLASS_MOUSE, type KOS_TYPE_MOUSE) -----------------
+ *
+ * The controller's mouse, forwarded by the HID driver: motion and
+ * presses since the last read.  Position, clamping and scaling are the
+ * client's (the SDK's `mouse_track`).
+ *
+ *   KMOUSE_OP_READ (0)  descriptor-less.  Returns 0 and the
+ *                       KMOUSE_REPORT_LEN-byte report in payload[0..8],
+ *                       in the controller's layout:
+ *                         payload[0]    flags (KMOUSE_FLAG_*); 0 means
+ *                                       no mouse
+ *                         payload[1]    buttons held (KMOUSE_BUTTON_*)
+ *                         payload[2]    buttons pressed since the last
+ *                                       read
+ *                         payload[3..4] dx, payload[5..6] dy (+dy is
+ *                                       down), payload[7..8] wheel:
+ *                                       signed 16-bit little-endian
+ *                                       motion since the last read
+ *                       or a negative error (-KOS_EIO for a malformed
+ *                       controller reply).  A controller that does not
+ *                       serve the mouse, a down link, and the backoff
+ *                       after a transport failure answer 0 with an
+ *                       all-zero report.
+ */
+#define KMOUSE_OP_READ     0u
+#define KMOUSE_REPORT_LEN  9u
+#define KMOUSE_FLAG_MOUNTED 0x01u /* a second HID interface is mounted   */
+#define KMOUSE_FLAG_DECODED 0x02u /* its reports decode as the mouse     */
+#define KMOUSE_BUTTON_LEFT   0x01u
+#define KMOUSE_BUTTON_RIGHT  0x02u
+#define KMOUSE_BUTTON_MIDDLE 0x04u
+
 /* --- video driver (class KOS_CLASS_VIDEO) -------------------------------
  *
  * The V9958 driver: the seven native VIDEO operations (KVIDEO_CTRL_WRITE
@@ -232,6 +266,18 @@
  *                        drive the hardware directly.  Served only to
  *                        the exclusive holder; any other caller gets
  *                        -KOS_EBUSY.  Returns 0.
+ *   KVIDEO_OP_POINTER (7) no descriptor: the pointer sprite over the
+ *                        terminal.  arg1 = x (0..509), arg0 = y (0..207),
+ *                        the pixel of the 510 x 208 text area under the
+ *                        arrow's top-left hot spot; arg1 =
+ *                        KVIDEO_POINTER_HIDE hides it (arg0 is then
+ *                        ignored).  Out of range is
+ *                        -KOS_EINVAL; while a program holds the object
+ *                        exclusively, -KOS_EBUSY and no port is touched.
+ *                        Served on any handle.  The pointer stays at its
+ *                        screen pixel when the terminal scrolls; console
+ *                        drawing keeps it visible; KVIDEO_OP_RESET and
+ *                        KVIDEO_RESET hide it.  Returns 0.
  *
  * KVIDEO_RESET re-establishes every driver-owned state; it is the same
  * chain KVIDEO_OP_RESET runs.
@@ -243,6 +289,9 @@
 #define KVIDEO_OP_RENDER 4u
 #define KVIDEO_OP_INFO  5u
 #define KVIDEO_OP_DIRECT_INFO 6u
+#define KVIDEO_OP_POINTER 7u
+
+#define KVIDEO_POINTER_HIDE 0xFFFFu /* KVIDEO_OP_POINTER arg1: hide      */
 
 /* The native VIDEO operations (the KVIDEO_OP_SEND argument; exact values,
  * not Virtual Drip packet numbers). */

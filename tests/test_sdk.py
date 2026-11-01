@@ -417,7 +417,8 @@ class TestSdkBoundary(unittest.TestCase):
         # sound-series card programs the production replays run
         # (`tests/test_snd.py`); `ztrkres` is the KRES-backed ZTR loader
         # exercised there; `readertest` and `readermap` are the reader
-        # outcome programs (`tests/test_reader.py`).
+        # outcome programs (`tests/test_reader.py`); `mouse` is the mouse
+        # outcome program (`tests/test_mouse.py`).
         self.assertEqual(sorted(name for name, _d, _s, _o in programs),
                          ["banks", "beat", "devtest", "events",
                           "exe2big", "exe2probe", "exe2seg", "exetest",
@@ -426,7 +427,7 @@ class TestSdkBoundary(unittest.TestCase):
                           "hello",
                           "hwtest", "iobench", "iomix", "iomix_child",
                           "iostream", "ipc", "ipccopy",
-                          "kresread", "krestest", "monitor", "ns",
+                          "kresread", "krestest", "monitor", "mouse", "ns",
                           "nschild", "placetest", "readermap", "readertest",
                           "readphase",
                           "shell", "sndprobe", "sndtest", "sound",

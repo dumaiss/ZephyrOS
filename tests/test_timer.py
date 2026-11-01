@@ -424,9 +424,11 @@ class TestTimerContract(unittest.TestCase):
         entry = [item for item in plan["drivers"]
                  if item["name"] == "timer.mod"][0]
         self.assertEqual(entry["dependencies"], [])
-        # The manifest numbers an endpoint by its driver's place in the
-        # load order; the TIMER class (10) is the one it registers.
-        number = plan["order"].index("timer.mod") + 1
+        # The packer numbers the endpoints in load order, one per
+        # endpoint of every earlier image; the TIMER class (10) is the
+        # one this image registers.
+        number = 1 + sum(len(item["endpoints"]) for item in plan["drivers"]
+                         [:plan["order"].index("timer.mod")])
         self.assertEqual([(endpoint["class"], endpoint["number"])
                           for endpoint in entry["endpoints"]], [(10, number)])
         report = json.loads(read(TIMER_REPORT))

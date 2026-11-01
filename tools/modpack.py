@@ -114,6 +114,9 @@ MAX_SEGMENTS = 4
 MAX_ENDPOINTS = 8
 MAX_DEPENDENCIES = 8
 MAX_PUBLICATIONS = 12
+# The nucleus `/dev` table's rows for the whole driver set, publications
+# and grouping rows together (kernel/vfs/vfs.h VFS_NS_PUB_MAX).
+NS_TABLE_ROWS = 16
 MAX_IMAGES = 8
 # Endpoint flags: bit 0 is the re-entrancy declaration (KOS_IPC_EP_REENTRANT),
 # bit 1 the release declaration (MOD_EP_RELEASE): the manifest's
@@ -171,6 +174,7 @@ FS_ROOT = "/fs"
 TYPES = {
     "SERIAL": 1, "VIDEO": 2, "BLOCK": 3, "INPUT": 4, "IOC": 5,
     "CONSOLE": 6, "FILE": 7, "FS": 8, "SOUND": 9, "TIMER": 10,
+    "MOUSE": 11,
 }
 # The boot manifest entry is the ROMFS name field exactly (romfs-format.md,
 # formats/include/mod.h).
@@ -1765,11 +1769,11 @@ def plan_driver_set(packs):
             name = publication["name"]
             if root == DEVICE_ROOT and "/" in name[1:]:
                 parent_rows.add(name.rsplit("/", 1)[0].lower())
-    if published + len(parent_rows) > MAX_PUBLICATIONS:
+    if published + len(parent_rows) > NS_TABLE_ROWS:
         raise ModError(
             "drivers: %d publications and %d grouping rows; the "
             "provider table takes %d rows"
-            % (published, len(parent_rows), MAX_PUBLICATIONS))
+            % (published, len(parent_rows), NS_TABLE_ROWS))
 
     ledger = driver_ledger(packs, rows)
     return rows, ledger

@@ -27,6 +27,13 @@
       "version": 1,
       "dispatch": "hid_driver_dispatch",
       "flags": 0
+    },
+    {
+      "class": 11,
+      "instance": 0,
+      "version": 1,
+      "dispatch": "hid_mouse_dispatch",
+      "flags": 0
     }
   ],
   "publishes": [
@@ -35,6 +42,15 @@
       "type": "INPUT",
       "endpoint": {
         "class": 4,
+        "instance": 0
+      },
+      "object": 0
+    },
+    {
+      "path": "/dev/input/mouse",
+      "type": "MOUSE",
+      "endpoint": {
+        "class": 11,
         "instance": 0
       },
       "object": 0

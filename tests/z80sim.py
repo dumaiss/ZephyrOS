@@ -18,6 +18,7 @@ Usage: sim.py <selftest-image> [start-pc] [trace]
 import os
 import sys
 import collections
+import struct
 
 SZ = 0x10000
 FILL = 0xFF
@@ -44,7 +45,15 @@ class IocCommandPeer:
         be injected;
       - fault injection: arbitrary leading (full-duplex) bytes, delayed
         readiness, delayed replies, stalled clocks, CRC/length/type/
-        sequence faults, and a held HID doorbell.
+        sequence faults, and a held HID doorbell;
+      - CMD_HID_MOUSE (firmware level 75: Zephyr-80 Code/MCU/IOController
+        src/handlers.c handler_hid_mouse, src/ioc_hid.c hid_mouse_take):
+        a scripted queue of reports, one taken per command, an all-zero
+        report when it is empty, and two faults in its place - "unknown"
+        (RSP_UNKNOWN_COMMAND, a diagnostic-profile or older controller)
+        and "transport" (a reply whose CRC fails).  It does not model USB,
+        the boot-protocol decode, the accumulation between reads (each
+        scripted report is what one read returns) or report timing.
 
     Observability for the host tests: channel_resets, rts_asserts/
     rts_releases, hunt_writes, frame_start/preload_present, drain reads,
@@ -60,6 +69,8 @@ class IocCommandPeer:
     CMD_FS_CLOSE = 0x25
     CMD_FS_DELETE = 0x27
     CMD_HID_INPUT = 0x0E
+    CMD_HID_MOUSE = 0x12
+    RSP_HID_MOUSE = 0x92
     RSP_FS_OPEN = 0xA2
     RSP_FS_READ = 0xA3
     RSP_FS_WRITE = 0xA4
@@ -126,7 +137,7 @@ class IocCommandPeer:
 
     def __init__(self, leading=(0xFF,), reply_delay=8, ready_delay=0,
                  never_ready=False, stall=False, fault=None,
-                 link_faults=None, doorbell=False, level=0x4A,
+                 link_faults=None, doorbell=False, level=0x4B,
                  echo_len=16, ping_len=26, reply_tail=b"\xff",
                  fs_files=None, read_fault=None, write_fault=None,
                  dcd_delay=2, cts_delay=2, commit_delay=1,
@@ -134,7 +145,7 @@ class IocCommandPeer:
                  stall_bytes=None, fs_open_fault=None,
                  fs_delete_reopen_fault=None,
                  arbitrary_ready=None, custom_replies=None,
-                 hid_bytes=b"", hid_faults=None,
+                 hid_bytes=b"", hid_faults=None, mouse_reports=None,
                  fs2_media=True, fs2_read_only=False, fs2_files=None,
                  fs2_caps_fault=None, fs2_read_fault=None,
                  fs2_write_fault=None, fs2_generation=None,
@@ -276,6 +287,11 @@ class IocCommandPeer:
         self.hid_requests = []   # requested maximum per CMD_HID_INPUT
         self.hid_dropped = 0
         self.hid_delivered = 0
+        # --- HID mouse model -------------------------------------------
+        # One entry per CMD_HID_MOUSE: a (flags, buttons, pressed, dx,
+        # dy, wheel) report, or the fault "unknown" or "transport".
+        self.mouse_reports = collections.deque(mouse_reports or ())
+        self.mouse_commands = 0  # CMD_HID_MOUSE requests answered
         # observability
         self.channel_resets = 0
         self.rts_asserts = 0
@@ -422,6 +438,8 @@ class IocCommandPeer:
             return self._ready_reply(rtype, seq, entry[0], entry[1], status)
         if rtype == self.CMD_HID_INPUT:
             return self._build_hid_reply(seq, data)
+        if rtype == self.CMD_HID_MOUSE:
+            return self._build_mouse_reply(seq)
         if self.CMD_FS2_CAPS <= rtype <= self.CMD_FS2_RMDIR or (
                 rtype == self.CMD_FS2_READ_RUN and self.fs2_read_run):
             return self._build_fs2_reply(rtype, seq, data)
@@ -469,6 +487,27 @@ class IocCommandPeer:
         return self._wrap(self.RSP_HID_INPUT, seq, self.ST_OK,
                           bytes([len(self.hid_queue), self.hid_dropped]) +
                           payload)
+
+    def _build_mouse_reply(self, seq):
+        """CMD_HID_MOUSE: the next scripted report as handler_hid_mouse
+        lays it out (flags, buttons, pressed, then dx, dy and wheel as
+        signed 16-bit little-endian), or all zeros when the script is
+        empty.  "unknown" answers RSP_UNKNOWN_COMMAND; "transport" sends
+        the report with its CRC broken."""
+        self.mouse_commands += 1
+        entry = self.mouse_reports.popleft() if self.mouse_reports else None
+        if entry == "unknown":
+            return self._wrap(0xFE, seq, self.ST_UNKNOWN_CMD)
+        report = (0, 0, 0, 0, 0, 0) if entry in (None, "transport") \
+            else entry
+        flags, buttons, pressed, dx, dy, wheel = report
+        payload = bytes([flags, buttons, pressed]) + struct.pack(
+            "<hhh", dx, dy, wheel)
+        reply = bytearray(self._wrap(self.RSP_HID_MOUSE, seq, self.ST_OK,
+                                     payload))
+        if entry == "transport":
+            reply[-1] ^= 0xFF
+        return bytes(reply)
 
     def _ready_reply(self, rtype, seq, direction, length, status=None):
         """A READY (or its failed twin) for one bulk-arming class."""

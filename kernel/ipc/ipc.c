@@ -113,9 +113,10 @@ _Static_assert(KOS_EBUSY == 4, "ipc_asm.asm IPC_ASM_EBUSY");
 
 /* Frames and descriptors are bounded tables in fixed data.  The endpoint
  * table holds one record per endpoint of the image's whole boot set plus
- * the nucleus FILE provider: production declares six drivers and the IPC
- * acceptance image declares eight, so the capacity keeps headroom over
- * the largest set an image builds. */
+ * the nucleus FILE provider: production declares eight drivers with nine
+ * endpoints (hid serves the keyboard and the mouse) and the IPC acceptance
+ * image eight drivers with eight, so the capacity keeps headroom over the
+ * largest set an image builds. */
 #define IPC_ENDPOINT_MAX 12u
 #define IPC_DESC_MAX 4u
 

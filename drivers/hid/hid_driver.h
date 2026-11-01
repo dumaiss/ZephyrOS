@@ -6,7 +6,9 @@
  * bootstrap interface only -- never an imported symbol and never a
  * registry lookup by name -- and declares that dependency in its image
  * metadata.  The whole driver is hot (no boot segment): its bring-up is
- * dependency discovery, which needs the bootstrap interface.
+ * dependency discovery, which needs the bootstrap interface.  The mouse
+ * endpoint (class KOS_CLASS_MOUSE) forwards the controller's report and
+ * keeps its own penalty and backoff, apart from the keyboard's.
  * Not a kernel ABI.
  */
 
@@ -46,6 +48,8 @@ struct khid_state {
 	uint8_t count;      /* bytes currently buffered              */
 	uint8_t penalty;    /* stuck-doorbell countdown              */
 	uint8_t backoff;    /* the next penalty, 0 = the first       */
+	uint8_t mouse_penalty; /* mouse reads left without a command */
+	uint8_t mouse_backoff; /* the next mouse penalty, 0 = first  */
 	uint8_t ring[KHID_RING_SIZE];
 	uint8_t read_buffer[KHID_READ_BATCH];
 	uint16_t read_buffer_address;
@@ -59,6 +63,7 @@ int hid_getc(void *state);
 /* Hot segment: the endpoint dispatch and the init entry the loader calls
  * with the driver bootstrap table. */
 int16_t hid_driver_dispatch(struct kos_ipc_frame *frame);
+int16_t hid_mouse_dispatch(struct kos_ipc_frame *frame);
 uint8_t hid_driver_init(const struct driver_boot *boot);
 
 extern struct khid_state hid_state;

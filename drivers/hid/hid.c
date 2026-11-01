@@ -1,12 +1,12 @@
-/* KonaOS HID keyboard/text driver implementation (drivers/hid/).
+/* KonaOS HID keyboard and mouse driver implementation (drivers/hid/).
  *
  * The HID driver as a bank-6 driver image: the 16-byte local ring,
  * the fetch-on-doorbell engine, and the stuck-doorbell penalty behind the
  * HID protocol of abi/kos/protocol.h (class KOS_CLASS_HID, instance 0,
- * version KOS_PROTOCOL_VERSION).
+ * version KOS_PROTOCOL_VERSION), and the mouse endpoint behind the MOUSE
+ * protocol (class KOS_CLASS_MOUSE, instance 0).
  *
- * Input path (the deployed MCU is the authority, the firmware is never
- * modified):
+ * Input path (the MCU is the authority):
  *
  *   - the MCU translates a USB boot keyboard to terminal bytes and keeps
  *     its own 128-byte queue; `/CTSB` is asserted while that queue holds
@@ -41,6 +41,18 @@
  *
  * Translation is the MCU's: this driver copies bytes verbatim, including
  * NUL, control bytes and multi-byte VT100 key sequences.
+ *
+ * Mouse path: KMOUSE_OP_READ sends one CMD_HID_MOUSE and forwards the
+ * controller's 9-byte report verbatim after validating the reply class,
+ * status and length.  The controller clears its motion on every read, so
+ * a read is never repeated.  A controller without the command (an
+ * RSP_UNKNOWN_COMMAND) reads as an all-zero report: no mouse.  A
+ * transport failure reads as an all-zero report too and starts the
+ * mouse's own backoff, the keyboard's rule with its own counters: the
+ * next KHID_STUCK_PENALTY reads answer zeros without an IOC command, the
+ * penalty doubling on each consecutive failure up to
+ * KHID_STUCK_PENALTY_MAX, and a reply clears it.  Position, clamping and
+ * scaling are the client's (the SDK's mouse_track).
  *
  * The whole driver is hot: the engine is reachable after boot and its
  * bring-up is dependency discovery, which needs the bootstrap interface
@@ -312,6 +324,73 @@ int16_t hid_driver_dispatch(struct kos_ipc_frame *frame)
 	}
 }
 
+/* KMOUSE_OP_READ: one CMD_HID_MOUSE, the report into the reply payload. */
+static int16_t hid_mouse_read(struct kos_ipc_frame *frame)
+{
+	struct kos_ipc_frame ioc;
+	const uint8_t *report;
+	uint8_t i;
+	uint8_t backoff;
+
+	for (i = 0u; i < IOC_HID_MOUSE_LEN; ++i) {
+		frame->payload[i] = 0u;
+	}
+	if (hid_state.ioc_handle == 0u) {
+		return 0;
+	}
+	if (hid_state.mouse_penalty != 0u) {
+		--hid_state.mouse_penalty;
+		return 0;
+	}
+	ioc.op = KIOC_OP_COMMAND;
+	ioc.flags = 0u;
+	ioc.desc = KOS_IPC_DESC_NONE;
+	ioc.arg0 = IOC_CMD_HID_MOUSE;
+	ioc.arg1 = 0u;
+	if (hid_api->call(hid_state.ioc_handle, KIOC_OP_COMMAND, &ioc) != 0) {
+		/* A dead link must not cost a full IOC timeout on every
+		 * read: the next reads answer zeros without a command. */
+		backoff = hid_state.mouse_backoff;
+		if (backoff == 0u) {
+			backoff = KHID_STUCK_PENALTY;
+		} else if (backoff < KHID_STUCK_PENALTY_MAX) {
+			backoff = (uint8_t)(backoff << 1);
+		}
+		hid_state.mouse_backoff = backoff;
+		hid_state.mouse_penalty = backoff;
+		return 0;
+	}
+	hid_state.mouse_penalty = 0u;
+	hid_state.mouse_backoff = 0u;
+	if (ioc.arg0 == IOC_RSP_UNKNOWN_CMD) {
+		/* A controller without the command: no mouse. */
+		return 0;
+	}
+	if (ioc.arg0 != IOC_RSP_HID_MOUSE || ioc.payload[2] != 0u ||
+	    ioc.arg1 != IOC_HID_MOUSE_LEN) {
+		return (int16_t)-KOS_EIO;
+	}
+	/* The DATA follows the TYPE, STATUS and LENGTH bytes of the reply
+	 * frame the IOC driver staged in the hot tier. */
+	report = (const uint8_t *)(uint16_t)((uint16_t)(ioc.payload[0] |
+						       ((uint16_t)
+							ioc.payload[1]
+							<< 8)) +
+					     3u);
+	for (i = 0u; i < IOC_HID_MOUSE_LEN; ++i) {
+		frame->payload[i] = report[i];
+	}
+	return 0;
+}
+
+int16_t hid_mouse_dispatch(struct kos_ipc_frame *frame)
+{
+	if (frame->op == KMOUSE_OP_READ) {
+		return hid_mouse_read(frame);
+	}
+	return (int16_t)-KOS_EINVAL;
+}
+
 uint8_t hid_driver_init(const struct driver_boot *boot)
 {
 	uint8_t handle;
@@ -324,6 +403,8 @@ uint8_t hid_driver_init(const struct driver_boot *boot)
 	hid_state.count = 0u;
 	hid_state.penalty = 0u;
 	hid_state.backoff = 0u;
+	hid_state.mouse_penalty = 0u;
+	hid_state.mouse_backoff = 0u;
 
 	/* The one dependency (the IOC transport, manifest position 0): the
 	 * host resolved it to the endpoint number; the driver never looks a

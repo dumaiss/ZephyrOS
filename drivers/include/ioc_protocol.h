@@ -15,14 +15,19 @@
  * driver and the target diagnostics -- include it to name command types
  * and decode payload offsets as native-frame DATA offsets.
  *
- * The numeric values pin the deployed Zephyr-80 IOC firmware, which is
- * never modified; this header documents what it advertises.  Payload
- * offsets are DATA offsets (compatibility-mailbox offset minus the four
- * mailbox header bytes).
+ * The numeric values pin the Zephyr-80 IOC firmware at the level below
+ * (Code/MCU/IOController, include/ioc_frame.h); this header documents
+ * what that firmware serves.  Payload offsets are DATA offsets
+ * (compatibility-mailbox offset minus the four mailbox header bytes).
  */
 
 #ifndef KONAOS_IOC_PROTOCOL_H
 #define KONAOS_IOC_PROTOCOL_H
+
+/* The explicit unknown-class reply (RSP_UNKNOWN_COMMAND): the one
+ * response outside the `type | 80h` rule, sent for a class the
+ * controller does not serve (a diagnostic-profile or older firmware). */
+#define IOC_RSP_UNKNOWN_CMD   0xFEu
 
 /* PING command and reply.  The request carries an echo pattern; the
  * reply echoes those bytes and appends diagnostics. */
@@ -41,10 +46,10 @@
  * once synchronised. */
 #define IOC_PING_LINK_SYNCED  0x40u
 
-/* Pinned deployment: controller firmware level 74 (4Ah).  Reported by
+/* Pinned deployment: controller firmware level 75 (4Bh).  Reported by
  * PING; recorded and validated by the IOC target diagnostic.  A driver
  * never *requires* this value, it reports what the controller returns. */
-#define IOC_FW_LEVEL_PINNED   74u
+#define IOC_FW_LEVEL_PINNED   75u
 
 /* HID input fetch (CMD_HID_INPUT / RSP_HID_INPUT).
  *
@@ -63,5 +68,29 @@
 #define IOC_OFF_HID_INPUT_MAX  0u  /* request DATA 0: wanted byte count */
 #define IOC_HID_INPUT_META_LEN 2u  /* reply DATA: queued, dropped       */
 #define IOC_HID_INPUT_MAX_DATA 24u /* reply DATA: most translated bytes */
+
+/* HID mouse read (CMD_HID_MOUSE / RSP_HID_MOUSE).
+ *
+ * No request DATA.  The reply DATA is IOC_HID_MOUSE_LEN bytes: the
+ * flags, the buttons held now (bit 0 left, 1 right, 2 middle), the
+ * buttons pressed since the last read, then dx, dy and the wheel as
+ * signed 16-bit little-endian motion since the last read, each capped
+ * at +-32767 (+dy is down).  The controller clears dx, dy, the wheel and
+ * the pressed bits on every read (handlers.c handler_hid_mouse,
+ * ioc_hid.c hid_mouse_take).  Served by the normal profile only; a
+ * diagnostic-profile or older controller answers IOC_RSP_UNKNOWN_CMD. */
+#define IOC_CMD_HID_MOUSE         0x12u
+#define IOC_RSP_HID_MOUSE         0x92u
+#define IOC_OFF_HID_MOUSE_FLAGS   0u
+#define IOC_OFF_HID_MOUSE_BUTTONS 1u
+#define IOC_OFF_HID_MOUSE_PRESSED 2u
+#define IOC_OFF_HID_MOUSE_DX      3u
+#define IOC_OFF_HID_MOUSE_DY      5u
+#define IOC_OFF_HID_MOUSE_WHEEL   7u
+#define IOC_HID_MOUSE_LEN         9u
+/* Flags: a second HID interface is mounted, and its reports decode as
+ * the mouse. */
+#define IOC_HID_MOUSE_MOUNTED     0x01u
+#define IOC_HID_MOUSE_DECODED     0x02u
 
 #endif /* KONAOS_IOC_PROTOCOL_H */

@@ -74,9 +74,10 @@ PRODUCTION_IMAGE = "konaos.bin"
 # the endpoint class each registers.  The production CONSOLE driver is
 # `console-v9958-hid`; the serial variant selects `console-serial` from
 # the same shared source.
-DRIVER_SET = (("sio.mod", 1), ("ioc.mod", 5), ("hid.mod", 4),
-               ("v9958.mod", 2), ("console-v9958-hid.mod", 6),
-               ("timer.mod", 10), ("sound.mod", 9), ("iocfat.mod", 7))
+DRIVER_SET = (("sio.mod", (1,)), ("ioc.mod", (5,)), ("hid.mod", (4, 11)),
+               ("v9958.mod", (2,)), ("console-v9958-hid.mod", (6,)),
+               ("timer.mod", (10,)), ("sound.mod", (9,)),
+               ("iocfat.mod", (7,)))
 
 # The console image's required dependencies (class, instance), in
 # manifest order: HID input, VIDEO output, SERIAL as the rescue path.
@@ -213,19 +214,22 @@ class TestProductionImage(ConsoleReplayBase):
         manifest = self.manifest_names(os.path.join(ROOT, "build",
                                                     "modules",
                                                     "drivers.man"))
-        self.assertEqual(manifest, [name for name, _class in DRIVER_SET])
-        for name, klass in DRIVER_SET:
+        self.assertEqual(manifest, [name for name, _classes in DRIVER_SET])
+        for name, classes in DRIVER_SET:
             path = os.path.join(ROOT, "build", "modules", name)
             with open(path, "rb") as handle:
                 info = modpack.parse_container(handle.read(), name)
-            # The flat plan: one endpoint per image, and every
-            # production image carries its publication.
+            # The flat plan: one endpoint per protocol the image serves
+            # (HID serves the keyboard and the mouse), and every
+            # endpoint carries its publication.
             self.assertEqual([(ep["class"], ep["instance"], ep["version"])
                               for ep in info["endpoints"]],
-                             [(klass, 0, 1)], name)
-            self.assertEqual(len(info["publications"]), 1, name)
-            self.assertEqual(info["publications"][0]["number"],
-                             info["endpoints"][0]["number"], name)
+                             [(klass, 0, 1) for klass in classes], name)
+            self.assertEqual(len(info["publications"]), len(classes), name)
+            self.assertEqual([pub["number"]
+                              for pub in info["publications"]],
+                             [ep["number"] for ep in info["endpoints"]],
+                             name)
             # The console image's required dependencies (no optional
             # dependency and no runtime fallback).  The
             # other images' dependencies are pinned by their own tests.

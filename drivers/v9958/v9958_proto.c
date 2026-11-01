@@ -13,6 +13,7 @@
  *   KVIDEO_OP_PUTC   one terminal byte;
  *   KVIDEO_OP_DIRECT_INFO the direct-graphics record (abi/kos/kvideo.h),
  *                    served only while the object is held exclusively;
+ *   KVIDEO_OP_POINTER the pointer sprite, on any handle;
  *   KOS_OP_SUBSCRIBE the vertical-blank event, for the program holding
  *                    the VDP exclusively (below).
  *
@@ -425,6 +426,8 @@ int16_t v9958_driver_dispatch(struct kos_ipc_frame *frame)
 		return (int16_t)v9958_render_transaction(frame);
 	case KVIDEO_OP_DIRECT_INFO:
 		return v9958_direct_info(frame);
+	case KVIDEO_OP_POINTER:
+		return (int16_t)v9958_pointer(frame->arg1, frame->arg0);
 	default:
 		return (int16_t)-KOS_EINVAL;
 	}

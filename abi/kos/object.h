@@ -88,7 +88,7 @@
  * number; FILE and the filesystem-namespace protocol are not device
  * classes and continue the sequence.  The two numberings are still
  * separate: class HID serves type INPUT, and the FILE class serves both
- * FILE and FS. */
+ * FILE and FS.  The HID driver also serves class MOUSE, type MOUSE. */
 #define KOS_TYPE_SERIAL  1u
 #define KOS_TYPE_VIDEO   2u
 #define KOS_TYPE_BLOCK   3u
@@ -99,6 +99,7 @@
 #define KOS_TYPE_FS      8u
 #define KOS_TYPE_SOUND   9u
 #define KOS_TYPE_TIMER   10u
+#define KOS_TYPE_MOUSE   11u
 
 /* --- standard handle numbers -------------------------------------------- */
 

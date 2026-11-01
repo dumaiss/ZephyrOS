@@ -328,7 +328,7 @@ class TestIocClassContract(unittest.TestCase):
         self.assertNotIn("CMD_HID", self.text)
         protocol = _read(IOC_PROTOCOL_H)
         self.assertIn("#define IOC_CMD_PING", protocol)
-        self.assertIn("IOC_FW_LEVEL_PINNED   74u", protocol)
+        self.assertIn("IOC_FW_LEVEL_PINNED   75u", protocol)
         proto = _read(PROTO_H)
         self.assertNotIn("IOC_CMD_PING", proto)
         self.assertNotIn("IOC_HID_INPUT_META_LEN", proto)

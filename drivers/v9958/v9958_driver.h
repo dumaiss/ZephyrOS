@@ -59,6 +59,7 @@
 #define V9958_OUT_RUN_SIZE   64u  /* print-run batching bound (bytes)     */
 #define V9958_SCROLL_BOTTOM  (V9958_ROWS - 1u)
 #define V9958_PIXEL_WIDTH    (V9958_COLUMNS * V9958_CELL_WIDTH)
+#define V9958_PIXEL_HEIGHT   (V9958_ROWS * V9958_CELL_HEIGHT)
 
 /* Output parser states (ported ESC/CSI state machine). */
 #define V9958_TERM_NORMAL    0u
@@ -76,7 +77,13 @@
 extern const uint8_t v9958_font_pages[V9958_FONT_PAGES * 256u];
 extern uint8_t v9958_expand[V9958_EXPAND_PAGES * 256u];
 
-/* --- Sprite-mode-2 cursor allocations (SAT + pattern + color) --------- */
+/* --- Sprite-mode-2 allocations (SAT + patterns + colours) -------------
+ *
+ * Slot 0 is the text cursor (pattern 0), slot 1 the pointer (pattern 1),
+ * slot 2 holds the D8h terminator.  A hidden sprite shows the blank
+ * pattern 2 at a fixed Y, so hiding one never ends evaluation before the
+ * other; a visible sprite whose Y would be D8h is drawn one line higher.
+ * The colour table holds 16 bytes per slot. */
 
 #define V9958_CURSOR_PATTERN_A16 1u
 #define V9958_CURSOR_PATTERN_ADDR 0xF800u
@@ -84,11 +91,20 @@ extern uint8_t v9958_expand[V9958_EXPAND_PAGES * 256u];
 #define V9958_CURSOR_COLOR_ADDR  0xF000u
 #define V9958_CURSOR_SAT_A16     1u
 #define V9958_CURSOR_SAT_ADDR    0xF200u
+#define V9958_POINTER_SAT_ADDR   0xF204u
+#define V9958_SAT_END_ADDR       0xF208u
 #define V9958_CURSOR_COLOR_INDEX 0x0Bu /* yellow, proven on the card     */
-#define V9958_CURSOR_TERMINATOR  0xD8u /* hidden sprite Y terminator     */
+#define V9958_POINTER_COLOR_INDEX 0x0Fu /* white                         */
+#define V9958_SAT_TERMINATOR     0xD8u /* sprite-mode-2 end of the SAT  */
+#define V9958_SPRITE_HIDDEN_Y    0x00u /* a hidden slot's fixed Y        */
+#define V9958_CURSOR_PATTERN     0u
+#define V9958_POINTER_PATTERN    1u
+#define V9958_BLANK_PATTERN      2u
+#define V9958_SPRITE_PATTERNS    3u    /* 8 bytes each                   */
 #define V9958_CURSOR_PATTERN_ROW 0xE0u /* six-pixel top bar glyph row    */
 #define V9958_CURSOR_COLORS      16u
-#define V9958_CURSOR_SAT_BYTES   8u
+#define V9958_SPRITE_COLORS      32u   /* slots 0 and 1                  */
+#define V9958_SAT_ENTRY          4u
 
 /* v9958_write_vram addresses VRAM's upper 64 KiB only. */
 #if defined(__SDCC)
@@ -226,6 +242,14 @@ struct v9958_state {
 
 	/* Nonzero while KVIDEO_OP_RENDER owns the presentation boundary. */
 	uint8_t render_active;
+
+	/* --- the pointer sprite (KVIDEO_OP_POINTER) --- */
+	uint8_t pointer_visible;
+	uint8_t pointer_x;       /* sprite X: the pixel column / 2       */
+	uint8_t pointer_y;       /* the pixel row in the text area       */
+	/* Slot 1's SAT entry as last committed (Y, X, pattern, 0); a Y of
+	 * V9958_SAT_TERMINATOR, never committed, marks it unknown. */
+	uint8_t pointer_sat[V9958_SAT_ENTRY];
 };
 
 /* The assembly renderer (v9958_io.asm) reads these fields by offset. */
@@ -240,6 +264,8 @@ _Static_assert(__builtin_offsetof(struct v9958_state, text_col) == 9,
 	       "v9958_io.asm V9958_ST_COL");
 _Static_assert(__builtin_offsetof(struct v9958_state, text_row) == 10,
 	       "v9958_io.asm V9958_ST_ROW");
+_Static_assert(__builtin_offsetof(struct v9958_state, cursor_visible) == 11,
+	       "v9958_io.asm V9958_ST_CURSOR");
 _Static_assert(__builtin_offsetof(struct v9958_state, current_attr) == 12,
 	       "v9958_io.asm V9958_ST_ATTR");
 _Static_assert(__builtin_offsetof(struct v9958_state, out_run_count) == 17,
@@ -250,6 +276,8 @@ _Static_assert(__builtin_offsetof(struct v9958_state, out_run_row) == 19,
 	       "v9958_io.asm V9958_ST_RUN_ROW");
 _Static_assert(__builtin_offsetof(struct v9958_state, exclusive) == 20,
 	       "v9958_io.asm V9958_ST_EXCLUSIVE");
+_Static_assert(__builtin_offsetof(struct v9958_state, pointer_visible) == 28,
+	       "v9958_io.asm V9958_ST_POINTER");
 /* v9958_term_set_defaults zeroes term_state .. out_run_count as one run. */
 #define V9958_ST_DEFAULTS_END 18u
 _Static_assert(__builtin_offsetof(struct v9958_state, term_state) == 2 &&
@@ -318,6 +346,16 @@ uint8_t v9958_driver_init(const struct driver_boot *boot);
  * the display enabled. */
 int v9958_send(void *state, uint8_t operation, const void *payload,
 	       uint16_t length);
+
+/* KVIDEO_OP_POINTER: show the pointer with its hot spot at pixel (x, y)
+ * of the text area, or hide it (x = KVIDEO_POINTER_HIDE).  Returns 0,
+ * -KOS_EINVAL out of range, or -KOS_EBUSY while a program holds the VDP
+ * exclusively (no port is touched then). */
+int v9958_pointer(uint16_t x, uint16_t y);
+
+/* R#8 sprites on while the cursor or the pointer is visible, else off
+ * (v9958_io.asm, the bracket's restore). */
+void v9958_sprites_restore(void);
 
 extern struct v9958_state v9958_state;
 extern volatile uint8_t v9958_boot_runs;

@@ -31,7 +31,7 @@ abi/kos/                  the public ABI (one copy for every build)
 user/sdk/
   include/kos.h           the umbrella header a program includes
   include/kos/            console.h fs.h ipc.h process.h diag.h seg.h
-                          xmem.h timer.h sound.h gfx.h
+                          xmem.h timer.h mouse.h sound.h gfx.h
   include/klibc/          string.h fmt.h stdarg.h
   src/crt0.asm            startup: the startup block, argv, main, exit
   src/runtime.asm         the fixed low-data area, the shared scratch, the error mapper
@@ -54,6 +54,10 @@ user/sdk/
   src/console_io.c        console_puts, getchar, console_readline
   src/timer.c             the TIMER protocol client: timer_open, timer_now,
                           timer_us, timer_wait_us
+  src/mouse.c             the MOUSE protocol client: mouse_open,
+                          mouse_read, mouse_init, mouse_track; the
+                          pointer: pointer_open, pointer_move,
+                          pointer_hide
   src/klibc/              one archive member per function
   src/kos_internal.h      SDK-private glue (not for programs)
   exe.mk                  the in-tree wrapper: sets the in-tree roots, builds
@@ -875,6 +879,65 @@ a write happens when it is sent, and the timer's events (6.9) pace music.
 A build without the sound driver answers `-KOS_ENOENT` or `-KOS_ENODEV`
 from `sound_open`.
 
+### 6.12 The mouse (`kos/mouse.h`)
+
+```c
+int  mouse_open(void);                          /* bind /dev/input/mouse */
+int  mouse_read(int handle, struct mouse_report *r);
+void mouse_init(struct mouse *m, int handle, int width, int height);
+int  mouse_track(struct mouse *m);
+```
+
+`/dev/input/mouse` is the HID driver's MOUSE endpoint (`docs/devices.md`
+section 5.2). Every read returns the motion since the previous read and
+the controller clears it, so a report is consumed once.
+
+- `mouse_read` fills `struct mouse_report` `{flags, buttons, pressed, dx,
+  dy, wheel}`: `flags` has `MOUSE_MOUNTED` and `MOUSE_PRESENT` (the
+  reports decode as a mouse; 0 means no mouse), `buttons` the buttons
+  held and `pressed` those that went down since the last read
+  (`MOUSE_LEFT`, `MOUSE_RIGHT`, `MOUSE_MIDDLE`), and dx, dy (+dy is down)
+  and wheel the signed motion. A controller without a mouse, a down link
+  and the driver's backoff after a failed exchange read as an all-zero
+  report.
+- `struct mouse` is the tracked pointer: `mouse_init` puts it at the
+  centre of a `width` x `height` area (both at least 1) with everything
+  clear. Each `mouse_track` is one read: it moves the position by the
+  deltas and clamps x to `0..width-1` and y to `0..height-1`, adds the
+  wheel to `wheel`, ORs the presses into `pressed` (the caller clears it
+  once it has acted, so a click between two frames is never lost), and
+  sets `buttons` and `present`. It returns 1 when any of them changed, 0
+  when none did, or a negative error.
+
+The driver forwards deltas only; the position, the clamp and any scaling
+are this client's. A build without the HID driver answers `-KOS_ENOENT`
+from `mouse_open`.
+
+**The pointer.** A text-console program shows the mouse as an arrow
+sprite the V9958 driver draws (`KVIDEO_OP_POINTER`, `docs/devices.md`
+section 6):
+
+```c
+int pointer_open(void);                          /* bind /dev/video     */
+int pointer_move(int video, int x, int y);       /* show at pixel (x,y) */
+int pointer_hide(int video);
+```
+
+- `pointer_open` is an ordinary (shared) bind of `/dev/video` with the
+  VIDEO type check; `-KOS_EINVAL` when the name is another type.
+- Coordinates are pixels of the 510 x 208 text area (`POINTER_WIDTH`,
+  `POINTER_HEIGHT`), the arrow's hot spot at its top-left pixel; the
+  text cell is `x / 6`, `y / 8`. Track with
+  `mouse_init(&m, handle, POINTER_WIDTH, POINTER_HEIGHT)` and pass
+  `m.x`, `m.y`. Outside the area is `-KOS_EINVAL`.
+- The pointer stays at its screen pixel when the console scrolls and
+  stays visible while the console draws. A display reset (the console
+  reset before each start of the boot program, the end of an exclusive
+  hold on `/dev/video`) hides it; a program hides it before it exits,
+  since the shell runs the next program without a reset.
+- While a program holds `/dev/video` exclusively (libgfx), both calls
+  are `-KOS_EBUSY` and touch no port.
+
 ## 7. Memory layout
 
 ```text
@@ -937,6 +1000,7 @@ needed.
 | `bind`, `call`, `unbind`, `list`, `chdir`, `getcwd` | `ipc`, `kos_ipcgate`, `nsgate` |
 | `run` | `exec`, `ipc`, `kos_ipcgate`, `nsgate` |
 | `timer_open`, `timer_now`, `timer_us`, `timer_wait_us` | `timer`, `ipc`, `kos_ipcgate`, `nsgate` |
+| `mouse_open`, `mouse_read`, `mouse_init`, `mouse_track` | `mouse`, `ipc`, `kos_ipcgate`, `nsgate`, `memcpy` |
 | `xalloc` and friends | `xmem`, `kos_xmemgate` |
 | `seginfo`, `segmap`, `farcall`, `farmap`, `blob` | `seg` |
 | `xload` | `xload` |
@@ -1011,6 +1075,10 @@ filesystem image from the monitor: `/system/iomix.exe` proves the console
 transcript is the one an unbuffered program produces, and
 `/system/iostream.exe` runs one card-file stream session and reports
 every outcome.
+`tests/test_mouse.py` runs `/system/mouse.exe stage` in the production
+image with the emulated controller scripted: `mouse_track`'s deltas, its
+clamp at both edges, the wheel and the press latch, and the pointer's
+sprite table through moves, scrolls, renders, holds and resets.
 `tests/test_sdk_package.py` checks the standalone SDK (section 11).
 
 ## 10. The demo image and the examples

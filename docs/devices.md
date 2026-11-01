@@ -28,7 +28,7 @@ The production store carries the drivers below, loaded in this order:
 |---|---|---|---|
 | `sio` | `SERIAL` (1) | the serial port | `/dev/serial/0` |
 | `ioc` | `IOC` (5) | the Z80-to-MCU transport | `/dev/ioc` |
-| `hid` | `HID` (4), type `INPUT` | keyboard text over IOC | `/dev/input/keyboard` |
+| `hid` | `HID` (4), type `INPUT`; `MOUSE` (11) | keyboard text and the mouse over IOC | `/dev/input/keyboard`, `/dev/input/mouse` |
 | `v9958` | `VIDEO` (2) | the V9958, its terminal renderer | `/dev/video` |
 | `console-v9958-hid` | `CONSOLE` (6) | the console, over HID and V9958, with the serial rescue path | `/dev/console` |
 | `iocfat` | `FILE` (7), types `FILE` and `FS` | the filesystem over IOC | `/fs` |
@@ -171,9 +171,13 @@ leaves the driver. Transport errors are the negative `KIOC_E*` codes
 
 ## 5. HID (`drivers/hid/`)
 
-Keyboard text over IOC. Its IOC dependency is declared in the manifest and
+Keyboard text and the mouse over IOC, two endpoints: class `HID` (type
+`INPUT`, `/dev/input/keyboard`) and class `MOUSE` (type `MOUSE`,
+`/dev/input/mouse`). Its IOC dependency is declared in the manifest and
 resolved by the host; it includes only the public IOC vocabulary, never the
 IOC driver's private header.
+
+### 5.1 Keyboard
 
 - A 16-byte local ring. `poll`, `getc` and `read_text` serve buffered bytes
   first; otherwise they sample `KIOC_STATUS_HID_PENDING` and issue exactly
@@ -199,6 +203,34 @@ IOC driver's private header.
 | `KHID_OP_POLL` | 1 | — | 1 when a byte is buffered |
 | `KHID_OP_GETC` | 2 | — | byte, or `-KOS_EAGAIN` |
 | `KHID_OP_READY` | 3 | — | 1 when the IOC link is up |
+
+### 5.2 Mouse
+
+The controller (firmware level 75, normal profile) decodes a keyboard/mouse
+dongle's second HID interface and keeps the motion since the last read;
+`CMD_HID_MOUSE` returns it and clears it.
+
+- `KMOUSE_OP_READ` sends one `CMD_HID_MOUSE` and, after checking the reply
+  class (`RSP_HID_MOUSE`), the controller status and the 9-byte length,
+  copies the report verbatim into the reply payload: `0` flags (bit 0 a
+  second interface is mounted, bit 1 its reports decode as the mouse; 0
+  means no mouse), `1` buttons held (bit 0 left, 1 right, 2 middle), `2`
+  buttons pressed since the last read, `3-4` dx, `5-6` dy (+dy is down),
+  `7-8` wheel, each signed 16-bit little-endian and capped at ±32767. A
+  malformed reply is `-KOS_EIO`.
+- A controller without the command (a diagnostic-profile or older
+  firmware answers `RSP_UNKNOWN_COMMAND`) reads as an all-zero report.
+- A transport failure reads as an all-zero report and starts the mouse's
+  own backoff: the next 4 reads answer zeros without an IOC command,
+  doubling on each consecutive failure up to 128; a reply clears it. The
+  keyboard's ring and penalty are separate, so a dead mouse path never
+  delays a keystroke.
+- The driver keeps no position: clamping, scaling and the press latch are
+  the SDK's (`mouse_track`, `docs/sdk.md`).
+
+| op | number | frame | result |
+|---|---|---|---|
+| `KMOUSE_OP_READ` | 0 | — | 0, the 9-byte report in the reply payload |
 
 ## 6. V9958 (`drivers/v9958/`)
 
@@ -244,7 +276,7 @@ by `libtui`, bounded by the terminal's grid (`KVIDEO_OP_INFO` (5) reports
 it: 85 x 26, attribute bit 0, RENDER). The driver validates the complete
 descriptor before touching
 the VDP, then executes all absolute TEXT, INVERT, SCROLL and final STATE records on
-the private stack with sprite evaluation disabled once. TEXT draws through
+the private stack inside one sprites-off bracket (see Sprites). TEXT draws through
 the print run. Attribute-only INVERT spans use LMMV/EOR (`CMD=83h`, `CLR=0Bh`)
 over the existing 6 x 8 cells, so moving reverse-video focus does not repaint
 glyphs. SCROLL advances or reverses the circular R#23 origin by eight
@@ -252,6 +284,30 @@ scanlines, restores only fixed rows outside the full-width region with HMMM,
 and clears the exposed row with HMMV; the retained body rows are not copied or
 redrawn. The final glyph run, cursor SAT and command wait are synchronized
 once at the transaction boundary.
+
+**Sprites.** Sprite mode 2, 8×8 patterns: the SAT at `F200h` (A16 set),
+the patterns at `F800h`, the colour table at `F000h` (16 bytes per slot).
+- Slot 0 is the text cursor (pattern 0, the six-pixel top bar of the
+  cell, yellow), slot 1 the pointer (pattern 1, an arrow with its hot
+  spot at the top-left pixel, white), slot 2 the `D8h` terminator.
+- A hidden slot shows the blank pattern 2 at Y 0, so hiding one sprite
+  never ends evaluation before the other and needs no scroll-dependent
+  Y. A shown sprite whose Y would be `D8h` is drawn one line higher.
+- A sprite is drawn one line below its Y and follows the R#23 origin, so
+  a slot's Y is its pixel row plus the origin minus one; a scroll
+  re-places a shown pointer at the same screen pixel.
+- Every console WRITE, PUTC and RENDER sets R#8 SPD (sprite evaluation
+  costs command-engine VRAM cycles) and restores sprites when the cursor
+  or the pointer is visible; while the pointer is visible the bracket
+  leaves sprites on, so drawing never blinks it.
+
+`KVIDEO_OP_POINTER` (7), no descriptor, on any handle: `arg1` = x
+(0..509) and `arg0` = y (0..207), the text-area pixel under the hot spot;
+`arg1 = FFFFh` (`KVIDEO_POINTER_HIDE`) hides it. Out of range is
+`-KOS_EINVAL`. The driver writes slot 1 only when it changed. While a
+program holds the object exclusively the answer is `-KOS_EBUSY` and no
+port is touched. `KVIDEO_OP_RESET` and `KVIDEO_RESET` (the display reset
+below) hide the pointer.
 
 **Native operations** (through `KVIDEO_OP_SEND`): `KVIDEO_CTRL_WRITE` (1),
 `DATA_WRITE` (2), `DATA_BLOCK` (3), `PALETTE_WRITE` (4), `INDIRECT_WRITE`
@@ -622,7 +678,10 @@ A driver manifest lists its publications: the name below `/dev`
 (`"/serial/0"`), the protocol type, the serving endpoint and the object
 identity. The packer resolves the endpoint and refuses a name that is the
 root itself, a name too long for the 16-byte record, a duplicate, an
-unknown class, or more rows than the nucleus table holds (12). Grouping
+unknown class, more than 12 publications in one manifest, or a set whose
+publications and grouping rows exceed the nucleus table's 16 rows. The
+production set fills ten: eight publications and the `/dev/input` and
+`/dev/serial` grouping rows. Grouping
 names (`/dev/input`, `/dev/serial`) are never published: the DEVICE
 provider derives them from the names it installs. The loader checks each
 row (name shape, type in range, a non-zero endpoint) and installs it.
@@ -733,6 +792,7 @@ own constants.
 | `tests/test_driver_images.py`, `tests/test_mod.py` | the image format, the plan, endpoint numbering, dependencies, publications, the loader's bounds |
 | `tests/test_ioc.py` | the IOC constants, the packed driver container and the driver's lane discipline |
 | `tests/test_hid.py` | the HID contract, the packed driver container and the driver's fetch discipline |
+| `tests/test_mouse.py` | the MOUSE vocabulary and manifest, and the production replay of `/system/mouse.exe stage`: deltas, clamping, wheel, the press latch, a controller without the command and the backoff; the pointer's sprite table (layout, D8h rule, scroll re-placement, sprites on while it is shown, the hold refusal, the resets) |
 | `tests/test_v9958.py` | the VIDEO contract, the font pipeline and the driver's reset and register discipline |
 | `tests/test_console_acceptance.py` | the production image: load order, the IOC-FAT lane, and a scripted monitor session over the HID and V9958 lanes |
 | `tests/test_console_serial.py` | the serial console build, and the missing-image boot failure |

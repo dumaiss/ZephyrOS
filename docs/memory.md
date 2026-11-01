@@ -162,8 +162,8 @@ emit them as JSON (`build/konaos.manifest.json` `nucleus`, and
 
 ```text
 nucleus fixed: required 9664 bytes | overflow 2 bytes | stacks 768 | room 5950 bytes
-nucleus cold: code 25074 bytes end C1F2h | data 1543 bytes at C200h | room 6137 bytes
-driver hot: 30471 bytes of 32768
+nucleus cold: code 25087 bytes end C1FFh | data 1623 bytes at C200h | room 6057 bytes
+driver hot: 31873 bytes of 32768
 driver boot/bulk: 21128 bytes of 24576
 driver mapped: 3584 bytes of 7936
 common: used 3067 of 7424 bytes (code 2140, data 927) | ceiling 3072
@@ -173,7 +173,7 @@ The device-event mechanism places the table, the two return-path checks
 and their frame primitives in common memory, the post path and the
 driver-API exports in the fixed core, and the syscall and teardown bodies
 in the cold half; `_WINDOW_DATA` starts at `C200h` because the linked
-cold code ends at `C198h` (the window-data base follows the code end,
+cold code ends at `C1FFh` (the window-data base follows the code end,
 architecture 4.2).  One delivery costs 8,407 T-states, 4.2% of the CPU at
 50 Hz (nucleus and trampoline; the handler's own body is outside it).
 

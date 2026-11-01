@@ -73,7 +73,8 @@ TYPES = {"KOS_TYPE_SERIAL": "1u", "KOS_TYPE_VIDEO": "2u",
          "KOS_TYPE_BLOCK": "3u", "KOS_TYPE_INPUT": "4u",
          "KOS_TYPE_IOC": "5u", "KOS_TYPE_CONSOLE": "6u",
          "KOS_TYPE_FILE": "7u", "KOS_TYPE_FS": "8u",
-         "KOS_TYPE_SOUND": "9u", "KOS_TYPE_TIMER": "10u"}
+         "KOS_TYPE_SOUND": "9u", "KOS_TYPE_TIMER": "10u",
+         "KOS_TYPE_MOUSE": "11u"}
 HANDLES = {"KOS_HANDLE_STDOUT": "1u", "KOS_HANDLE_STDIN": "2u",
            "KOS_HANDLE_FIRST_BOUND": "3u"}
 

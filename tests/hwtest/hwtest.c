@@ -714,6 +714,7 @@ static void hw_stage_namespace(int card)
 	hw_check_bind("bind-dev-video", "/dev/video", KOS_TYPE_VIDEO);
 	hw_check_bind("bind-dev-input", "/dev/input/keyboard",
 		      KOS_TYPE_INPUT);
+	hw_check_bind("bind-dev-mouse", "/dev/input/mouse", KOS_TYPE_MOUSE);
 	hw_check_bind("bind-dev-serial", "/dev/serial/0", KOS_TYPE_SERIAL);
 	hw_check_bind("bind-dev-ioc", "/dev/ioc", KOS_TYPE_IOC);
 

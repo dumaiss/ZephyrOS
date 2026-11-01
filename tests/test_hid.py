@@ -119,7 +119,9 @@ class TestHidDriverArtifact(unittest.TestCase):
         self.assertEqual(io["bss_areas"], ["_DRIVER_IO"])
         self.assertEqual(manifest["endpoints"],
                          [{"class": 4, "instance": 0, "version": 1,
-                           "dispatch": "hid_driver_dispatch", "flags": 0}])
+                           "dispatch": "hid_driver_dispatch", "flags": 0},
+                          {"class": 11, "instance": 0, "version": 1,
+                           "dispatch": "hid_mouse_dispatch", "flags": 0}])
         # The IOC dependency is image metadata, named symbolically in the
         # source: a store that places HID without IOC is a loader error
         # before any HID byte runs, and tools/systemgen.py resolves the
@@ -132,10 +134,10 @@ class TestHidDriverArtifact(unittest.TestCase):
         data = _read(MOD, "rb")
         info = modpack.parse_container(data, "hid.mod")
         # The image carries its host-built publications
-        # (`/dev/input/keyboard`).
+        # (`/dev/input/keyboard`, `/dev/input/mouse`).
         self.assertEqual([publication["name"]
                           for publication in info["publications"]],
-                         ["/input/keyboard"])
+                         ["/input/keyboard", "/input/mouse"])
         self.assertGreater(info["image_size"], 0)
         self.assertGreater(info["bss_size"], 0)
         self.assertNotEqual(info["init_offset"], 0xFFFF)
@@ -167,7 +169,7 @@ class TestHidDriverArtifact(unittest.TestCase):
                           # The production feature exerciser and the
                           # outcome programs it runs.
                           "hwtest.exe", "timer.exe", "beat.exe",
-                          "xmem_selftest.exe",
+                          "mouse.exe", "xmem_selftest.exe",
                           "xmem_child.exe", "xmem_far.exe",
                           "fs_selftest.exe", "fs_child.exe"])
         # The boot manifest orders the drivers; HID's declared dependency

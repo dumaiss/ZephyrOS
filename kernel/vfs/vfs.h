@@ -255,11 +255,14 @@ int vfs_cwd_store(const char *norm);
  * forward to runs on the driver stack.
  */
 
-/* Publication table capacity: the production build declares five roles
- * (console, input/keyboard, video, serial/0, ioc), which expand to seven
- * rows with the grouping entries; an acceptance set adds its synthetic
- * names.  The loader refuses a set that overflows the table. */
-#define VFS_NS_PUB_MAX 12u
+/* Publication table capacity: the production build declares eight roles
+ * (console, input/keyboard, input/mouse, video, serial/0, ioc, timer,
+ * sound), which expand to ten rows with the grouping entries (/input,
+ * /serial).  Sixteen leaves room for the game controllers' three rows
+ * (/input/joy, /input/joy/0, /input/joy/1) and an acceptance set's
+ * synthetic names.  The loader refuses a set that overflows the table;
+ * tools/modpack.py NS_TABLE_ROWS is the packer's copy. */
+#define VFS_NS_PUB_MAX 16u
 
 /* Publication name field: "/input/keyboard" is the longest role above, so
  * the table stores the flat provider-relative names in 16 bytes. */

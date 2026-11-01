@@ -306,7 +306,7 @@ class TestDriverArtifact(unittest.TestCase):
                           # The production feature exerciser and the
                           # outcome programs it runs.
                           "hwtest.exe", "timer.exe", "beat.exe",
-                          "xmem_selftest.exe",
+                          "mouse.exe", "xmem_selftest.exe",
                           "xmem_child.exe", "xmem_far.exe",
                           "fs_selftest.exe", "fs_child.exe"])
         self.assertEqual(systemgen.store_type("v9958.mod"), "MOD")

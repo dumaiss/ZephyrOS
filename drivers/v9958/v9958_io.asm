@@ -55,6 +55,7 @@
 	.globl _v9958_term_write
 	.globl _v9958_term_feed
 	.globl _v9958_state
+	.globl _v9958_sprites_restore
 	.globl _v9958_run_ptr
 	.globl _v9958_span_open, _v9958_span_close
 	.globl _v9958_font_pages, _v9958_expand
@@ -66,11 +67,13 @@ V9958_ST_TERM      = 2
 V9958_ST_ESC       = 3
 V9958_ST_COL       = 9
 V9958_ST_ROW       = 10
+V9958_ST_CURSOR    = 11
 V9958_ST_ATTR      = 12
 V9958_ST_RUN_COUNT = 17
 V9958_ST_RUN_COL   = 18
 V9958_ST_RUN_ROW   = 19
 V9958_ST_EXCLUSIVE = 20
+V9958_ST_POINTER   = 28
 V9958_RUN_SIZE     = 64
 V9958_LAST_COLUMN  = 84
 V9958_CELL_LINES   = 8
@@ -347,16 +350,24 @@ v9958_indirect_loop:
 
 ; Sprite evaluation consumes VRAM cycles that the command engine can use.
 ; Console entry wrappers bracket the entire terminal operation with these
-; helpers, so glyph copies, fills and scrolling all run with SPD set.  The
-; worker's final sync makes the command engine idle before restore.
+; helpers, so glyph copies, fills and scrolling all run with SPD set -
+; unless the pointer is visible: then sprites stay on, so drawing never
+; blinks it.  The worker's final sync makes the command engine idle before
+; restore, which turns sprites on while the cursor or the pointer is
+; visible (KVIDEO_OP_POINTER calls it too, from C).
 v9958_sprites_off:
+	ld	a,(_v9958_state+V9958_ST_POINTER)
+	or	a
+	ret	nz				; the pointer is shown
 	ld	a,#(KOS_V9958_R8_64K_DRAM | KOS_V9958_R8_SPRITES_OFF)
 	ld	l,#KOS_V9958_REG_R8
 	jp	_v9958_io_reg
 
+_v9958_sprites_restore::
 v9958_sprites_restore:
-	ld	a,(_v9958_state+11)	; cursor_visible
-	or	a
+	ld	a,(_v9958_state+V9958_ST_CURSOR)
+	ld	hl,#_v9958_state+V9958_ST_POINTER
+	or	(hl)
 	ld	a,#(KOS_V9958_R8_64K_DRAM | KOS_V9958_R8_SPRITES_OFF)
 	jr	z,v9958_sprites_write
 	ld	a,#KOS_V9958_R8_64K_DRAM

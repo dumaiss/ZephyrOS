@@ -4,13 +4,13 @@
  * NOT a client contract.  It extends the client-visible driver
  * vocabulary in drivers/include/ioc_protocol.h with the constants only
  * the IOC driver (and the test-only IOC transport diagnostic) may see:
- * the explicit unknown-class reply, the bulk READY/DONE vocabulary and
+ * the bulk READY/DONE vocabulary and
  * directions, the frozen set of request classes the pinned firmware can
  * use to arm the bulk lane, and the controller status bytes.  Wire
  * framing, frame construction, CRC/sequence handling, lane setup, the
  * READY/DONE admission state, and bulk recovery all stay under
  * drivers/ioc/; no production driver other than the IOC driver includes
- * this header.  The firmware is never modified.
+ * this header.
  */
 
 #ifndef KONAOS_DRIVERS_IOC_PROTO_H
@@ -18,14 +18,8 @@
 
 #include "ioc_protocol.h"
 
-/* The deployed firmware answers `type | 80h`; RSP_UNKNOWN_COMMAND is the
- * explicit unknown-class reply and the only response outside that rule.
- * Only the transport itself and the test-only IOC transport diagnostic
- * decode it; the client-visible PING vocabulary is in ioc_protocol.h. */
-#define IOC_RSP_UNKNOWN_CMD   0xFEu
-
-/* Bulk READY / DONE lifecycle (mirrors the frozen ioc_frame.h of the
- * pinned deployment; the MCU firmware is never modified).
+/* Bulk READY / DONE lifecycle (mirrors ioc_frame.h of the pinned
+ * deployment).
  *
  * A command that hands DATA to the bulk lane answers with a READY: a
  * successful reply whose 8-byte DATA carries the transfer id, direction,

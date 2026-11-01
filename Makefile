@@ -1253,6 +1253,14 @@ $(eval $(call exe_program,hwtest,tests/hwtest,\
 $(eval $(call exe_program,timer,tests/timer,\
 	timer.c,STACK=256,STAGE=1))
 
+# The mouse outcome program: the production store's
+# `/system/mouse.exe`.  Run bare it is the owner's check with a dongle
+# (the pointer follows the mouse and each press prints its text cell,
+# until a key); the `stage` tail runs the acceptance replay's scripted
+# reads and pointer checks.
+$(eval $(call exe_program,mouse,tests/mouse,\
+	mouse.c,STACK=256,STAGE=1))
+
 # The device-event board check: the production store's
 # `/system/beat.exe`.  Run bare it subscribes to the timer's event source
 # at 500 ms, toggles a 440 Hz PSG0 tone at every delivery for ten seconds

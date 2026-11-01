@@ -751,9 +751,11 @@ component to one of three static nucleus providers:
   = 64. The native ABI does not inherit FAT 8.3; the current filesystem
   driver does (section 5.6).
 - **Device names** describe roles, never products: `/dev/console`,
-  `/dev/video`, `/dev/input/keyboard`, `/dev/serial/0`, `/dev/ioc` and
-  `/dev/timer` and `/dev/sound`. One driver may publish several
-  names and types.
+  `/dev/video`, `/dev/input/keyboard`, `/dev/input/mouse`,
+  `/dev/serial/0`, `/dev/ioc`, `/dev/timer` and `/dev/sound`. One driver
+  may publish several names and types (the HID driver publishes the
+  keyboard and the mouse). The nucleus table holds 16 rows for the whole
+  set, grouping rows included.
 - **Handles:** one global table of 12 entries, each tagged with its owner
   process, its 8-bit protocol type, its endpoint and the provider's object
   identity. A handle is small and opaque: not a bank, pointer or endpoint
@@ -893,7 +895,8 @@ it.
 manifests declare and resolve dependencies. The 8-bit **protocol type** a
 `bind` returns (`KOS_TYPE_*` in `abi/kos/object.h`) is a separate
 numbering: class HID serves type `INPUT`, and the FILE class serves both
-`FILE` and `FS`.
+`FILE` and `FS`. Device families share the number otherwise (class and
+type `MOUSE` are both 11).
 
 ### 5.4 The bootstrap API
 
@@ -937,7 +940,7 @@ console it selected. Programs cannot tell which implementation answers.
 |---|---|---|
 | `sio` | `SERIAL` | SIO channels; publishes `/dev/serial/0` |
 | `ioc` | `IOC` | the Z80-to-MCU transport (below) |
-| `hid` | `INPUT` | keyboard input over IOC; `/dev/input/keyboard` |
+| `hid` | `INPUT`, `MOUSE` | keyboard input and the mouse over IOC; `/dev/input/keyboard`, `/dev/input/mouse` |
 | `v9958` | `VIDEO` | 85×26 terminal renderer (6×8 font); `/dev/video` |
 | `console-v9958-hid`, `console-serial` | `CONSOLE` | the per-build console |
 | `iocfat` | `FILE`, `FS` | the filesystem behind `/fs` |
@@ -987,6 +990,16 @@ console it selected. Programs cannot tell which implementation answers.
   one VRAM address per scanline and three bytes per glyph, inside one
   bulk-map span. The font asset is built from
   `drivers/v9958/assets/font_cp850_6x8.inc` into this layout on the host.
+- **Two sprites over the text console.** In sprite mode 2 slot 0 is the
+  text cursor, slot 1 the mouse pointer (`KVIDEO_OP_POINTER`, placed at a
+  text-area pixel and re-placed on every scroll), slot 2 the `D8h`
+  terminator; a hidden slot shows a blank pattern, so neither hides the
+  other. Sprite evaluation takes command-engine VRAM cycles, so every
+  console operation runs with sprites off and restores them when the
+  cursor or the pointer is visible, except while the pointer is visible:
+  then sprites stay on, so drawing never blinks it. While a program holds
+  the VDP exclusively the bracket and the pointer touch no port, and the
+  display reset at the hold's end hides the pointer.
 - **Console geometry is reported, not fixed.** `KCONSOLE_OP_INFO` returns
   the text grid (columns, rows) and the attribute bits the console
   supports; the V9958 console forwards it to `KVIDEO_OP_INFO`, and the
@@ -1045,8 +1058,8 @@ console it selected. Programs cannot tell which implementation answers.
 2. **The IPC envelope:** handle, operation, 32-byte frame, status, one
    optional descriptor.
 3. **Protocol types:** `FILE`, `FS` (filesystem namespace), `CONSOLE`,
-   `VIDEO`, `INPUT`, `SERIAL`, `IOC`, `TIMER` and `SOUND`. Each defines
-   its operations and frame meanings in `abi/kos/protocol.h`.
+   `VIDEO`, `INPUT`, `MOUSE`, `SERIAL`, `IOC`, `TIMER` and `SOUND`. Each
+   defines its operations and frame meanings in `abi/kos/protocol.h`.
 4. **The SDK:** typed client functions that bind names, check types and
    fill and decode frames (`docs/sdk.md`).
 
@@ -1407,7 +1420,7 @@ ledgers (`docs/memory.md` has the current values):
 |---|---|---:|---|
 | `nucleus fixed:` | bank 7 `2000h-5FFFh` (code, data, ISR and driver stacks) | 16,384 | keep ≥ 2,048 free |
 | `nucleus cold:` | bank 7 `6000h-DFFFh` | 32,768 | keep ≥ 4,096 free |
-| `driver hot:` | bank 6 `6000h-DFFFh` | 32,768 | keep ≥ 1,472 free |
+| `driver hot:` | bank 6 `6000h-DFFFh` | 32,768 | keep ≥ 832 free |
 | `driver boot/bulk:` | bank 6 `0000h-5FFFh` | 24,576 | — |
 | `driver mapped:` | bank 6 `0100h-1FFFh`, inside boot/bulk | 7,936 | — |
 | `common:` | packed `_COMMON` + `_COMMON_DATA` | ceiling 3,072 | never raised |
@@ -1581,11 +1594,9 @@ aperture page otherwise.
 Planned work, in order. None of it changes the contracts above unless it
 says so.
 
-1. **Mouse and game controllers** in the HID driver: `/dev/input/mouse`,
-   `/dev/input/controller/0` and `/1`. They grow the driver tier inside
-   its reserve and need nothing from the nucleus. The mouse pointer is a
-   sprite, which the console's sprites-off drawing bracket must not hide
-   while a mouse is open.
+1. **Game controllers.** The controllers join the HID driver as
+   `/dev/input/joy/0` and `/1`; they grow the driver tier inside its
+   reserve, and the `/dev` table already has their rows.
 2. **After that:** compatibility personalities, starting with CP/M.
 
 Diagnostics and benchmarks are user programs; the nucleus gains a

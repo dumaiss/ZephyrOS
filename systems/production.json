@@ -19,6 +19,7 @@
     "hwtest.exe",
     "timer.exe",
     "beat.exe",
+    "mouse.exe",
     "xmem_selftest.exe",
     "xmem_child.exe",
     "xmem_far.exe",
