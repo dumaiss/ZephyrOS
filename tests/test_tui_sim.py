@@ -41,6 +41,8 @@ TUI_KEYS_EXE = os.path.join(ROOT, "build", "user", "tui_keys.exe")
 TUI_DIALOG_EXE = os.path.join(ROOT, "build", "user", "tui_dialog.exe")
 TUI_WIDE_EXE = os.path.join(ROOT, "build", "user", "tui_wide.exe")
 TUI_PUTWIDE_EXE = os.path.join(ROOT, "build", "user", "tui_putwide.exe")
+TUI_MPROBE_EXE = os.path.join(ROOT, "build", "user", "tui_mprobe.exe")
+TUI_MOUSE_EXE = os.path.join(ROOT, "build", "user", "tui_mouse.exe")
 PRODUCTION = ("build", "konaos.bin")
 SERIAL = ("build-console-serial-selftest",
           "konaos-console-serial-selftest.bin")
@@ -432,6 +434,13 @@ class TuiSimBase(unittest.TestCase):
     SUBDIR = None
     IMAGE_NAME = None
     SERIAL = False
+    # The (store name, path) programs a class adds to the store.
+    STORE_FILES = (("tui_test.exe", TUI_TEST_EXE),
+                   ("tui_demo.exe", TUI_DEMO_EXE),
+                   ("tui_keys.exe", TUI_KEYS_EXE),
+                   ("tui_dialog.exe", TUI_DIALOG_EXE),
+                   ("tui_wide.exe", TUI_WIDE_EXE),
+                   ("tui_putwide.exe", TUI_PUTWIDE_EXE))
 
     @classmethod
     def setUpClass(cls):
@@ -462,13 +471,7 @@ class TuiSimBase(unittest.TestCase):
     def _pack_store(cls):
         manifest_path = os.path.join(ROOT, cls.SUBDIR, "store.json")
         manifest = json.loads(Path(manifest_path).read_text())
-        extras = (("tui_test.exe", TUI_TEST_EXE),
-                  ("tui_demo.exe", TUI_DEMO_EXE),
-                  ("tui_keys.exe", TUI_KEYS_EXE),
-                  ("tui_dialog.exe", TUI_DIALOG_EXE),
-                  ("tui_wide.exe", TUI_WIDE_EXE),
-                  ("tui_putwide.exe", TUI_PUTWIDE_EXE))
-        for name, path in extras:
+        for name, path in cls.STORE_FILES:
             manifest["files"] = [entry for entry in manifest["files"]
                                  if entry["name"].lower() != name.lower()]
             if os.path.isfile(path):
@@ -1394,6 +1397,329 @@ class TestTuiV9958Screen(TuiModeChecks, TuiSimBase):
         expected = shutdown_screen()
         for row in range(SCREEN_ROWS):
             self.assertEqual(screen[row], expected[row], "row %d" % row)
+
+
+# The mouse replays: the scripted controller's reports, one taken per
+# CMD_HID_MOUSE, a (flags, buttons, pressed, dx, dy, wheel) tuple.  The
+# pointer starts at the centre of the 510 x 208 text area, (255, 104):
+# cell 42,13.  tui_mprobe's window for the first phases is 20 x 10 at
+# (10, 5).
+MPROBE_QUEUED = [(3, 1, 1, 0, 0, 0)]
+MPROBE_EVENTS = [
+    (3, 1, 0, 0, 0, 0),          # held, nothing changed: no event
+    (3, 1, 0, -12, 0, 0),        # drag to x 243: cell 40
+    (3, 1, 0, -1, 0, 0),         # x 242: the same cell, no event
+    (3, 0, 0, 0, 0, 0),          # release
+    (3, 0, 0, -1000, -1000, 0),  # to the top-left edge, no button
+    (3, 1, 1, 0, 0, 0),          # press at 0,0
+    (3, 0, 0, 0, 0, 0),
+    (3, 0, 0, 1000, 1000, 0),    # to the bottom-right edge (509, 207)
+    (3, 4, 4, 0, 0, 0),          # middle press at 84,25
+    (3, 0, 0, 0, 0, 0),
+    (3, 0, 0, -419, -151, 0),    # to (90, 56): cell 15,7, window 5,2
+    (3, 0, 0, 0, 0, -2),         # wheel
+    (3, 1, 1, 0, 0, 2),          # a press and wheel in one read
+    (3, 1, 0, 0, 0, 0),          # held, nothing changed: the pending wheel
+    (3, 0, 0, 0, 0, 0),
+    (3, 0, 0, 84, 56, 0),        # to (174, 112): the window's last cell
+    (3, 1, 1, 0, 0, 0),
+    (3, 1, 0, 6, 0, 0),          # drag out of the window
+    (3, 0, 0, 0, 0, 0),
+    (3, 2, 2, 0, 0, 0),          # right press: the phase ends
+]
+MPROBE_MOTION = [
+    (3, 0, 0, 0, 0, 0),          # the right release
+    (3, 0, 0, 6, 0, 0),          # motion with no button: cell 31
+    (3, 0, 0, 1, 0, 0),          # the same cell
+    (3, 0, 0, -12, 0, 0),        # back into the window
+    (3, 2, 2, 0, 0, 0),
+]
+MPROBE_MENU1 = [
+    (3, 0, 0, 0, 0, 0),
+    (3, 0, 0, 0, 0, -1),         # wheel towards the user: File -> Edit
+    (3, 1, 1, 0, -72, 0),        # a press on row 5: not the bar
+    (3, 0, 0, 0, 0, 0),
+]
+MPROBE_MENU2 = [
+    (3, 0, 0, -109, -40, 0),     # to (66, 0): "Help" at cell 11,0
+    (3, 1, 1, 0, 0, 0),
+]
+MPROBE_BOX = [
+    (3, 0, 0, 0, 0, 0),
+    (3, 0, 0, 54, 80, 0),        # inside the box, off the buttons
+    (3, 1, 1, 0, 0, 0),
+    (3, 0, 0, 0, 0, 0),
+    (3, 0, 0, 144, 72, 0),       # (264, 152): CANCEL at cell 44,19
+    (3, 1, 1, 0, 0, 0),
+]
+# kind col row wcol wrow buttons pressed released wheel
+MPROBE_RECORDS = [
+    "key 0061", "key 0062",
+    "mouse 1 42 13 -1 -1 1 1 0 0",
+    "mouse 4 40 13 -1 -1 1 0 0 0",
+    "mouse 2 40 13 -1 -1 0 0 1 0",
+    "mouse 1 0 0 -1 -1 1 1 0 0",
+    "mouse 2 0 0 -1 -1 0 0 1 0",
+    "mouse 1 84 25 -1 -1 4 4 0 0",
+    "mouse 2 84 25 -1 -1 0 0 4 0",
+    "mouse 3 15 7 5 2 0 0 0 -2",
+    "mouse 1 15 7 5 2 1 1 0 0",
+    "mouse 3 15 7 5 2 1 0 0 2",
+    "mouse 2 15 7 5 2 0 0 1 0",
+    "mouse 1 29 14 19 9 1 1 0 0",
+    "mouse 4 30 14 -1 -1 1 0 0 0",
+    "mouse 2 30 14 -1 -1 0 0 1 0",
+    "mouse 1 30 14 -1 -1 2 2 0 0",
+    "mouse 2 30 14 -1 -1 0 0 2 0",
+    "mouse 4 31 14 -1 -1 0 0 0 0",
+    "mouse 4 29 14 19 9 0 0 0 0",
+    "mouse 1 29 14 19 9 2 2 0 0",
+]
+MPROBE_RESULT = "mprobe: menu 11 12 box 2"
+
+# The pointer's sprite slot (slot 1 of the table at VRAM 1F200h) and
+# its hidden form: the blank pattern at Y 0.
+POINTER_SLOT = 0x1F204
+POINTER_HIDDEN = (0x00, 0x00, 2, 0)
+
+
+class _PollProbe:
+    """Every `tui_pollkey` call: its T-states from entry to return and
+    the IOC mouse commands the controller answered during it."""
+
+    def __init__(self, entry):
+        self.entry = entry
+        self.calls = []
+        self.open = None
+
+    def watch(self):
+        if self.open is None:
+            return {self.entry}
+        return {self.open[0]}
+
+    def __call__(self, z):
+        if self.open is None:
+            if z.pc == self.entry and (z.latch & 0x18) == 0x10:
+                self.open = (z.rd16(z.sp), z.sp + 2, z.tstates,
+                             z.ioc_peer.mouse_commands)
+            return
+        ret, sp, start, commands = self.open
+        if z.pc == ret and z.sp == sp and (z.latch & 0x18) == 0x10:
+            self.calls.append((z.tstates - start,
+                               z.ioc_peer.mouse_commands - commands))
+            self.open = None
+
+
+class TestTuiMouse(TuiSimBase):
+    """The opt-in mouse on the production image, the controller
+    scripted: `tui_mprobe.exe` records the events the key loop returns
+    and the runners' answers, and `tui_mouse.exe` (the SDK example) is
+    driven by clicks and the wheel."""
+
+    SUBDIR, IMAGE_NAME = PRODUCTION
+    STORE_FILES = (("tui_test.exe", TUI_TEST_EXE),
+                   ("tui_mprobe.exe", TUI_MPROBE_EXE),
+                   ("tui_mouse.exe", TUI_MOUSE_EXE))
+
+    def _drive(self, command, stages, done, probe=None):
+        """Type `command`, then run `stages` in order - each a (ready,
+        action) pair called on the tick, the action once `ready` holds -
+        until `done` is in the trace."""
+        replay, z = self._boot()
+        self.replay = replay
+        peer = z.ioc_peer
+        since = len(z.glyphs)
+        z.hid.hid_queue.extend(command)
+        pending = list(stages)
+
+        def tick(_step):
+            replay.pump(z)
+            text = "".join(z.glyphs[since:])
+            while pending and pending[0][0](z, text):
+                pending.pop(0)[1](z)
+            if "FAIL" in text:
+                raise AssertionError("FAIL: %r" % text[-200:])
+            return not pending and done in text
+
+        hook = watch = None
+        if probe is not None:
+            def hook(_step):
+                probe(z)
+                return probe.watch()
+            watch = probe.watch()
+        if replay.drive(z, 4 * STEP_LIMIT, watch, hook, tick=tick) is None:
+            self.fail("%r did not finish: %r"
+                      % (command, "".join(z.glyphs[since:])[-300:]))
+        replay.pump(z)
+        return z, peer, "".join(z.glyphs[since:])
+
+    def _pointer_entries(self, z):
+        """Every committed slot-1 entry (y, x, pattern, tail)."""
+        sat = [0, 0, 0, 0]
+        entries = []
+        for address, value in z.vdp.vram_writes:
+            if POINTER_SLOT <= address < POINTER_SLOT + 4:
+                sat[address - POINTER_SLOT] = value
+                if address == POINTER_SLOT + 3:
+                    entries.append(tuple(sat))
+        return entries
+
+    WAIT_WAKES = 30
+
+    def _measure_wait(self, replay, z, stats, probe):
+        """Run the CPU through WAIT_WAKES idle wakes of a tui_getkey wait
+        with no input: the IOC mouse commands taken and the T-states
+        spent outside HALT, then end the wait with a key."""
+        peer = z.ioc_peer
+        entries = []
+        halted = 0
+        was = False
+        while len(entries) < self.WAIT_WAKES + 2:
+            replay.feed(z)
+            before = z.tstates
+            z.step()
+            if z.halted:
+                if not was:
+                    entries.append((z.tstates, peer.mouse_commands, halted))
+                halted += z.tstates - before
+            was = z.halted
+        first, last = entries[1], entries[-1]
+        stats["commands"] = last[1] - first[1]
+        stats["wakes"] = len(entries) - 2
+        stats["outside"] = (1.0 - float(last[2] - first[2]) /
+                            (last[0] - first[0]))
+        # The share of each wake spent outside HALT, for the wakes that
+        # read the mouse and for those that did not.
+        stats["read"] = []
+        stats["between"] = []
+        for a, b in zip(entries[1:], entries[2:]):
+            share = 1.0 - float(b[2] - a[2]) / (b[0] - a[0])
+            stats["read" if b[1] != a[1] else "between"].append(share)
+        probe.open = None    # a call this loop ran through is not measured
+        z.hid.hid_queue.extend(b"q")
+
+    def test_events_runners_and_pacing(self):
+        if not os.path.isfile(TUI_MPROBE_EXE):
+            self.skipTest("%s has not been built" % TUI_MPROBE_EXE)
+        first = MPROBE_QUEUED + MPROBE_EVENTS + MPROBE_MOTION + MPROBE_MENU1
+        symbols = read_symbols(os.path.join(
+            ROOT, "build", "user", "tui_mprobe", "tui_mprobe.map"))
+
+        def start(z):
+            z.ioc_peer.mouse_reports.extend(first)
+
+        def phase(name):
+            return lambda _z, text: ("phase=" + name) in text
+
+        wait = {}
+
+        def menu1_waits(z, text):
+            # Every scripted read taken and two more: tui_menu_run is
+            # back in its key wait after the wheel and the stray press.
+            return ("phase=menu1" in text and
+                    z.ioc_peer.mouse_commands >= len(first) + 2)
+
+        stages = [
+            (lambda _z, _text: True, start),
+            (menu1_waits, lambda z: z.hid.hid_queue.extend(b"\r")),
+            (phase("menu2"),
+             lambda z: z.ioc_peer.mouse_reports.extend(MPROBE_MENU2)),
+            (phase("box"),
+             lambda z: z.ioc_peer.mouse_reports.extend(MPROBE_BOX)),
+            (phase("wait"), lambda z: self._measure_wait(self.replay, z, wait,
+                                                         probe)),
+        ]
+        probe = _PollProbe(symbols["_tui_pollkey"])
+        z, peer, text = self._drive(b"/system/tui_mprobe.exe\rab", stages,
+                                    "mprobe: done", probe)
+        records = re.findall(r"mprobe: ((?:key|mouse)[ 0-9a-f-]*?)\r?\n",
+                             text)
+        self.assertEqual(records, MPROBE_RECORDS)
+        self.assertIn(MPROBE_RESULT, text)
+
+        # Pacing: a poll that found no key read the mouse exactly once.
+        reads = [cost for cost, commands in probe.calls if commands]
+        self.assertTrue(reads)
+        self.assertTrue(all(commands <= 1
+                            for _cost, commands in probe.calls))
+        print("tui: tui_pollkey with a mouse read %d T-states (mean of %d, "
+              "%d..%d)" % (sum(reads) // len(reads), len(reads),
+                           min(reads), max(reads)))
+
+        # A tui_getkey wait with no input reads the mouse on every third
+        # wake and halts on the others.
+        self.assertEqual(wait["wakes"], self.WAIT_WAKES)
+        self.assertLessEqual(abs(wait["commands"] - wait["wakes"] // 3), 1)
+        self.assertTrue(wait["between"])
+        self.assertLess(max(wait["read"] + wait["between"]), 0.9)
+        self.assertLess(wait["outside"], 0.7)
+        print("tui: a %d-wake tui_getkey wait read the mouse %d times and "
+              "spent %.0f%% outside HALT" % (wait["wakes"],
+                                            wait["commands"],
+                                            100 * wait["outside"]))
+
+        # The pointer followed the mouse to the last click (x 264 is
+        # sprite X 132) and is hidden once the program has shut down.
+        entries = self._pointer_entries(z)
+        shown = [entry for entry in entries if entry[2] == 1]
+        self.assertTrue(shown)
+        self.assertEqual(shown[-1][1], 264 // 2)
+        self.assertEqual(entries[-1], POINTER_HIDDEN)
+        self.assertEqual(tuple(z.vdp.vram[POINTER_SLOT:POINTER_SLOT + 4]),
+                         POINTER_HIDDEN)
+
+    def test_the_example_answers_clicks_and_the_wheel(self):
+        if not os.path.isfile(TUI_MOUSE_EXE):
+            self.skipTest("%s has not been built" % TUI_MOUSE_EXE)
+        # From the centre (255, 104): the checkbox at cell 3,3, the
+        # button at 4,5, the wheel over the list (cells 30..53, 3..14),
+        # then the bar, "Quit" (cells 10..13 of row 0) and YES.
+        script = [
+            (3, 0, 0, -237, -80, 0),     # (18, 24): cell 3,3
+            (3, 1, 1, 0, 0, 0), (3, 0, 0, 0, 0, 0),
+            (3, 0, 0, 6, 16, 0),         # (24, 40): cell 4,5
+            (3, 1, 1, 0, 0, 0), (3, 0, 0, 0, 0, 0),
+            (3, 1, 1, 0, 0, 0), (3, 0, 0, 0, 0, 0),
+            (3, 0, 0, 216, 24, 0),       # (240, 64): cell 40,8
+            (3, 0, 0, 0, 0, -3),         # three notches down
+            (3, 0, 0, 0, 0, 1),          # one back
+            (3, 0, 0, -180, -64, 0),     # (60, 0): cell 10,0
+            (3, 1, 1, 0, 0, 0), (3, 0, 0, 0, 0, 0),   # opens the menu
+            (3, 1, 1, 0, 0, 0), (3, 0, 0, 0, 0, 0),   # chooses Quit
+        ]
+        # The confirm box (60 x 16 at 12,5): YES at cells 34..40 of
+        # row 19, after the menu's click from (60, 0).
+        confirm = [(3, 0, 0, 174, 152, 0),   # (234, 152): cell 39,19
+                   (3, 1, 1, 0, 0, 0)]
+        stages = [
+            (lambda _z, _text: True,
+             lambda z: z.ioc_peer.mouse_reports.extend(script)),
+            (lambda _z, text: "example?" in text,
+             lambda z: z.ioc_peer.mouse_reports.extend(confirm)),
+        ]
+        _z, _peer, text = self._drive(
+            b"/system/tui_mouse.exe\r", stages, "TUI MOUSE PASS")
+        self.assertIn("TUI MOUSE PASS mouse=1 checked=1 clicks=2 sel=2 "
+                      "menu=12", text)
+
+
+class TestTuiMouseSerial(TuiSimBase):
+    """The serial console offers no render path for the pointer (its
+    INFO has no KCONSOLE_INFO_RENDER), so the enable call answers
+    -KOS_ENOTSUP before binding anything, though the build publishes the
+    mouse and the video; the program stays keyboard-only."""
+
+    SUBDIR, IMAGE_NAME = SERIAL
+    SERIAL = True
+    STORE_FILES = (("tui_test.exe", TUI_TEST_EXE),
+                   ("tui_mprobe.exe", TUI_MPROBE_EXE))
+
+    def test_enable_fails_cleanly(self):
+        if not os.path.isfile(TUI_MPROBE_EXE):
+            self.skipTest("%s has not been built" % TUI_MPROBE_EXE)
+        run = self._run("", b"x", program="tui_mprobe",
+                        expected=b"mprobe: enable -7 get -2 key 0078")
+        self.assertIn(b"mprobe: enable -7 get -2 key 0078", run["lane"])
 
 
 if __name__ == "__main__":

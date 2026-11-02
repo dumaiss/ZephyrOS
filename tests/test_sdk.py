@@ -418,7 +418,9 @@ class TestSdkBoundary(unittest.TestCase):
         # (`tests/test_snd.py`); `ztrkres` is the KRES-backed ZTR loader
         # exercised there; `readertest` and `readermap` are the reader
         # outcome programs (`tests/test_reader.py`); `mouse` is the mouse
-        # outcome program (`tests/test_mouse.py`).
+        # outcome program (`tests/test_mouse.py`); `tui_mplaced` and
+        # `tui_mdeclared` are the mouse probe placed
+        # (`tests/test_exeplace.py`).
         self.assertEqual(sorted(name for name, _d, _s, _o in programs),
                          ["banks", "beat", "devtest", "events",
                           "exe2big", "exe2probe", "exe2seg", "exetest",
@@ -433,7 +435,9 @@ class TestSdkBoundary(unittest.TestCase):
                           "shell", "sndprobe", "sndtest", "sound",
                           "textbench", "timer",
                           "tui_core_probe", "tui_demo", "tui_dialog",
-                          "tui_keys", "tui_putwide", "tui_test", "tui_wide",
+                          "tui_keys", "tui_mdeclared", "tui_mouse",
+                          "tui_mplaced", "tui_mprobe", "tui_putwide", "tui_test",
+                          "tui_wide",
                           "tui_widget_probe",
                           "vblank",
                           "xmem_child",

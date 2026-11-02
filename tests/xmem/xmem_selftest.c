@@ -8,6 +8,9 @@
  *
  *   * sizes and slot rounding (1 / 8191 / 8192 / 8193 bytes), the largest
  *     object, oversized rejection, exhaustion and fragmentation;
+ *   * the object table: 32 objects exist system-wide, the 33rd is refused
+ *     while memory is still free, every handle above one byte works, and
+ *     a freed entry comes back with a new generation;
  *   * stale and foreign handle rejection (the child it execs proves the
  *     foreign half; the child's handle arrives in the command tail);
  *   * no pre-zeroing: a freed object's bytes are what the next object
@@ -57,6 +60,9 @@
 /* The stage tail. */
 #define XMEM_STAGE_TAIL "stage"
 
+/* The system-wide object limit (architecture 4.8). */
+#define XMEM_OBJECTS 32u
+
 #define CHILD_PATH   "/system/xmem_child.exe"
 #define CHILD_STATUS 42
 #define FAR_PATH     "/system/xmem_far.exe"
@@ -68,9 +74,9 @@ __sfr __at 0x00 latch_port;
 
 static unsigned char pattern[BLK];
 static unsigned char buf[BLK];
-/* One entry per object the allocation loops hold; they stop at KOS_ENOSPC
- * well before this. */
-static unsigned int held[20];
+/* One entry per object the allocation loops hold: the object table's
+ * size, so a loop always stops at KOS_ENOSPC. */
+static unsigned int held[XMEM_OBJECTS];
 
 static unsigned int checks;
 static unsigned int failures;
@@ -171,7 +177,7 @@ static unsigned int fill_until_full(unsigned int size, unsigned int flags)
 	unsigned int count = 0u;
 	int handle;
 
-	while (count < 20u) {
+	while (count < XMEM_OBJECTS) {
 		handle = xalloc(size, flags);
 		if (handle < 1) {
 			break;
@@ -519,6 +525,64 @@ int main(int argc, char **argv)
 	handle = xalloc(8192u, MAPPABLE);
 	check("exhaustion-mappable-refill", handle >= 1);
 	(void)xfree((unsigned int)handle);
+
+	/* The object table.  The pool has 25 plain and 8 more mappable
+	 * one-slot runs, so with the two anchors the table fills first: 32
+	 * objects live and the 33rd is refused while a mappable run is
+	 * free.  Freeing one plain object frees a table entry but no
+	 * mappable run, so the mappable allocation that follows succeeds
+	 * only through the freed entry: the same index with a new
+	 * generation.  Indices 16-31 make handles above one byte.  In a stage
+	 * run the open banks bind before the table, so the rows belong to
+	 * the boot path. */
+	if (stage == 0) {
+		unsigned int plain = fill_until_full(8192u, 0u);
+		unsigned int top = 0u;
+		unsigned int old;
+		int ok = 1;
+
+		count = plain;
+		while (count < XMEM_OBJECTS) {
+			handle = xalloc(8192u, MAPPABLE);
+			if (handle < 1) {
+				break;
+			}
+			held[count++] = (unsigned int)handle;
+		}
+		check("objects-32", count + 2u == XMEM_OBJECTS);
+		check("objects-33-refused",
+		      xalloc(8192u, MAPPABLE) == -KOS_ENOSPC &&
+		      xalloc(1u, 0u) == -KOS_ENOSPC);
+		for (i = 0u; i < count; ++i) {
+			if (xinfo(held[i], &info) != 0 ||
+			    info.allocated != 8192u) {
+				ok = 0;
+			}
+			if (held[i] > top) {
+				top = held[i];
+			}
+		}
+		check("objects-handles", ok && top > 0xFFu);
+		/* The last plain object has an index past 15. */
+		old = (plain != 0u) ? held[plain - 1u] : 0u;
+		(void)xfree(old);
+		handle = xalloc(8192u, MAPPABLE);
+		if (plain != 0u) {
+			held[plain - 1u] =
+				(handle >= 1) ? (unsigned int)handle : 0u;
+		}
+		check("objects-reuse",
+		      old > 0xFFu && handle >= 1 &&
+		      ((unsigned int)handle >> 4) == (old >> 4) &&
+		      (unsigned int)handle != old);
+		/* Stale, and a handle wider than nine bits is no alias. */
+		check("objects-stale",
+		      xinfo(old, &info) == -KOS_EINVAL &&
+		      handle >= 1 &&
+		      xinfo((unsigned int)handle + 0x1000u, &info) ==
+		      -KOS_EINVAL);
+		release_held(count);
+	}
 
 	/* The aperture: token, address, direct access and buffer identity. */
 	handle = xmap(anchor, &address_a);

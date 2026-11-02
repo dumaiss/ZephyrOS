@@ -23,7 +23,7 @@ The Makefile hashes and unpacks the current SDK at
 `../../build/kos-sdk-0.2.0.tar.gz`. The target is:
 
 ```text
-build/user/konacmd.exe
+build/user/kc.exe
 ```
 
 ## Run
@@ -46,7 +46,7 @@ that mode; KonaOS-to-PC copy reports that the host must be restarted with
 `--write`.  Host uploads are written to a temporary file in the destination
 directory and atomically replace the final name only after COMMIT.
 
-Then run `konacmd` on a KonaOS image built with the V9958/HID console.  Do not
+Then run `kc` on a KonaOS image built with the V9958/HID console.  Do not
 use the serial-console build: its console and `/dev/serial/0` share SIO0/B.
 KonaCommander starts even when the PC server or cable is absent.  The local
 pane remains usable while the PC pane is empty; start the server/connect the
@@ -74,6 +74,23 @@ file has been synced; KonaOS then renames the temporary file into place.  If
 the final rename fails, the temporary file is deliberately retained for
 recovery.
 
+## Mouse
+
+With a mouse on the V9958/HID console, a pointer follows it everywhere in the
+program and the keys keep working.  Without a mouse (the serial console, no
+mouse driver) the program runs as a keyboard-only program.
+
+| Where | Action |
+|---|---|
+| A pane entry | A left click focuses the pane and selects the entry; a second click on the same entry within 500 ms opens it, as Enter does |
+| The wheel over a pane | Moves that pane's selection a row a notch, as Up/Down do (a pane at the end of its page changes page); the pane takes the focus |
+| A menu-bar title | A left click opens that menu |
+| A pop-up item | A left click runs it; a click anywhere else closes the pop-up |
+| A button on the bottom row | A left click runs its action |
+| The viewer | The wheel pages up and down; a right click returns, as Escape does |
+| The help screen | A left click returns, as any key does |
+| The copy confirmation | A left click on YES or NO answers it |
+
 Ordinary Up/Down selection changes redraw only the old and new one-character
 `>` markers. The detail line is used only when a name is longer than the
 28-column list field. Tab changes only the compact focus markers and does not
@@ -87,7 +104,7 @@ may change the whole screen; ordinary selection and focus traversal do not.
 1. Start the host service with a root containing subdirectories, a text file,
    a binary file, and a file larger than 64 KiB.
 2. Connect the PC adapter to the SIO0/B serial channel at 115200 8N1.
-3. Run `konacmd`; confirm the left pane lists KonaOS `/fs`, the right pane
+3. Run `kc`; confirm the left pane lists KonaOS `/fs`, the right pane
    lists the PC's virtual `/`, and no host absolute path is shown. Press F1,
    navigate all four menus with Left/Right, and open each with Enter.
 4. Press Tab repeatedly through both panes and every bottom-row button.
@@ -101,6 +118,11 @@ may change the whole screen; ordinary selection and focus traversal do not.
 8. Stop the host, press `r`, and confirm a bounded timeout with the UI still
    running and the local pane usable; restart the host, press `r` again, and
    confirm the PC pane recovers.
-9. Quit and confirm KonaOS restores its ordinary terminal state.
+9. With a mouse: click and double-click entries in both panes, turn the wheel
+   over each pane, open each menu by its title and run an item, click every
+   button, page the viewer with the wheel and return with a right click, and
+   answer the copy confirmation by clicking YES and NO.  The pointer must
+   follow the mouse throughout and disappear when the program ends.
+10. Quit and confirm KonaOS restores its ordinary terminal state.
 
 The automated tests do not substitute for this on-board serial test.

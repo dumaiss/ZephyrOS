@@ -47,6 +47,7 @@ Before initialization, and after shutdown until the next successful init:
 | `tui_flush`, `tui_end` | `-KOS_EINVAL` |
 | `tui_key_pending` | `-KOS_EINVAL` |
 | `tui_pollkey`, `tui_getkey` | `TUI_KEY_NONE` (no busy-spin) |
+| `tui_mouse_enable`, `tui_mouse_get` | `-KOS_EINVAL` |
 
 ## Geometry and coordinates
 
@@ -220,6 +221,7 @@ bytes keep their value, including CR, TAB, BS and DEL.  NUL is ignored because
 | F1-F4 | `0121h`-`0124h` | `ESC O P/Q/R/S` |
 | F5-F8 | `0125h`-`0128h` | `ESC [ 15~/17~/18~/19~` |
 | F9-F12 | `0129h`-`012Ch` | `ESC [ 20~/21~/23~/24~` |
+| Mouse event | `0140h` | none: `TUI_KEY_MOUSE`, only with the mouse enabled (see Mouse) |
 
 ```c
 int  pending = tui_key_pending(); /* >0 key ready, 0 empty, <0 error */
@@ -233,7 +235,96 @@ be available with ESC.  Once CSI or SS3 state has been entered, the remaining
 sequence bytes may arrive across later console reads.  Unknown, malformed or
 overlong sequences return ESC first, then replay every consumed tail byte as
 ordinary input in order, so no input is lost.  `tui_getkey()` calls `idle()`
-only between genuinely empty polls.
+only between genuinely empty polls.  `tui_key_pending()` reports keys only;
+it never reads the mouse.
+
+## Mouse
+
+The mouse is opt-in.  One call after `tui_init()` shows the pointer and
+makes clicks, releases and the wheel arrive through the key loop:
+
+```c
+if (tui_mouse_enable(0) < 0) { /* no mouse: stay keyboard-only */ }
+for (;;) {
+	tui_key_t key = tui_getkey();
+	if (key == TUI_KEY_MOUSE) {
+		struct tui_mouse ev;
+		tui_mouse_get(&ev);
+		if ((ev.pressed & TUI_MOUSE_LEFT) && tui_mouse_hit(&ev, &ok_rect))
+			{ /* the OK button was clicked */ }
+		continue;
+	}
+	/* an ordinary key */
+}
+tui_shutdown();   /* also disables the mouse */
+```
+
+| call | effect |
+|---|---|
+| `int tui_mouse_enable(uint8_t flags)` | bind the mouse and the pointer, track over the 510 x 208 pixel text area, show the pointer at the centre; 0 or a negative error (below) |
+| `void tui_mouse_disable(void)` | hide the pointer and release both handles; `tui_shutdown()` calls it |
+| `int tui_mouse_get(struct tui_mouse *ev)` | the latest event; 0, or `-KOS_EINVAL` for a null `ev` or with the mouse not enabled |
+| `int tui_mouse_hit(const struct tui_mouse *ev, const struct tui_rect *rect)` | 1 when the event's window cell is inside `rect` (active-window coordinates), else 0 |
+
+`flags` is 0 or `TUI_MOUSE_MOTION` (also report motion with no button
+held); enabling again keeps the handles and takes the new flags.  Enable
+fails, leaving the program keyboard-only, with `-KOS_EINVAL` before
+`tui_init()`; `-KOS_ENOTSUP` when the console has no render path for the
+pointer to draw over - the serial console, and the video console while
+its serial rescue tee is armed - before anything is bound; the bind error
+when the build publishes no mouse or no video; `-KOS_EBUSY` while a
+program holds the video exclusively.
+
+`struct tui_mouse`:
+
+| field | meaning |
+|---|---|
+| `kind` | `TUI_MOUSE_PRESS`, `TUI_MOUSE_RELEASE`, `TUI_MOUSE_WHEEL` or `TUI_MOUSE_MOVE` |
+| `col`, `row` | the screen cell: pixel x / 6, y / 8, clamped to `tui_get_size()` |
+| `wcol`, `wrow` | the cell relative to the active window when `tui_mouse_get()` is called; both -1 outside it |
+| `buttons` | held: `TUI_MOUSE_LEFT`, `TUI_MOUSE_RIGHT`, `TUI_MOUSE_MIDDLE` |
+| `pressed`, `released` | the buttons that went down / up since the previous read |
+| `wheel` | signed notches of a WHEEL event (0 on any other), positive away from the user |
+
+**Event kinds.**  Each mouse read yields at most one event, and a read
+that changed nothing (or only moved the pointer within a cell, or moved it
+with no button held and no `TUI_MOUSE_MOTION`) yields none.  An event
+carries the changes of its read; `kind` names the first of: a press, a
+release, wheel notches, a motion to another cell.  Motion is reported
+while a button is held (a drag) and, with `TUI_MOUSE_MOTION`, without one.
+A press and its release inside one read set both `pressed` and
+`released`.  Wheel notches that arrive with a press or release stay
+pending: the press or release comes first, with `wheel` 0, and the next
+read reports a WHEEL event with the notches even if it brings no other
+change, so a press and a turn in one read come as two events.  `wheel` is
+nonzero only on a WHEEL event.
+
+**Pacing.**  `tui_pollkey()` reads the mouse once per call that found no
+key pending; a key already decoded or waiting comes first, and the pace
+is the program's own loop.  `tui_getkey()` polls keys on every `idle()`
+wake (the 6.4 ms timer tick) but reads the mouse on its first poll and
+then on every third wake (about 52 Hz); the other wakes halt, which keeps
+the wait out of the sound card's audio band.  The pointer moves (`pointer_move`) only
+when the pixel position changed.  A read costs about one IOC exchange
+(`docs/sdk.md` 6.12).
+
+**Runners.**  With the mouse enabled, `tui_menu_run()` returns the ID of
+the item whose label a left press lands on, and the wheel moves the
+selection as left/right do (away from the user towards the first item);
+`tui_message_box()` and `tui_confirm()` return the ID of the button a left
+press lands on.  A press anywhere else does nothing.  Without the mouse
+they behave exactly as described under Widgets.
+
+**Link cost.**  The mouse lives in its own `libtui` member, the only one
+that refers to the libkos mouse client.  The key decoder, `tui_shutdown()`
+and the runners reach it through `tui_mouse_hook`, a pointer that is null
+until `tui_mouse_enable()` installs it, so a program that never enables
+the mouse links neither the member nor the client: only that pointer and
+the indirect-call helper.
+
+The pointer is hidden after `tui_shutdown()`; a program that enabled the
+mouse calls it on every exit path, since the shell runs the next program
+without a display reset.
 
 ## Save and restore
 
@@ -334,5 +425,6 @@ Calling it twice is safe.  An application that exits without shutting down
 may leave the terminal in the last SGR/wrapping state; always call
 `tui_shutdown()` from normal exit paths.
 
-See the standalone examples `tui_demo.c`, `tui_keys.c` and `tui_dialog.c`
-for complete programs, and [sdk.md](sdk.md) for building and packaging.
+See the standalone examples `tui_demo.c`, `tui_keys.c`, `tui_dialog.c` and
+`tui_mouse.c` for complete programs, and [sdk.md](sdk.md) for building and
+packaging.

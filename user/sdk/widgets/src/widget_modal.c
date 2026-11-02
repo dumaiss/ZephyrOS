@@ -2,7 +2,9 @@
  *
  * The member owns the only hidden widget backing store, one static 60 x
  * 16 cell buffer.  It saves the covered region before drawing and
- * restores it on every exit path.  Modal calls are non-reentrant.
+ * restores it on every exit path.  Modal calls are non-reentrant.  With
+ * the mouse enabled, a left press on a button chooses it; the mouse is
+ * reached through tui_mouse_hook only.
  */
 
 #include "widget_internal.h"
@@ -12,6 +14,10 @@
 
 static struct tui_cell w_modal_cells[W_MODAL_COLS * W_MODAL_ROWS];
 static uint8_t w_modal_active;
+/* Where w_modal_buttons() drew each button, for the click test: the
+ * first column and the column after it; unused buttons are empty. */
+static uint8_t w_modal_button_x[4];
+static uint8_t w_modal_button_end[4];
 
 static const tui_id_t w_button_order[4] = {
 	TUI_ID_OK, TUI_ID_YES, TUI_ID_NO, TUI_ID_CANCEL
@@ -122,6 +128,9 @@ static void w_modal_buttons(const struct tui_rect *box,
 	uint16_t start;
 	uint8_t i;
 
+	for (i = 0u; i < 4u; ++i) {
+		w_modal_button_end[i] = 0u;
+	}
 	for (i = 0u; i < count; ++i) {
 		total = (uint16_t)(total + w_strlen(w_button_label(ids[i])) +
 				   5u);
@@ -143,6 +152,8 @@ static void w_modal_buttons(const struct tui_rect *box,
 		(void)tui_button((uint8_t)start,
 				 (uint8_t)(box->y + box->h - 2u),
 				 label, ids[i], i == focus);
+		w_modal_button_x[i] = (uint8_t)start;
+		w_modal_button_end[i] = (uint8_t)(start + width);
 		start = (uint16_t)(start + width + 1u);
 	}
 }
@@ -199,6 +210,26 @@ static tui_id_t w_modal_run(const char *title, const char *message,
 
 	for (;;) {
 		key = tui_getkey();
+		if (key == TUI_KEY_MOUSE) {
+			struct tui_mouse ev;
+
+			if (tui_mouse_hook->get(&ev) < 0 ||
+			    (ev.pressed & TUI_MOUSE_LEFT) == 0u ||
+			    ev.wrow != (int8_t)(box.y + box.h - 2u)) {
+				continue;
+			}
+			for (i = 0u; i < count; ++i) {
+				if ((uint8_t)ev.wcol >= w_modal_button_x[i] &&
+				    (uint8_t)ev.wcol < w_modal_button_end[i]) {
+					break;
+				}
+			}
+			if (i < count) {
+				result = present[i];
+				break;
+			}
+			continue;
+		}
 		if (key == TUI_KEY_ESC) {
 			for (i = 0u; i < count; ++i) {
 				if (present[i] == TUI_ID_CANCEL) {

@@ -6,6 +6,7 @@
  * screen is the grid the console reports (KCONSOLE_OP_INFO, one call at
  * init), clamped to the compiled capacity: on a larger console the
  * program uses the top-left part.  A zero dimension is refused.  Shutdown
+ * disables the mouse through its hook (so it links no mouse code), then
  * restores normal rendition, auto-wrap and a visible cursor.  Both go
  * through the ordinary console transport and add no port access or
  * lookup.
@@ -77,6 +78,7 @@ int tui_init(void)
 		return -KOS_ENOTSUP;
 	}
 	tui_reset_model(cols, rows);
+	tui_state.console_flags = info.flags;
 	result = console_write(TUI_INIT_OUTPUT, sizeof(TUI_INIT_OUTPUT) - 1u);
 	if (result < 0) {
 		return result;
@@ -97,6 +99,9 @@ void tui_shutdown(void)
 	/* Best effort: pending cells still reach the terminal before the
 	 * restoration sequence, and a failure never strands the library
 	 * initialized. */
+	if (tui_mouse_hook != (const struct tui_mouse_hook *)0) {
+		tui_mouse_hook->disable();
+	}
 	(void)tui_flush();
 	(void)console_write(TUI_SHUTDOWN_OUTPUT,
 			    sizeof(TUI_SHUTDOWN_OUTPUT) - 1u);

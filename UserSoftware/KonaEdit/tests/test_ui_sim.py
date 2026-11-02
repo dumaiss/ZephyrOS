@@ -24,8 +24,52 @@ IMAGE = BUILD / "konaos.bin"
 MAP = BUILD / "konaos.map"
 STORE = BUILD / "store.json"
 MODULES = BUILD / "modules"
-PROGRAM = ROOT / "build/user/konaedit.exe"
-PROGRAM_MAP = ROOT / "build/user/konaedit/konaedit.map"
+PROGRAM = ROOT / "build/user/kedit.exe"
+PROGRAM_MAP = ROOT / "build/user/kedit/kedit.map"
+
+
+# The pointer's sprite attribute entry (slot 1) in the V9958 VRAM and its
+# hidden value (the pattern field 2).
+POINTER_SLOT = 0x1F204
+POINTER_HIDDEN = (0x00, 0x00, 2, 0)
+
+
+class Pointer:
+    """Scripted IOC mouse reports (flags, buttons, pressed, dx, dy,
+    wheel).  The pointer starts at pixel (255, 104), where the tracker
+    puts it; a cell is 6 x 8 pixels and the pointer rests in its middle."""
+
+    def __init__(self):
+        self.x = 255
+        self.y = 104
+
+    def _to(self, col, row):
+        x, y = col * 6 + 3, row * 8 + 4
+        dx, dy = x - self.x, y - self.y
+        self.x, self.y = x, y
+        return dx, dy
+
+    def move(self, col, row):
+        dx, dy = self._to(col, row)
+        return [(3, 0, 0, dx, dy, 0)]
+
+    def drag(self, col, row):
+        dx, dy = self._to(col, row)
+        return [(3, 1, 0, dx, dy, 0)]
+
+    @staticmethod
+    def press():
+        return [(3, 1, 1, 0, 0, 0)]
+
+    @staticmethod
+    def release():
+        return [(3, 0, 0, 0, 0, 0)]
+
+    def click(self, col, row):
+        return self.move(col, row) + self.press() + self.release()
+
+    def wheel(self, col, row, notches):
+        return self.move(col, row) + [(3, 0, 0, 0, 0, notches)]
 
 
 def splice_store(image, stream):
@@ -61,7 +105,7 @@ class KonaEditTuiSmoke(unittest.TestCase):
         for path in (IMAGE, MAP, STORE, PROGRAM, PROGRAM_MAP):
             if not path.is_file():
                 self.skipTest("%s is missing" % path)
-        self.tmp = Path(tempfile.mkdtemp(prefix="konaedit-tui-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="kedit-tui-"))
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -70,10 +114,10 @@ class KonaEditTuiSmoke(unittest.TestCase):
         manifest = json.loads(STORE.read_text())
         manifest["files"] = [
             item for item in manifest["files"]
-            if item["name"].lower() != "konaedit.exe"
+            if item["name"].lower() != "kedit.exe"
         ]
         manifest["files"].append({
-            "name": "konaedit.exe", "type": "EXE", "path": str(PROGRAM)
+            "name": "kedit.exe", "type": "EXE", "path": str(PROGRAM)
         })
         manifest_path = self.tmp / "store.json"
         manifest_path.write_text(json.dumps(manifest))
@@ -203,7 +247,7 @@ class KonaEditTuiSmoke(unittest.TestCase):
     def test_edit_menu_invert_save_and_return_to_shell(self):
         replay, z = self.make_replay()
         shell_bank = z.bank_of(0x0100)
-        z.hid.hid_queue.extend(b"/system/konaedit.exe /fs/ALPHA.TXT\r")
+        z.hid.hid_queue.extend(b"/system/kedit.exe /fs/ALPHA.TXT\r")
         app_bank = self.wait_for_input_loop(replay, z, shell_bank)
         self.assertIn(
             "alpha", "\n".join(self.screen_text(z)),
@@ -278,7 +322,7 @@ class KonaEditTuiSmoke(unittest.TestCase):
         replay.run_to_pattern(z, r"/\n?> ", since=start)
 
         z.hid.hid_queue.extend(
-            b"/system/konaedit.exe /fs/cpm/b/dev/modula-2/list.mod\r")
+            b"/system/kedit.exe /fs/cpm/b/dev/modula-2/list.mod\r")
         app_bank = self.wait_for_input_loop(replay, z, shell_bank)
         nested_screen = self.screen_text(z)
         self.assertEqual(nested_screen[1].rstrip(), "MODULE List;")
@@ -291,7 +335,7 @@ class KonaEditTuiSmoke(unittest.TestCase):
         replay, z = self.make_replay()
         shell_bank = z.bank_of(0x0100)
         z.hid.hid_queue.extend(
-            b"/system/konaedit.exe /fs/PAGE00.TXT\r")
+            b"/system/kedit.exe /fs/PAGE00.TXT\r")
         app_bank = self.wait_for_input_loop(replay, z, shell_bank)
         for _index in range(23):
             self.press_and_measure(replay, z, app_bank, b"\x1b[B")
@@ -381,7 +425,7 @@ class KonaEditViewBudgets(KonaEditTuiSmoke):
         replay, z = self.make_replay()
         z.hid.fs2_add("SRC.MOD", SOURCE)
         shell_bank = z.bank_of(0x0100)
-        z.hid.hid_queue.extend(b"/system/konaedit.exe /fs/SRC.MOD\r")
+        z.hid.hid_queue.extend(b"/system/kedit.exe /fs/SRC.MOD\r")
         app = self.wait_for_input_loop(replay, z, shell_bank)
         lines = list(LINES)
 
@@ -498,6 +542,238 @@ class KonaEditViewBudgets(KonaEditTuiSmoke):
         z.hid.hid_queue.extend(b"\x1b[21~")               # F10
         for key in (RIGHT, b"\r"):                       # discard
             z.hid.hid_queue.extend(key)
+    # -- the mouse -------------------------------------------------------
+
+    def start(self, path, files=()):
+        """kedit on `path` with the card's files; the pointer script."""
+        replay, z = self.make_replay()
+        for name, content in files:
+            z.hid.fs2_add(name, content)
+        shell_bank = z.bank_of(0x0100)
+        z.hid.hid_queue.extend(("/system/kedit.exe %s\r" % path).encode())
+        self.wait_for_input_loop(replay, z, shell_bank)
+        self.pointer = Pointer()
+        return replay, z
+
+    def mouse(self, replay, z, reports, held=False):
+        """Queue the reports and three more that change nothing (the
+        button held, if it is), and run until the program has read them
+        all, so it has answered the last one and is idle."""
+        peer = z.ioc_peer
+        reports = reports + [(3, 1 if held else 0, 0, 0, 0, 0)] * 3
+        target = peer.mouse_commands + len(reports)
+        peer.mouse_reports.extend(reports)
+
+        def tick(_step):
+            return peer.mouse_commands >= target
+
+        if replay.drive(z, 60_000_000, tick=tick, every=0x3FF) is None:
+            self.fail("the mouse script was not consumed: %r"
+                      % self.screen_text(z)[:3])
+
+    def keys(self, replay, z, data):
+        """Type `data` and run until the program is idle again."""
+        peer = z.ioc_peer
+        target = peer.mouse_commands + 4
+        z.hid.hid_queue.extend(data)
+
+        def tick(_step):
+            return peer.mouse_commands >= target and not z.hid.hid_queue
+
+        if replay.drive(z, 60_000_000, tick=tick, every=0x3FF) is None:
+            self.fail("the keys were not consumed")
+
+    def marked(self, z, row, first=0, last=84):
+        """The columns [first, last] of screen row `row` drawn in the
+        selected style."""
+        screen = v9958_screen(z.vdp.vram, z.vdp.regs[23])
+        return [col for col, cell in enumerate(screen[row])
+                if cell[1] and first <= col <= last]
+
+    def test_mouse_places_the_cursor(self):
+        replay, z = self.start("/fs/TABS.TXT", [
+            ("TABS.TXT", b"\tabc\nhello world\nx\n"),
+            ("LONG.TXT", ("\tx" + "".join(
+                chr(97 + i % 26) for i in range(130)) + "\nshort\n").encode())])
+        ptr = self.pointer
+
+        def click(col, row):
+            self.mouse(replay, z, ptr.click(col, row))
+            return self.status(z)
+
+        # Rows 1.. are the document's lines.  A click puts the cursor on
+        # the cell; the line end for a cell past it.
+        self.assertIn("Ln 1 Col 1 ", self.status(z))
+        self.assertIn("Ln 2 Col 6 ", click(5, 2))
+        self.assertIn("Ln 2 Col 12 ", click(40, 2))
+        # The TAB line: the TAB covers columns 0-7, "a" is column 8.
+        self.assertIn("Ln 1 Col 10 ", click(9, 1))
+        self.assertIn("Ln 1 Col 9 ", click(8, 1))
+        self.assertIn("Ln 1 Col 1 ", click(3, 1))
+        # Below the text: the end of the last line.
+        self.assertIn("Ln 4 Col 1 ", click(30, 20))
+        # The status row and a blank menu-bar cell leave the cursor.
+        self.assertIn("Ln 4 Col 1 ", click(30, 25))
+        self.assertIn("Ln 4 Col 1 ", click(60, 0))
+        # A click clears a selection.
+        self.keys(replay, z, b"\x1b[18~")                  # F7
+        self.assertIn(" MARK", self.status(z))
+        self.assertNotIn(" MARK", click(5, 2))
+
+    def test_mouse_places_the_cursor_in_a_scrolled_line(self):
+        long_line = "\tx" + "".join(chr(97 + i % 26) for i in range(130))
+        replay, z = self.start("/fs/LONG.TXT", [
+            ("LONG.TXT", (long_line + "\nshort\n").encode())])
+        self.keys(replay, z, b"\x1b[F")                    # End
+        text = shown(long_line)
+        left = len(text) - 85 + 1
+        self.assertEqual(self.body(z)[0], text[left:left + 85].rstrip())
+        # Column c of the screen is the line's column left + c.
+        self.mouse(replay, z, self.pointer.click(10, 1))
+        self.assertIn("Col %d " % (left + 10 + 1), self.status(z))
+        self.assertEqual(self.body(z)[0], text[left:left + 85].rstrip())
+        # The second line is shorter than the scroll: its end.
+        self.mouse(replay, z, self.pointer.click(10, 2))
+        self.assertIn("Ln 2 Col 6 ", self.status(z))
+
+    def test_mouse_drag_selects(self):
+        replay, z = self.start("/fs/TABS.TXT", [
+            ("TABS.TXT", b"\tabc\nhello world\nx\n")])
+        ptr = self.pointer
+        # Press on "l" (column 2) of line 2, drag to column 8: the cursor
+        # follows, the span between is marked and the status says MARK.
+        self.mouse(replay, z, ptr.move(2, 2) + ptr.press(), held=True)
+        self.assertNotIn(" MARK", self.status(z))
+        self.mouse(replay, z, ptr.drag(5, 2) + ptr.drag(8, 2) + ptr.release())
+        self.assertIn(" MARK", self.status(z))
+        self.assertIn("Ln 2 Col 9 ", self.status(z))
+        self.assertEqual(self.marked(z, 2), list(range(2, 8)))
+        # Dragging back toward the anchor shrinks it; across lines it
+        # spans them.
+        self.mouse(replay, z, ptr.move(2, 2) + ptr.press() +
+                   ptr.drag(3, 3) + ptr.release())
+        self.assertIn("Ln 3 Col 2 ", self.status(z))
+        self.assertEqual(self.marked(z, 2), list(range(2, 11)))
+        self.assertEqual(self.marked(z, 3), [0])
+        # Copy and paste carry the dragged text.
+        self.mouse(replay, z, ptr.move(2, 2) + ptr.press() +
+                   ptr.drag(8, 2) + ptr.release())
+        self.keys(replay, z, b"\x1b[19~")                  # F8
+        self.keys(replay, z, b"\x1b")                      # Esc: unmark
+        self.keys(replay, z, b"\x1b[F")                    # End
+        self.keys(replay, z, b"\x1b[20~")                  # F9
+        self.assertEqual(self.body(z)[1], "hello worldllo wo")
+        # A plain click ends the selection.
+        self.mouse(replay, z, ptr.click(4, 1))
+        self.assertNotIn(" MARK", self.status(z))
+        self.assertEqual(self.marked(z, 2), [])
+
+    def test_mouse_wheel_scrolls_three_lines_a_notch(self):
+        replay, z = self.start("/fs/PAGE00.TXT")
+        ptr = self.pointer
+        lines = ["line%02d" % line for line in range(40)]
+        self.assertEqual(self.body(z)[0], "line00")
+        # Toward the user scrolls down.  The cursor, off the top, moves
+        # to the first row; the view stays where the wheel left it.
+        self.mouse(replay, z, ptr.wheel(40, 12, -1))
+        self.assertEqual(self.body(z)[0], "line03")
+        self.assertIn("Ln 4 ", self.status(z))
+        self.mouse(replay, z, ptr.wheel(40, 12, -2))
+        self.assertEqual(self.body(z)[:2], lines[9:11])
+        self.assertIn("Ln 10 ", self.status(z))
+        self.mouse(replay, z, ptr.wheel(40, 12, 3))
+        self.assertEqual(self.body(z)[:2], lines[0:2])
+        # The cursor stays on its line while it is on screen.
+        self.assertIn("Ln 10 ", self.status(z))
+        self.mouse(replay, z, ptr.wheel(40, 12, -1))
+        self.assertEqual(self.body(z)[0], "line03")
+        self.assertIn("Ln 10 ", self.status(z))
+        # Past the end the view stops with the last line on the bottom
+        # row, the cursor on the top row.
+        self.mouse(replay, z, ptr.wheel(40, 12, -20))
+        body = self.body(z)
+        self.assertIn("line39", body)
+        self.assertEqual(self.status(z).split("Ln ")[1].split()[0],
+                         str(int(body[0][4:]) + 1))
+
+    def test_mouse_menus_and_dialog_buttons(self):
+        replay, z = self.start("/fs/ALPHA.TXT")
+        ptr = self.pointer
+        # Edit > Select All: a title opens its pop-up, an item runs.
+        self.mouse(replay, z, ptr.click(6, 0))
+        self.assertIn("Select All", self.screen_text(z)[8])
+        self.mouse(replay, z, ptr.click(10, 8))
+        self.assertNotIn("Select All", self.screen_text(z)[8])
+        self.assertIn(" MARK", self.status(z))
+        self.assertEqual(self.marked(z, 1), list(range(0, 5)))
+        # A click outside closes a pop-up and leaves the document.
+        self.mouse(replay, z, ptr.click(2, 0))
+        self.assertIn("Save As", self.screen_text(z)[5])
+        self.mouse(replay, z, ptr.click(60, 12))
+        self.assertNotIn("Save As", self.screen_text(z)[5])
+        self.assertIn(" MARK", self.status(z))
+        # Help > About opens a box; its OK button closes it.
+        self.mouse(replay, z, ptr.click(18, 0))
+        self.assertIn("About", self.screen_text(z)[3])
+        self.mouse(replay, z, ptr.click(26, 3))
+        text = "\n".join(self.screen_text(z))
+        self.assertIn("CP850 editor", text)
+        self.assertIn("[ OK ]", text)
+        self.mouse(replay, z, ptr.click(29, 15))
+        text = "\n".join(self.screen_text(z))
+        self.assertNotIn("CP850 editor", text)
+        self.assertIn("alpha", text)
+
+    def test_mouse_in_the_file_dialog(self):
+        replay, z = self.start("/fs/ALPHA.TXT")
+        ptr = self.pointer
+        # File > Save As.  The list starts at row 8: "..", ALPHA.TXT,
+        # CPM/, PAGE00.TXT ...
+        self.mouse(replay, z, ptr.click(2, 0) + ptr.click(3, 5))
+        screen = self.screen_text(z)
+        self.assertIn("Save As", screen[4])
+        self.assertIn("/fs", screen[5])
+        self.assertEqual(self.marked(z, 8, 26, 58)[:1], [27])
+        # The wheel moves the selection a row a notch.
+        self.mouse(replay, z, ptr.wheel(35, 10, -2))
+        self.assertEqual(self.marked(z, 10, 26, 58)[:1], [27])
+        self.assertEqual(self.marked(z, 8, 26, 58), [])
+        # A click selects an entry, a double click opens a directory
+        # (and ".." goes back up).
+        self.mouse(replay, z, ptr.click(35, 9))
+        self.assertEqual(self.marked(z, 9, 26, 58)[:1], [27])
+        self.assertIn("ALPHA.TXT", self.screen_text(z)[9])
+        self.assertIn("/fs ", self.screen_text(z)[5])
+        self.mouse(replay, z, ptr.click(35, 10) + ptr.click(35, 10))
+        self.assertIn("/fs/CPM", self.screen_text(z)[5])
+        self.mouse(replay, z, ptr.click(35, 8) + ptr.click(35, 8))
+        self.assertIn("/fs ", self.screen_text(z)[5])
+        # Cancel closes the dialog without saving.
+        self.mouse(replay, z, ptr.click(48, 20))
+        self.assertNotIn("Save As", self.screen_text(z)[4])
+        self.assertNotIn(("MOUSE.TXT",), z.hid.fs2_files)
+        # The name field takes the focus on a click, and Save chooses.
+        self.mouse(replay, z, ptr.click(2, 0) + ptr.click(3, 5))
+        self.mouse(replay, z, ptr.click(36, 18))
+        self.keys(replay, z, b"MOUSE.TXT")
+        self.assertIn("Name: MOUSE.TXT", self.screen_text(z)[18])
+        self.mouse(replay, z, ptr.click(32, 20))
+        self.assertNotIn("Save As", self.screen_text(z)[4])
+        self.assertEqual(bytes(z.hid.fs2_files[("MOUSE.TXT",)]), b"alpha\n")
+        self.assertIn("/fs/MOUSE.TXT", self.status(z))
+
+    def test_the_pointer_follows_and_leaves_with_the_program(self):
+        replay, z = self.start("/fs/ALPHA.TXT")
+        ptr = self.pointer
+        self.mouse(replay, z, ptr.move(30, 12))
+        entry = tuple(z.vdp.vram[POINTER_SLOT:POINTER_SLOT + 4])
+        self.assertEqual((entry[1], entry[2]), ((30 * 6 + 3) // 2, 1))
+        start = len(z.glyphs)
+        z.hid.hid_queue.extend(b"\x1b[21~")                # F10
+        replay.run_to_pattern(z, r"/\n?> ", since=start)
+        self.assertEqual(tuple(z.vdp.vram[POINTER_SLOT:POINTER_SLOT + 4]),
+                         POINTER_HIDDEN)
+
 
     def test_a_long_line_scrolls_horizontally(self):
         """End on a line wider than the screen moves the left column so
@@ -506,7 +782,7 @@ class KonaEditViewBudgets(KonaEditTuiSmoke):
         replay, z = self.make_replay()
         z.hid.fs2_add("LONG.TXT", (long_line + "\nshort\n").encode())
         shell_bank = z.bank_of(0x0100)
-        z.hid.hid_queue.extend(b"/system/konaedit.exe /fs/LONG.TXT\r")
+        z.hid.hid_queue.extend(b"/system/kedit.exe /fs/LONG.TXT\r")
         app = self.wait_for_input_loop(replay, z, shell_bank)
         text = shown(long_line)
         self.assertEqual(self.body(z)[0], text[:85].rstrip())

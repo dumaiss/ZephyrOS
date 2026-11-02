@@ -65,6 +65,7 @@ struct tui_state {
 	uint8_t render_support; /* 0 unknown, 1 RENDER, 2 ANSI fallback */
 	uint8_t model_only;     /* update cells without scheduling output */
 	uint8_t stride;         /* the cell map's row stride (TUI_STRIDE) */
+	uint8_t console_flags;  /* KCONSOLE_INFO_* from tui_init's INFO */
 };
 
 extern struct tui_state tui_state;

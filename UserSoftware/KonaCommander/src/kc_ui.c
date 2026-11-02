@@ -19,6 +19,14 @@
 #define MENU_POPUP_WIDTH 20u
 #define MENU_POPUP_MAX_HEIGHT 6u
 
+#define BUTTON_ROW      24u
+#define PANE_SEPARATOR  42u
+#define PANE_FIRST_ROW  1u
+#define PANE_LAST_ROW   21u
+#define WHEEL_MAX       8u
+/* 500 ms in the 25.6 us counts of the link clock. */
+#define DOUBLE_CLICK_COUNTS 19531ul
+
 #define PANEL_LOCAL     0u
 #define PANEL_REMOTE    1u
 #define ENTRY_SIZE_UNKNOWN 0x80u
@@ -88,6 +96,22 @@ static const struct action_item help_actions[] = {
 	{"Help", ACTION_HELP}
 };
 
+/* The button row, in focus order from FOCUS_HELP. */
+struct button {
+	unsigned char x;
+	const char *label;
+	tui_id_t id;
+};
+
+static const struct button buttons[] = {
+	{0u, "Help", 20u},
+	{10u, "View", 21u},
+	{20u, "Hex", 22u},
+	{29u, "Copy", 23u},
+	{39u, "Refresh", 24u},
+	{53u, "Quit", 25u}
+};
+
 struct panel {
 	unsigned char source;
 	char path[KC_MAX_PATH + 1u];
@@ -113,6 +137,13 @@ static struct kos_ns_entry local_entries[PANEL_ROWS];
 static struct kos_ns_entry local_probe;
 static struct tui_cell menu_background[MENU_POPUP_WIDTH *
 				       MENU_POPUP_MAX_HEIGHT];
+static unsigned char focus_before_menu;
+/* Wheel notches still to apply as Up/Down, and the last pane click. */
+static unsigned char wheel_left;
+static unsigned char click_valid;
+static unsigned char click_pane;
+static unsigned char click_row;
+static uint32_t click_time;
 
 static unsigned int bounded_length(const char *text, unsigned int limit)
 {
@@ -379,34 +410,12 @@ static void render_status_row(void)
 
 static void render_button_focus(unsigned char focus)
 {
-	switch (focus) {
-	case FOCUS_HELP:
-		(void)tui_button(0u, 24u, "Help", 20u,
-				 ui_focus == FOCUS_HELP);
-		break;
-	case FOCUS_VIEW:
-		(void)tui_button(10u, 24u, "View", 21u,
-				 ui_focus == FOCUS_VIEW);
-		break;
-	case FOCUS_HEX:
-		(void)tui_button(20u, 24u, "Hex", 22u,
-				 ui_focus == FOCUS_HEX);
-		break;
-	case FOCUS_COPY:
-		(void)tui_button(29u, 24u, "Copy", 23u,
-				 ui_focus == FOCUS_COPY);
-		break;
-	case FOCUS_REFRESH:
-		(void)tui_button(39u, 24u, "Refresh", 24u,
-				 ui_focus == FOCUS_REFRESH);
-		break;
-	case FOCUS_QUIT:
-		(void)tui_button(53u, 24u, "Quit", 25u,
-				 ui_focus == FOCUS_QUIT);
-		break;
-	default:
-		break;
-	}
+	const struct button *button;
+
+	if (focus < FOCUS_HELP || focus > FOCUS_QUIT) return;
+	button = &buttons[focus - FOCUS_HELP];
+	(void)tui_button(button->x, BUTTON_ROW, button->label, button->id,
+			 ui_focus == focus);
 }
 
 static void render_buttons(void)
@@ -642,6 +651,17 @@ static void panel_previous(struct panel *panel)
 	(void)panel_load(panel, cursor, 0u);
 }
 
+/* Waits for a key or a left press. */
+static void wait_any(void)
+{
+	struct tui_mouse ev;
+
+	while (read_key() == TUI_KEY_MOUSE) {
+		if (tui_mouse_get(&ev) >= 0 && (ev.pressed & TUI_MOUSE_LEFT) != 0u)
+			return;
+	}
+}
+
 static void render_help(void)
 {
 	static const char * const lines[] = {
@@ -672,7 +692,7 @@ static void render_help(void)
 		line_end((unsigned char)(row == 25u));
 	}
 	screen_finish();
-	(void)read_key();
+	wait_any();
 }
 
 static unsigned char looks_binary(const unsigned char *data,
@@ -801,6 +821,23 @@ static int read_view_page(unsigned char source, int handle,
 	return 0;
 }
 
+/* The viewer's next key; the wheel pages and a right press returns, as
+ * Page Up/Down and Escape do. */
+static int view_key(void)
+{
+	struct tui_mouse ev;
+	int key;
+
+	for (;;) {
+		key = read_key();
+		if (key != TUI_KEY_MOUSE) return key;
+		if (tui_mouse_get(&ev) < 0) continue;
+		if (ev.kind == TUI_MOUSE_WHEEL)
+			return ev.wheel > 0 ? TUI_KEY_PGUP : TUI_KEY_PGDN;
+		if ((ev.pressed & TUI_MOUSE_RIGHT) != 0u) return TUI_KEY_ESC;
+	}
+}
+
 static void view_file(unsigned char source, const char *path,
 		      unsigned char force_hex)
 {
@@ -851,7 +888,7 @@ static void view_file(unsigned char source, const char *path,
 		int key;
 
 		advance = render_viewer(path, offset, size, hex_mode, received);
-		key = read_key();
+		key = view_key();
 		if (key == TUI_KEY_ESC || key == TUI_KEY_F10 ||
 		    key == 'q' || key == 'Q') {
 			break;
@@ -1294,6 +1331,20 @@ static unsigned char run_menu(void)
 		unsigned char old_selected;
 
 		key = read_key();
+		if (key == TUI_KEY_MOUSE) {
+			struct tui_mouse ev;
+
+			if (tui_mouse_get(&ev) < 0) continue;
+			if (ev.kind == TUI_MOUSE_WHEEL) {
+				key = ev.wheel > 0 ? TUI_KEY_UP : TUI_KEY_DOWN;
+			} else if ((ev.pressed & TUI_MOUSE_LEFT) != 0u) {
+				close_popup(&box);
+				if (ev.col > box.x && ev.col < box.x + box.w - 1u &&
+				    ev.row > box.y && ev.row < box.y + box.h - 1u)
+					return items[ev.row - box.y - 1u].action;
+				return ACTION_NONE;
+			} else continue;
+		}
 		if (key == '\t') {
 			close_popup(&box);
 			focus_next();
@@ -1388,25 +1439,153 @@ static unsigned char perform_action(unsigned char action)
 	return 0u;
 }
 
+/* One Up (down == 0) or Down step in a pane; past either end of the
+ * page, the previous or next page. */
+static void pane_step(struct panel *panel, unsigned char down)
+{
+	unsigned char old_selected = panel->selected;
+
+	if (down == 0u) {
+		if (panel->selected != 0u) {
+			--panel->selected;
+			render_navigation(old_selected);
+		} else {
+			panel_previous(panel);
+			render_commander();
+		}
+	} else if (panel->selected + 1u < panel->page.count) {
+		++panel->selected;
+		render_navigation(old_selected);
+	} else {
+		panel_next(panel);
+		render_commander();
+	}
+}
+
+/* Focus `focus` as the keys do, redrawing what changed. */
+static void focus_to(unsigned char focus)
+{
+	unsigned char old_focus = ui_focus;
+	unsigned char old_active = active_panel;
+
+	if (focus == ui_focus && focus != FOCUS_MENU) return;
+	if (focus == FOCUS_MENU && ui_focus != FOCUS_MENU)
+		focus_before_menu = ui_focus;
+	focus_set(focus);
+	render_focus_change(old_focus, old_active, 0u);
+}
+
+/* A second press on the same entry within 500 ms of the first. */
+static unsigned char double_click(unsigned char pane, unsigned char row)
+{
+	uint32_t now = 0ul;
+	unsigned char twice;
+
+	if (kc_link_time(&now) < 0) return 0u;
+	twice = (unsigned char)(click_valid != 0u && click_pane == pane &&
+				click_row == row &&
+				now - click_time <= DOUBLE_CLICK_COUNTS);
+	click_valid = (unsigned char)(twice == 0u);
+	click_pane = pane;
+	click_row = row;
+	click_time = now;
+	return twice;
+}
+
+/* The menu whose title lies under `column` of the bar, or TUI_ID_NONE.
+ * The titles are laid out as tui_menubar does: one blank between. */
+static tui_id_t menu_title_at(unsigned char column)
+{
+	unsigned char x = 0u;
+	unsigned char i;
+
+	for (i = 0u; i < sizeof(main_menu) / sizeof(main_menu[0]); ++i) {
+		unsigned char end = (unsigned char)(x +
+			bounded_length(main_menu[i].label, 8u));
+
+		if (column >= x && column < end) return main_menu[i].id;
+		x = (unsigned char)(end + 1u);
+	}
+	return TUI_ID_NONE;
+}
+
+/* A mouse event as the key that does the same.  TUI_KEY_NONE: nothing
+ * left to do.  The window is the whole screen, so screen cells serve. */
+static int mouse_key(void)
+{
+	struct tui_mouse ev;
+	unsigned char pane;
+	unsigned char i;
+
+	if (tui_mouse_get(&ev) < 0) return TUI_KEY_NONE;
+	if (ev.row >= PANE_FIRST_ROW && ev.row <= PANE_LAST_ROW &&
+	    ev.col != PANE_SEPARATOR && ev.col < SCREEN_COLUMNS) {
+		pane = (unsigned char)(ev.col > PANE_SEPARATOR);
+		if (ev.kind == TUI_MOUSE_WHEEL) {
+			int notches = ev.wheel > 0 ? ev.wheel : -ev.wheel;
+
+			focus_to(pane == 0u ? FOCUS_LEFT : FOCUS_RIGHT);
+			if (notches > WHEEL_MAX) notches = WHEEL_MAX;
+			wheel_left = (unsigned char)(notches - 1);
+			return ev.wheel > 0 ? TUI_KEY_UP : TUI_KEY_DOWN;
+		}
+		if ((ev.pressed & TUI_MOUSE_LEFT) != 0u) {
+			struct panel *panel = &panels[pane];
+			unsigned char entry = (unsigned char)(ev.row - 2u);
+
+			focus_to(pane == 0u ? FOCUS_LEFT : FOCUS_RIGHT);
+			if (ev.row >= 2u && entry < panel->page.count) {
+				unsigned char old_selected = panel->selected;
+
+				panel->selected = entry;
+				if (entry != old_selected)
+					render_navigation(old_selected);
+				if (double_click(pane, entry) != 0u) return '\r';
+			}
+		}
+	} else if ((ev.pressed & TUI_MOUSE_LEFT) != 0u) {
+		if (ev.row == 0u) {
+			tui_id_t id = menu_title_at(ev.col);
+
+			if (id != TUI_ID_NONE) {
+				menu_selected = id;
+				focus_to(FOCUS_MENU);
+				return '\r';
+			}
+		} else if (ev.row == BUTTON_ROW) {
+			for (i = 0u; i < sizeof(buttons) / sizeof(buttons[0]); ++i) {
+				if (ev.col >= buttons[i].x &&
+				    ev.col < buttons[i].x +
+				    bounded_length(buttons[i].label, 16u) + 4u) {
+					focus_to((unsigned char)(FOCUS_HELP + i));
+					return '\r';
+				}
+			}
+		}
+	}
+	return TUI_KEY_NONE;
+}
+
 int kc_ui_run(void)
 {
 	struct panel *panel;
 	struct tui_size size;
-	unsigned char focus_before_menu = FOCUS_LEFT;
-	int key;
+	int key = TUI_KEY_NONE;
 	int result;
 
 	result = tui_init();
 	if (result < 0) {
-		printf("konacmd: TUI initialization failed %d\r\n", result);
+		printf("kc: TUI initialization failed %d\r\n", result);
 		return 1;
 	}
 	result = tui_get_size(&size);
 	if (result < 0 || size.cols < SCREEN_COLUMNS || size.rows < 26u) {
 		tui_shutdown();
-		printf("konacmd: an 85x26 console is required\r\n");
+		printf("kc: an 85x26 console is required\r\n");
 		return 1;
 	}
+	/* Without a mouse (the serial console, no driver) the keys do all. */
+	(void)tui_mouse_enable(0u);
 
 	copy_text(server_name, "PC offline - R reconnect", sizeof(server_name));
 	panels[0].source = PANEL_LOCAL;
@@ -1425,6 +1604,7 @@ int kc_ui_run(void)
 	panels[1].selected = 0u;
 	active_panel = 0u;
 	ui_focus = FOCUS_LEFT;
+	focus_before_menu = FOCUS_LEFT;
 	menu_selected = MENU_FILE;
 	remote_online = 0u;
 	remote_capabilities = 0u;
@@ -1434,14 +1614,20 @@ int kc_ui_run(void)
 	(void)connect_remote();
 	render_commander();
 	for (;;) {
-		unsigned char old_selected;
 		unsigned char action = ACTION_NONE;
 		unsigned char old_focus;
 		unsigned char old_active;
 
-		key = read_key();
+		if (wheel_left != 0u) {
+			--wheel_left;
+		} else {
+			key = read_key();
+			if (key == TUI_KEY_MOUSE) {
+				key = mouse_key();
+				if (key == TUI_KEY_NONE) continue;
+			}
+		}
 		panel = &panels[active_panel];
-		old_selected = panel->selected;
 		if (key == TUI_KEY_F10 || key == 'q' || key == 'Q') break;
 		if (key == TUI_KEY_F1) {
 			old_focus = ui_focus;
@@ -1519,21 +1705,9 @@ int kc_ui_run(void)
 			continue;
 		}
 		if (key == TUI_KEY_UP) {
-			if (panel->selected != 0u) {
-				--panel->selected;
-				render_navigation(old_selected);
-			} else {
-				panel_previous(panel);
-				render_commander();
-			}
+			pane_step(panel, 0u);
 		} else if (key == TUI_KEY_DOWN) {
-			if (panel->selected + 1u < panel->page.count) {
-				++panel->selected;
-				render_navigation(old_selected);
-			} else {
-				panel_next(panel);
-				render_commander();
-			}
+			pane_step(panel, 1u);
 		} else if (key == TUI_KEY_PGUP) {
 			panel_previous(panel);
 			render_commander();

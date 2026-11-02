@@ -61,7 +61,7 @@ int farcall(unsigned int segment, kos_far_fn entry, int a, int b)
  * the first call of an ordinal scans the container's rows and every later
  * call reuses the handle.  Empty while 0 - a DATA segment's handle is at
  * least 1. */
-static unsigned char farmap_handles[FARMAP_ORDINALS];
+static unsigned int farmap_handles[FARMAP_ORDINALS];
 
 /* The handle of the n-th DATA segment of one kind (1-based, container id
  * order): `mappable` picks the `DATAn` rows, otherwise the `BLOBS` rows.
@@ -113,7 +113,7 @@ void *farmap(unsigned int n, unsigned char *prev)
 			*prev = (unsigned char)handle;
 			return (void *)0;
 		}
-		farmap_handles[n - 1u] = (unsigned char)handle;
+		farmap_handles[n - 1u] = (unsigned int)handle;
 	}
 	token = xmap((unsigned int)handle, &address);
 	if (token < 0) {

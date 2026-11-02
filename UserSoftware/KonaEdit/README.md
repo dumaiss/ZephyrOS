@@ -3,7 +3,7 @@
 KonaEdit is a single-document CP850 text editor built on the public KonaOS
 TUI, filesystem and XMEM APIs.  Its interface follows the compact style of
 MS-DOS Edit/QBasic: a menu bar, full-screen editing area, status line and
-keyboard-only dialogs.
+dialogs, all usable from the keyboard and, with a mouse, from the pointer.
 
 ## Build and test
 
@@ -15,13 +15,13 @@ make test
 ```
 
 The Makefile unpacks and uses only `../../build/kos-sdk-0.2.0.tar.gz`.  The
-result is `build/user/konaedit.exe`.
+result is `build/user/kedit.exe`.
 
 ## Starting
 
 ```
-konaedit                 a new, unnamed document
-konaedit /fs/NAME.TXT    open a file
+kedit                 a new, unnamed document
+kedit /fs/NAME.TXT    open a file
 ```
 
 The screen has three parts:
@@ -90,6 +90,24 @@ KiB.
 | F7 | Mark mode |
 | F8 / F9 | Copy / Paste |
 | F10 | Exit |
+
+## Mouse
+
+With a mouse on the V9958/HID console, a pointer follows it everywhere in the
+program and every key keeps working.  Without a mouse (the serial console, no
+mouse driver) KonaEdit is keyboard-only.
+
+| Where | Action |
+|---|---|
+| The editing area | A left click puts the cursor on the clicked cell and clears any selection.  A TAB counts as the columns it takes and the sideways scroll is added; a cell past a line's end is its end, one below the text is the end of the last line |
+| The editing area, dragging | Dragging with the left button selects from the press to the cell under the pointer (`MARK`) |
+| The wheel | Scrolls the view three lines a notch.  The cursor stays where it is while it is on the screen; once scrolled out it moves to the nearest row, in its column |
+| A menu-bar title | A left click opens that menu's pop-up |
+| A pop-up item | A left click runs it (a disabled item does nothing); a click anywhere else closes the menu |
+| A message or confirmation button | A left click chooses it |
+| The prompt | Its one field is always focused |
+| The file dialog list | A click selects an entry; a second click on it within 500 ms opens a directory (`..` goes up) or chooses a file; the wheel moves the selection a row a notch |
+| The file dialog fields | A click on the Name field focuses it; a click on Open (Save) or Cancel chooses it.  With the Name field empty, Open takes the selected list entry |
 
 ## Menus
 
@@ -219,6 +237,12 @@ reported rather than silently discarded.
 - [ ] Exercise three undo and redo operations plus copy/cut/paste.
 - [ ] Scroll both axes and judge key-to-screen responsiveness.
 - [ ] Confirm F10 restores the ordinary KonaOS shell display and cursor.
+- [ ] With a mouse: click to place the cursor in plain, TAB and sideways
+      scrolled lines, drag to select then copy and paste, and turn the wheel.
+- [ ] With a mouse: open every menu by its title and run an item, and drive a
+      Save As dialog (list, Name field, Save, Cancel) by the mouse.
+- [ ] Confirm the pointer follows the mouse in every dialog and disappears
+      when the program ends.
 
 These checks remain pending until performed on the owner hardware; simulator
 results do not stand in for them.

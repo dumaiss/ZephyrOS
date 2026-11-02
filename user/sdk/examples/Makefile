@@ -21,10 +21,12 @@ $(eval $(call exe_program,fardemo,.,fardemo.c,\
 $(eval $(call exe_program,files,.,files.c,STACK=256))
 
 # TUI SDK examples: core screen/window/style/key use, the symbolic key
-# report, and the optional widget form.
+# report, the optional widget form, and the form driven by the mouse.
 $(eval $(call exe_program,tui_demo,.,tui_demo.c,STACK=512,LIBS=tui))
 $(eval $(call exe_program,tui_keys,.,tui_keys.c,STACK=512,LIBS=tui))
 $(eval $(call exe_program,tui_dialog,.,tui_dialog.c,STACK=512,\
+	LIBS=tui_widgets:tui))
+$(eval $(call exe_program,tui_mouse,.,tui_mouse.c,STACK=512,\
 	LIBS=tui_widgets:tui))
 
 # The far-data example: levels.c is compiled into the
@@ -39,4 +41,4 @@ $(eval $(call exe_program,fardata,.,fardata.c,\
 # `make` packs every program listed here; each declaration is a target of
 # its own name too (`make fardemo`).
 .DEFAULT_GOAL := all
-all: hello fardemo files fardata tui_demo tui_keys tui_dialog
+all: hello fardemo files fardata tui_demo tui_keys tui_dialog tui_mouse

@@ -36,14 +36,21 @@ include $(KOS_SDK_ROOT)/mk/kos.mk
 
 EXE_CFLAGS += --opt-code-size --max-allocs-per-node 50000
 
-$(eval $(call exe_program,konaedit,src,main.c ke_store.c ke_platform.c ke_history.c ke_text.c ke_file.c ke_widgets.c ke_view.c ke_ui.c,STACK=1024,LIBS=tui))
+# The program is larger than its bank, so the SDK places it (sdk.md 3).
+# libtui's mouse member is resident in every placed program (the SDK
+# declares it reached through a function pointer).  The file layer, the dialog widgets and the init/shutdown member
+# are the cold modules; the store, the text walks, the drawing, the
+# history and the key decoder keep the resident room.
+KE_PLACE := PLACE=ke_file.c=far1:ke_widgets.c=far1:libtui.lib(tui_lifecycle.rel)=far1
+
+$(eval $(call exe_program,kedit,src,main.c ke_store.c ke_platform.c ke_history.c ke_text.c ke_file.c ke_widgets.c ke_view.c ke_ui.c,STACK=1024,LIBS=tui,$(KE_PLACE)))
 
 .PHONY: all clean test
 .DEFAULT_GOAL := all
 
-all: konaedit
+all: kedit
 
-test: konaedit
+test: kedit
 	mkdir -p build/tests
 	cc -std=c99 -Wall -Wextra -Werror -DKE_HOST_TEST -Isrc \
 		tests/test_store.c src/ke_store.c src/ke_history.c src/ke_text.c \

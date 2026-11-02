@@ -227,7 +227,9 @@ enum {
 	TUI_KEY_F9        = 0x0129,
 	TUI_KEY_F10       = 0x012A,
 	TUI_KEY_F11       = 0x012B,
-	TUI_KEY_F12       = 0x012C
+	TUI_KEY_F12       = 0x012C,
+
+	TUI_KEY_MOUSE     = 0x0140
 };
 
 /* Nonzero when enough input is pending to return a key without blocking. */
@@ -238,6 +240,87 @@ tui_key_t tui_getkey(void);
 
 /* Non-blocking read. Returns TUI_KEY_NONE if no complete key is available. */
 tui_key_t tui_pollkey(void);
+
+/* ---- mouse ---------------------------------------------------------- */
+
+/*
+ * Opt-in mouse.  tui_mouse_enable() after tui_init() opens the mouse and
+ * the pointer, tracks over the pointer's 510 x 208 pixel text area and
+ * shows the pointer.  From then on tui_pollkey()/tui_getkey() return
+ * TUI_KEY_MOUSE when a mouse read changed something worth an event, after
+ * any key already pending; tui_mouse_get() returns that event.  The
+ * pointer follows the mouse on every read that moved it.
+ *
+ * Event kinds.  One read yields at most one event; `kind` names the first
+ * of: a press, a release, wheel notches, a motion to another cell while a
+ * button is held (a drag) or, with TUI_MOUSE_MOTION, without one.  Notches
+ * that arrive with a press or release stay pending and come as a WHEEL
+ * event of the next read; `wheel` is nonzero only on that event.
+ */
+enum {
+	TUI_MOUSE_NONE = 0,
+	TUI_MOUSE_PRESS,
+	TUI_MOUSE_RELEASE,
+	TUI_MOUSE_WHEEL,
+	TUI_MOUSE_MOVE
+};
+
+/* `buttons`, `pressed` and `released`. */
+#define TUI_MOUSE_LEFT   0x01u
+#define TUI_MOUSE_RIGHT  0x02u
+#define TUI_MOUSE_MIDDLE 0x04u
+
+/* tui_mouse_enable() flags: also report motion with no button held. */
+#define TUI_MOUSE_MOTION 0x01u
+
+struct tui_mouse {
+	uint8_t kind;
+	uint8_t col;      /* screen cell: pixel x / 6, y / 8, on the screen */
+	uint8_t row;
+	int8_t  wcol;     /* the cell in the active window, both -1 outside */
+	int8_t  wrow;
+	uint8_t buttons;  /* held */
+	uint8_t pressed;  /* went down since the previous read */
+	uint8_t released; /* went up since the previous read */
+	int16_t wheel;    /* signed notches, positive away from the user */
+};
+
+/*
+ * 0, or a negative error with the program left keyboard-only:
+ * -KOS_EINVAL before tui_init(); -KOS_ENOTSUP when the console has no
+ * render path for the pointer to draw over (the serial console, or the
+ * video console while its serial rescue tee is armed), before anything is
+ * bound; the bind error when the build publishes no mouse or no video;
+ * -KOS_EBUSY while the video is held exclusively.  Enabling again keeps
+ * the handles and takes the new flags.
+ */
+int  tui_mouse_enable(uint8_t flags);
+
+/* Hide the pointer and release both handles; tui_shutdown() calls it. */
+void tui_mouse_disable(void);
+
+/* The event of the latest TUI_KEY_MOUSE, its window cell against the
+ * active window: 0, or -KOS_EINVAL for a null `ev` or with the mouse not
+ * enabled. */
+int  tui_mouse_get(struct tui_mouse *ev);
+
+/* 1 when the event's window cell is inside `rect` (active-window
+ * coordinates), else 0, also for a null pointer. */
+int  tui_mouse_hit(const struct tui_mouse *ev, const struct tui_rect *rect);
+
+/*
+ * The way the key loop, tui_shutdown() and the widget runners reach the
+ * mouse member: null until tui_mouse_enable() installs it, so a program
+ * that never enables the mouse links no mouse code.  Layers over libtui
+ * call through it; applications call the functions above.
+ */
+struct tui_mouse_hook {
+	int  (*poll)(void);
+	void (*disable)(void);
+	int  (*get)(struct tui_mouse *ev);
+};
+
+extern const struct tui_mouse_hook *tui_mouse_hook;
 
 /* ---- save / restore ------------------------------------------------- */
 

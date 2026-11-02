@@ -12,9 +12,10 @@
  * **Contents are undefined**: nothing here clears a slot (4.8) - a
  * previous object's bytes are what a new one starts with.
  *
- * Handles are opaque and owner-tagged: `(index << 4) | generation`, so a
- * freed-and-reused table entry hands out a different handle and a stale
- * or foreign handle is refused before any state changes.  `SYS_XMEM_MAP`
+ * Handles are opaque and owner-tagged: `(index << 4) | generation`, 9
+ * bits for table indices 0-31 and generations 1-15, so a freed-and-reused
+ * table entry hands out a different handle and a stale or foreign handle
+ * is refused before any state changes.  `SYS_XMEM_MAP`
  * returns the aperture token (the latch value mode 10 | Q = caller bank |
  * P = 7 - bank) and the object's aperture address, `SYS_SEG_MAP` the
  * token of a FAR_CODE segment at its fixed address 8000h; tokens
@@ -51,12 +52,13 @@ _Static_assert(EXE_SEG_KIND_DATA == KOS_SEG_KIND_DATA,
 	       "segment kind DATA must match the ABI");
 #endif
 
-/* One table entry per live object; the acceptance image holds several
- * objects per bank plus a full bank map, so sixteen entries cover a whole
- * slot map.  The handle packs the index into the top four bits, so the
- * capacity is fixed at XMEM_GENERATIONS entries. */
-#define XMEM_MAX_OBJECTS 16u
+/* One table entry per live object, system-wide (architecture 4.8): every
+ * process's runtime objects and loader segments count, a suspended
+ * parent's included.  The handle packs the index above the four
+ * generation bits, so 32 entries make a 9-bit handle. */
+#define XMEM_MAX_OBJECTS 32u
 #define XMEM_GENERATIONS 16u /* generations 1..15 cycle per entry */
+#define XMEM_HANDLE_MAX  ((uint16_t)(XMEM_MAX_OBJECTS * XMEM_GENERATIONS - 1u))
 
 /* The split between the two copy paths (architecture 4.8): slots 0-2
  * live at 0000h-5FFFh and use the mode-10 gate, slots 3-6 at
@@ -82,6 +84,8 @@ static struct xmem_object xmem_table[XMEM_MAX_OBJECTS];
 #if defined(__SDCC)
 _Static_assert(sizeof(struct xmem_object) == 12,
 	       "xmem object entry must be 12 packed bytes");
+_Static_assert(XMEM_HANDLE_MAX == 0x1FFu,
+	       "an xmem handle is 9 bits: index 0-31, generation 1-15");
 #endif
 
 /* The object `handle` names for `pid`, or null for a dead, stale or
@@ -91,10 +95,7 @@ static struct xmem_object *xmem_lookup(uint16_t handle, uint8_t pid)
 	uint8_t index = (uint8_t)(handle >> 4);
 	struct xmem_object *obj;
 
-	if (handle == 0u || handle > 0xFFu) {
-		return (struct xmem_object *)0;
-	}
-	if (index >= XMEM_MAX_OBJECTS) {
+	if (handle == 0u || handle > XMEM_HANDLE_MAX) {
 		return (struct xmem_object *)0;
 	}
 	obj = &xmem_table[index];

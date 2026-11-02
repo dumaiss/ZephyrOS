@@ -648,8 +648,9 @@ slot  6     C000h-DFFFh   data; window-speed copies
 - `ALLOC(size, flags)` returns an opaque handle; the size rounds up to whole
   slots; an object is contiguous in one bank; placement is never visible.
 - A plain object is at most 32 KiB; a `MAPPABLE` object at most 16 KiB and
-  always in the aperture slice. These are per-object limits. At most 16
-  objects exist system-wide.
+  always in the aperture slice. These are per-object limits. At most 32
+  objects exist system-wide, counting every process's runtime objects and
+  data and far-code segments; the 33rd allocation is `KOS_ENOSPC`.
 - Plain objects prefer the window-speed slots 3 and 6, then slots 0-2.
 - `READ`/`WRITE` copy between an object and the caller's buffer, with all
   range arithmetic checked first. `INFO` reports sizes, flags and type,
@@ -1215,6 +1216,18 @@ out a pointer to its own state (libgfx) - whose data travels with its
 code. A library places as one unit, since its members hand each other
 pointers to their own constants.
 
+**Function pointers.** The address of code stored in data can be called
+from any zone, so that code is resident, with the functions it calls. The
+placer reads it from the relocations: a word in a data or constant area
+(area-relative for a static function, symbol-relative for another
+module's) that names code makes that module's code resident. The SDK
+libraries are built without a constant area, so their tables sit in their
+code and the relocations do not show them; the SDK declares the library
+members reached through function pointers (`KOS_POINTER_MEMBERS_<library>`
+in `mk/kos.mk`) and each placed program that links the library gets them
+resident. A pin of such a module to home or a far segment is refused,
+naming the module and the table.
+
 **Resident by necessity.** crt0 and libkos (the syscall stubs, event
 delivery, the veneer and banked-call trampolines), the sources a program
 declares resident (its event handlers: a handler runs wherever the
@@ -1231,8 +1244,10 @@ exactly the caller's, and any function can be a veneer target; nested
 veneer calls keep their return addresses and latches on a small resident
 frame stack. A veneer costs about a banked call.
 
-**Placing.** The resident set is fixed first, then the pins (`PLACE=`
-hints, `docs/sdk.md` section 3). The remaining code stays resident while
+**Placing.** The resident set is fixed first (including the modules
+reached through function pointers), then the pins (`PLACE=` hints, a
+library member written `lib<name>.lib(<member>.rel)=zone`,
+`docs/sdk.md` section 3). The remaining code stays resident while
 the resident zone has room, the most-called first; the rest is grouped
 along the call graph - each library one group, merged with the groups it
 calls most while they fit one zone - and the groups go to the home zone

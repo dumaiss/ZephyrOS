@@ -40,14 +40,20 @@ include $(KOS_SDK_ROOT)/mk/kos.mk
 # leaving the fixed application window room for libtui's render transaction.
 EXE_CFLAGS += --opt-code-size --max-allocs-per-node 50000
 
-$(eval $(call exe_program,konacmd,src,main.c kc_protocol.c kc_serial.c kc_remote.c kc_ui.c,STACK=896,LIBS=tui_widgets:tui))
+# The program is larger than its bank, so the SDK places it (sdk.md 3);
+# a PLACE= option makes it placed.  libtui's mouse member is resident in
+# every placed program (the SDK declares it reached through a function
+# pointer); the pin only states it.
+KC_PLACE := PLACE=libtui.lib(tui_mouse.rel)=resident
+
+$(eval $(call exe_program,kc,src,main.c kc_protocol.c kc_serial.c kc_remote.c kc_ui.c,STACK=896,LIBS=tui_widgets:tui,$(KC_PLACE)))
 
 .PHONY: all clean test
 .DEFAULT_GOAL := all
 
-all: konacmd
+all: kc
 
-test: konacmd
+test: kc
 	mkdir -p build/tests
 	$(CC) -std=c99 -Wall -Wextra -Werror -Isrc \
 		tests/test_protocol.c src/kc_protocol.c -o build/tests/test_protocol

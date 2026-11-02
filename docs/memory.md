@@ -162,7 +162,7 @@ emit them as JSON (`build/konaos.manifest.json` `nucleus`, and
 
 ```text
 nucleus fixed: required 9664 bytes | overflow 2 bytes | stacks 768 | room 5950 bytes
-nucleus cold: code 25087 bytes end C1FFh | data 1623 bytes at C200h | room 6057 bytes
+nucleus cold: code 25077 bytes end C1F5h | data 1815 bytes at C200h | room 5865 bytes
 driver hot: 31873 bytes of 32768
 driver boot/bulk: 21128 bytes of 24576
 driver mapped: 3584 bytes of 7936
@@ -172,10 +172,13 @@ common: used 3067 of 7424 bytes (code 2140, data 927) | ceiling 3072
 The device-event mechanism places the table, the two return-path checks
 and their frame primitives in common memory, the post path and the
 driver-API exports in the fixed core, and the syscall and teardown bodies
-in the cold half; `_WINDOW_DATA` starts at `C200h` because the linked
-cold code ends at `C1FFh` (the window-data base follows the code end,
+in the cold half; `_WINDOW_DATA` starts at `C200h`, the linked cold
+code's end `C1F5h` rounded up (the window-data base follows the code end,
 architecture 4.2).  One delivery costs 8,407 T-states, 4.2% of the CPU at
 50 Hz (nucleus and trampoline; the handler's own body is outside it).
+
+The cold data holds the extended-memory object table: 32 entries of 12
+bytes (384 bytes), one per live object system-wide (architecture 4.8).
 
 The gate stack is 384 bytes; the deepest measured chain uses 275, and the
 worst case must stay at or below 360. The driver stack's measured

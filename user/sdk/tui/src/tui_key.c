@@ -14,6 +14,14 @@
  * call clears every parser, ready-key, sequence and replay field.  The
  * lifecycle therefore does not reference this archive member, and a
  * screen-only program still links no decoder code or data.
+ *
+ * With the mouse enabled, a poll that finds no key reads the mouse once
+ * through the hook tui_mouse_enable() installs; a read that made an event
+ * returns TUI_KEY_MOUSE and keys already pending come first.  A read costs
+ * several milliseconds, so tui_getkey() polls keys on every idle() wake but
+ * reads the mouse on its first poll and then on every
+ * TUI_KEY_MOUSE_WAKES-th wake, leaving the rest of the time halted;
+ * tui_pollkey() reads on every call that found no key.
  */
 
 #include "tui_internal.h"
@@ -26,6 +34,9 @@
 
 #define TUI_KEY_SEQUENCE_MAX 8u
 
+/* tui_getkey() reads the mouse on one of this many wakes (about 52 Hz). */
+#define TUI_KEY_MOUSE_WAKES 3u
+
 static uint8_t tui_key_state;
 static uint8_t tui_key_sequence[TUI_KEY_SEQUENCE_MAX];
 static uint8_t tui_key_length;
@@ -35,6 +46,8 @@ static uint8_t tui_key_replay_at;
 static tui_key_t tui_key_ready;
 static uint8_t tui_key_ready_valid;
 static uint16_t tui_key_generation;
+/* Set by tui_getkey() around a poll that must not read the mouse. */
+static uint8_t tui_key_mouse_idle;
 
 static int tui_key_read(uint8_t *out)
 {
@@ -327,6 +340,11 @@ tui_key_t tui_pollkey(void)
 	}
 	tui_key_sync();
 	if (tui_key_decode() <= 0) {
+		if (tui_key_mouse_idle == 0u &&
+		    tui_mouse_hook != (const struct tui_mouse_hook *)0 &&
+		    tui_mouse_hook->poll() > 0) {
+			return TUI_KEY_MOUSE;
+		}
 		return TUI_KEY_NONE;
 	}
 	key = tui_key_ready;
@@ -338,16 +356,23 @@ tui_key_t tui_pollkey(void)
 tui_key_t tui_getkey(void)
 {
 	tui_key_t key;
+	uint8_t wake = 0u;
 
 	if (tui_state.initialized == 0u) {
 		return TUI_KEY_NONE;
 	}
-	tui_key_sync();
 	for (;;) {
+		/* Only the first poll and every TUI_KEY_MOUSE_WAKES-th wake
+		 * after it may read the mouse. */
+		tui_key_mouse_idle = (uint8_t)(wake != 0u);
 		key = tui_pollkey();
+		tui_key_mouse_idle = 0u;
 		if (key != TUI_KEY_NONE) {
 			return key;
 		}
 		idle();
+		if (++wake >= TUI_KEY_MOUSE_WAKES) {
+			wake = 0u;
+		}
 	}
 }

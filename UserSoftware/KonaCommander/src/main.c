@@ -12,7 +12,7 @@ int main(int argc, char **argv)
 	(void)argv;
 	result = kc_link_open();
 	if (result < 0) {
-		printf("konacmd: %s\r\n", kc_remote_error(result));
+		printf("kc: %s\r\n", kc_remote_error(result));
 		return 1;
 	}
 	result = kc_ui_run();

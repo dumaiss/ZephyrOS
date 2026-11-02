@@ -1,4 +1,5 @@
 import json
+import re
 import unittest
 from pathlib import Path
 
@@ -9,10 +10,22 @@ ROOT = Path(__file__).resolve().parents[1]
 class ProjectTests(unittest.TestCase):
     def test_executable_stays_below_stack(self):
         report = json.loads(
-            (ROOT / "build/user/konacmd/konacmd.report.json").read_text())
+            (ROOT / "build/user/kc/kc.report.json").read_text())
         end = 0x100 + report["header"]["image_size"] + report["header"]["bss_size"]
-        self.assertLess(end, report["stack"]["base"])
+        # A placed program's data fills 0C000h up to the stack base
+        # (tools/exeplace.py), so the end may meet it.
+        self.assertLessEqual(end, report["stack"]["base"])
         self.assertGreaterEqual(report["stack"]["base"], 0xC000)
+
+    def test_the_mouse_member_stays_resident(self):
+        # tui_shutdown and the widgets reach libtui's mouse member
+        # through a pointer the placer cannot follow: it must be
+        # resident, below 8000h, from wherever they run.
+        listing = (ROOT / "build/user/kc/kc.map").read_text()
+        address = re.search(r"^\s+([0-9A-F]{8})\s+_tui_mouse_enable\s",
+                            listing, re.M)
+        self.assertIsNotNone(address)
+        self.assertLess(int(address.group(1), 16), 0x8000)
 
     def test_local_and_remote_panes_and_fast_navigation_are_present(self):
         source = (ROOT / "src/kc_ui.c").read_text()

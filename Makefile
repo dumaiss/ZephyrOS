@@ -1210,9 +1210,26 @@ $(eval $(call exe_program,tui_core_probe,tests/tui,\
 $(eval $(call exe_program,tui_widget_probe,tests/tui,\
 	tui_widget_probe.c,STACK=256,LIBS=tui_widgets:tui))
 
+# The mouse outcome program: tui_mouse_enable, the events through the key
+# loop and the clickable runners, driven by the scripted controller.
+$(eval $(call exe_program,tui_mprobe,tests/tui,\
+	tui_mprobe.c,STACK=256,LIBS=tui_widgets:tui))
+
+# The mouse probe placed (tests/test_exeplace.py): tui_mplaced pins the
+# libtui mouse member resident with the parentheses written as they are;
+# tui_mdeclared pins only its own source, so the SDK's declaration of the
+# member is what keeps it resident.
+$(eval $(call exe_program,tui_mplaced,tests/tui,\
+	tui_mprobe.c,STACK=256,LIBS=tui_widgets:tui,\
+	PLACE=libtui.lib(tui_mouse.rel)=resident))
+$(eval $(call exe_program,tui_mdeclared,tests/tui,\
+	tui_mprobe.c,STACK=256,LIBS=tui_widgets:tui,\
+	PLACE=tui_mprobe.c=home))
+
 all: $(EXE_USER_ROOT)/tui_test.exe $(EXE_USER_ROOT)/tui_core_probe.exe \
 	$(EXE_USER_ROOT)/tui_widget_probe.exe $(EXE_USER_ROOT)/tui_wide.exe \
-	$(EXE_USER_ROOT)/tui_putwide.exe
+	$(EXE_USER_ROOT)/tui_putwide.exe $(EXE_USER_ROOT)/tui_mprobe.exe \
+	$(EXE_USER_ROOT)/tui_mplaced.exe $(EXE_USER_ROOT)/tui_mdeclared.exe
 
 # Standalone SDK TUI examples, built in-tree for the simulator acceptance
 # only.  They are not added to any store.
@@ -1222,9 +1239,11 @@ $(eval $(call exe_program,tui_keys,user/sdk/examples,\
 	tui_keys.c,STACK=512,LIBS=tui))
 $(eval $(call exe_program,tui_dialog,user/sdk/examples,\
 	tui_dialog.c,STACK=512,LIBS=tui_widgets:tui))
+$(eval $(call exe_program,tui_mouse,user/sdk/examples,\
+	tui_mouse.c,STACK=512,LIBS=tui_widgets:tui))
 
 all: $(EXE_USER_ROOT)/tui_demo.exe $(EXE_USER_ROOT)/tui_keys.exe \
-	$(EXE_USER_ROOT)/tui_dialog.exe
+	$(EXE_USER_ROOT)/tui_dialog.exe $(EXE_USER_ROOT)/tui_mouse.exe
 
 # SDK outcome programs for the console-order and stream replays
 # (tests/test_io_sim.py): the `fs` image's `/system/iomix.exe` with its

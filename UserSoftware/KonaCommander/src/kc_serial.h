@@ -13,6 +13,8 @@
 
 int kc_link_open(void);
 void kc_link_close(void);
+/* The link clock in 25.6 us counts: 0, or a negative error. */
+int kc_link_time(uint32_t *now);
 int kc_link_request(struct kc_frame *request, struct kc_frame *response);
 
 #endif

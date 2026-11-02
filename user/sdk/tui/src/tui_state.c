@@ -1,13 +1,15 @@
 /* Private libtui storage.
  *
  * One definition shared by the screen, lifecycle and transaction members:
- * the logical cell map, dirty/invert bitmaps, flush buffers and state. A
- * program links only the storage its called members need.
+ * the logical cell map, dirty/invert bitmaps, flush buffers and state, and
+ * the mouse hook (null until tui_mouse_enable).  A program links only the
+ * storage its called members need.
  */
 
 #include "tui_internal.h"
 
 struct tui_state tui_state;
+const struct tui_mouse_hook *tui_mouse_hook;
 uint8_t tui_chars[TUI_CELL_COUNT];
 uint8_t tui_attrs[TUI_ATTR_BYTES];
 

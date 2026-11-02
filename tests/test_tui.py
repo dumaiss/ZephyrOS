@@ -39,6 +39,8 @@ TUI_TEST_MAP = os.path.join(TUI_TEST_DIR, "tui_test.map")
 HELLO_DIR = os.path.join("build", "user", "hello")
 HELLO_LK = os.path.join(HELLO_DIR, "hello.lk")
 HELLO_MAP = os.path.join(HELLO_DIR, "hello.map")
+DIALOG_MAP = os.path.join("build", "user", "tui_dialog", "tui_dialog.map")
+MPROBE_MAP = os.path.join("build", "user", "tui_mprobe", "tui_mprobe.map")
 CORE_PROBE_DIR = os.path.join("build", "user", "tui_core_probe")
 CORE_PROBE_LK = os.path.join(CORE_PROBE_DIR, "tui_core_probe.lk")
 CORE_PROBE_MAP = os.path.join(CORE_PROBE_DIR, "tui_core_probe.map")
@@ -63,6 +65,13 @@ TUI_FUNCTIONS = {
     "tui_fill", "tui_hline", "tui_vline", "tui_frame", "tui_frame_title",
     "tui_key_pending", "tui_getkey", "tui_pollkey",
     "tui_saved_size", "tui_save", "tui_restore",
+}
+
+# The opt-in mouse: declared in tui.h, defined by the tui_mouse member,
+# which only programs that enable the mouse link.
+TUI_MOUSE_FUNCTIONS = {
+    "tui_mouse_enable", "tui_mouse_disable", "tui_mouse_get",
+    "tui_mouse_hit",
 }
 
 TUI_STYLES = {
@@ -108,6 +117,7 @@ TUI_KEYS = {
     "TUI_KEY_F10": 0x012A,
     "TUI_KEY_F11": 0x012B,
     "TUI_KEY_F12": 0x012C,
+    "TUI_KEY_MOUSE": 0x0140,
 }
 
 # One archive member per coherent function group; later parts of the API
@@ -115,7 +125,7 @@ TUI_KEYS = {
 TUI_MEMBERS = {"tui_state.rel", "tui_screen.rel", "tui_lifecycle.rel",
                "tui_flush.rel", "tui_printf.rel", "tui_window.rel",
                "tui_style.rel", "tui_key.rel", "tui_region.rel",
-               "tui_scroll.rel", "tui_text.rel"}
+               "tui_mouse.rel", "tui_scroll.rel", "tui_text.rel"}
 
 WIDGET_MEMBERS = {"widget_common.rel", "widget_render.rel",
                   "widget_menu.rel", "widget_input.rel",
@@ -228,7 +238,7 @@ class TestTuiHeader(unittest.TestCase):
 
     def test_declares_the_complete_v1_core_surface(self):
         declared = set(re.findall(r"\b(tui_[a-z0-9_]+)\s*\(", self.text))
-        self.assertEqual(declared, TUI_FUNCTIONS)
+        self.assertEqual(declared, TUI_FUNCTIONS | TUI_MOUSE_FUNCTIONS)
 
     def test_includes_only_public_sdk_headers(self):
         includes = _quoted_includes(TUI_HEADER)
@@ -341,6 +351,8 @@ class TestTuiLibrary(unittest.TestCase):
             rel = os.path.join(source_dir, name)
             for include in _quoted_includes(rel):
                 if name.startswith("tui_") and include == "tui_internal.h":
+                    continue
+                if name == "tui_mouse.c" and include == "kos/mouse.h":
                     continue
                 self.assertIn(include, ("tui.h", "tui_internal.h",
                            "kos.h", "kos/console.h",
@@ -606,6 +618,32 @@ class TestTuiProbeLinks(unittest.TestCase):
         lk = _read(os.path.join(ROOT, WIDGET_PROBE_LK)).splitlines()
         self.assertLess(lk.index("-l build/user/sdk/libtui_widgets.lib"),
                         lk.index("-l build/user/sdk/libtui.lib"))
+
+    def test_a_program_without_the_mouse_links_no_mouse_code(self):
+        """tui_dialog uses the runners but never enables the mouse: it
+        links neither mouse member nor any of their symbols, only the
+        null hook in the storage member.  The mouse probe links both."""
+        for path in (DIALOG_MAP, MPROBE_MAP):
+            if not os.path.isfile(os.path.join(ROOT, path)):
+                self.skipTest("%s has not been built" % path)
+        probe = _symbols(MPROBE_MAP)
+        mouse_symbols = {name for name, (_address, module) in probe.items()
+                         if module in ("tui_mouse", "mouse")}
+        for name in TUI_MOUSE_FUNCTIONS:
+            self.assertEqual(probe["_" + name][1], "tui_mouse")
+        for name in ("_mouse_open", "_mouse_track", "_pointer_open",
+                     "_pointer_move", "_pointer_hide"):
+            self.assertEqual(probe[name][1], "mouse")
+        dialog = _symbols(DIALOG_MAP)
+        modules = _linked_modules(dialog)
+        self.assertNotIn("tui_mouse", modules)
+        self.assertNotIn("mouse", modules)
+        self.assertEqual(mouse_symbols & set(dialog), set())
+        self.assertEqual(sorted(name for name in dialog
+                                if "mouse" in name.lower() or
+                                "pointer" in name.lower()),
+                         ["_tui_mouse_hook"])
+        self.assertEqual(dialog["_tui_mouse_hook"][1], "tui_state")
 
     def test_modal_member_has_a_measurable_data_cost(self):
         def data_size(path):

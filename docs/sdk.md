@@ -147,7 +147,7 @@ build in parallel. Each declaration also defines a `NAME` target.
 | `LIBS=a:b` | empty | optional SDK libraries in link order; each resolves to `lib/lib<name>.lib` (or the corresponding in-tree archive) |
 | `TUI_GRID=CxR` | `85x26` | the libtui capacity: `tui` in `LIBS` links `lib/libtui_<C>x<R>.lib` (`128x35`), or `libtui.lib` for `85x26`; any other grid is a build error |
 | `RESIDENT=SRC:SRC` | none | sources that stay resident: event handlers and anything else that must run while a far segment is mapped (architecture 7.2) |
-| `PLACE=MOD=ZONE:…` | none | placement pins, colon separated: a program source (`view.c=far1`) or a library member (`libgfx.lib(gfx_text.rel)=home`) pinned to `resident`, `home` or `farN` |
+| `PLACE=MOD=ZONE:…` | none | placement pins, colon separated: a program source (`view.c=far1`) or a library member (`libgfx.lib(gfx_text.rel)=home`) pinned to `resident`, `home` or `farN`. The member form is written as shown, parentheses included, with no shell quotes: the rule quotes each pin. A library built for another grid is named by its archive (`libtui_128x35.lib(tui_mouse.rel)`) |
 | `FAR1=SRC:SRC` … `FAR4=SRC:SRC` | none | hand-declared far-code sources of segment n, linked at `8000h` (section 6.6); such a program is not placed |
 | `DATA1=SRC:SRC` … `DATA4=SRC:SRC` | none | far-data sources of data segment n, linked at `8000h` (section 12) |
 | `BLOBS=a.bin:b.bin` | none | binary payloads bundled as plain data segments (at most 32 KiB each) |
@@ -355,7 +355,19 @@ veneer, so the sources stay plain C. The program says only what the
 toolchain cannot know: `RESIDENT=` for its event handlers' sources, and
 optional `PLACE=` pins. Its data and its constants are always resident
 (a pointer may reach them from anywhere); an SDK library places as one
-unit. The link writes the placement (each module's zone and size, every
+unit. Code whose address is stored in data is resident: a function
+pointer may be called from any zone. The placer finds the program's own
+(an address in a data or constant table, such as a `const` table of
+handlers) and keeps the pointed-to code resident with the functions it
+calls. An SDK library keeps its own tables in its code, where the placer
+cannot tell them from instructions, so the SDK declares the members
+reached through function pointers (`KOS_POINTER_MEMBERS_<library>` in
+`mk/kos.mk`: libtui's `tui_mouse.rel`; libkres's `kres_mut.rel`,
+`kres_adapter.rel`, `kres_adapter_mut.rel` and `kres_cache_xmem.rel`) and
+every placed program that links the library gets them resident. A `PLACE=`
+pin of such a unit to `home` or a far segment is refused, naming the unit
+and the table that points at it; a pin to `resident` is redundant but
+accepted. The link writes the placement (each module's zone and size, every
 veneer) into `build/user/NAME/place/placement.txt`. A program with
 hand-declared `FARn=`/`DATAn=` segments keeps its own layout and the far
 link rule below.
@@ -938,6 +950,10 @@ int pointer_hide(int video);
 - While a program holds `/dev/video` exclusively (libgfx), both calls
   are `-KOS_EBUSY` and touch no port.
 
+A libtui program gets the mouse and the pointer with one call,
+`tui_mouse_enable()`, and reads clicks and the wheel through its key loop
+in cell coordinates (`docs/tui.md`, Mouse).
+
 ## 7. Memory layout
 
 ```text
@@ -1135,6 +1151,9 @@ The examples:
 - **`tui_keys`**: prints the symbolic name of every decoded TUI key.
 - **`tui_dialog`**: menu, list, input, checkbox, buttons and a modal
   confirmation built on the optional widget archive.
+- **`tui_mouse`**: the same widgets driven by the mouse: a clickable menu
+  bar, checkbox and button, a list the wheel scrolls, a confirm box and a
+  status line showing each event; the keys work alongside.
 
 ## 11. The standalone SDK
 
@@ -1160,7 +1179,7 @@ kos-sdk-<version>/
   mk/kos.mk        the program rule
   template/        Makefile and hello.c
   examples/        hello, fardemo, fardata, files, tui_demo, tui_keys,
-                   tui_dialog
+                   tui_dialog, tui_mouse
   docs/            sdk.md, tui.md, exe-format.md
 ```
 

@@ -14,18 +14,24 @@ cycles the menu, both panes and every action button, and only the focused
 control is highlighted.
 
 `make test` passes the portable C codec vector, 10 Python
-protocol/service/security/write tests, 6 EXE/UI structure checks, and a
-production-image simulator replay of F1/menu/Tab/clean-quit navigation. The
-standalone SDK 0.2.0 archive SHA-256 is
-`236f77c60b42f6f6d5fc65a0a9f7a3100b7ac4afcbe49c9e9e9631d77711f7b7`.
-The validated `build/user/konacmd.exe` SHA-256 is
-`b8cfdd74be98b51cea77c1eac01597082452fbda4b168b402d35253e83a8e95d`;
-its 36,277-byte primary image plus 18,063-byte BSS ends at `D544h`, leaving
-1,724 bytes below its `DC00h-DFFFh` stack. Post-port responsiveness work
-removed redundant logical-screen clears, full-row reverse-video selection,
+protocol/service/security/write tests, 8 EXE/UI structure checks, and
+production-image simulator replays of F1/menu/Tab/clean-quit navigation and of
+the mouse (click, double click, wheel, menus, buttons, viewer, and the copy
+confirmation against an attached PC service).  The Makefile builds against
+the standalone SDK 0.2.0 archive.  `build/user/kc.exe` is larger than its
+bank, so the SDK places it (resident, home and one far segment, with libtui's
+mouse member pinned resident in the Makefile); its data ends at the stack base
+`DC80h`.  Post-port responsiveness work removed redundant logical-screen clears, full-row reverse-video selection,
 and status-line churn on focus keys. A production-image replay with two real
 `/fs` entries pins both an ordinary Down selection and a left-to-right Tab to
 exactly two V9958 glyph draws.
+
+The mouse works through libtui's opt-in mouse: `tui_mouse_enable(0)` after
+`tui_init`, then `TUI_KEY_MOUSE` arrives from `tui_getkey`.  `mouse_key` turns
+a click, double click or wheel notch into the key that does the same
+(Enter, Up, Down) so the keyboard path stays the only implementation; the
+pop-up menu, the viewer and the help screen read the event themselves.  A
+mouse is never required: enabling it fails quietly on a console without one.
 
 No physical-board copy session has been performed in this environment.  The
 next action is the README hardware smoke test.
@@ -34,7 +40,7 @@ empty live UI, and `r` performs a later connection or reconnection.
 
 ## Product boundary
 
-KonaCommander is a native KonaOS program (`konacmd.exe`) plus a Python host
+KonaCommander is a native KonaOS program (`kc.exe`) plus a Python host
 companion (`host/kcommander_host.py`).  The Kona program owns the V9958/HID
 console and talks to the PC through `/dev/serial/0`; the host companion owns a
 serial device and exposes exactly one configured directory as virtual `/`.
@@ -119,7 +125,7 @@ tests/include/...            only if a narrow host compatibility shim is needed
 ```
 
 Keep protocol encoding in one portable C module so host-side tests can verify
-the exact code linked into `konacmd.exe`.  Keep KonaOS calls out of that module.
+the exact code linked into `kc.exe`.  Keep KonaOS calls out of that module.
 
 ## Phase gates
 
@@ -205,7 +211,7 @@ transfer resume, and rate/ETA display remain out of scope.
    projects or user changes.
 2. Read this file and `PROTOCOL.md` completely.
 3. Run `make test` in this directory, then `make`.
-4. Inspect `build/user/konacmd/konacmd.report.json` for image/BSS/stack bounds.
+4. Inspect `build/user/kc/kc.report.json` for image/BSS/stack bounds.
 5. Continue from the first phase gate that is not met; update this file only
    when scope or a durable invariant actually changes.
 6. Before hand-off, remove Python cache files and report that hardware serial

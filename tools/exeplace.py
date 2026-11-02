@@ -25,7 +25,16 @@ addresses):
 Usage:
     exeplace.py analyze LINKSCRIPT
     exeplace.py plan LINKSCRIPT [RESIDENT.rel ...] [MODULE=ZONE ...]
+                [--declared=MODULE ...]
     exeplace.py link LINKSCRIPT OUTDIR STACK [RESIDENT.rel ...] [MODULE=ZONE ...]
+                [--declared=MODULE ...]
+
+Code whose address is stored in data (a function pointer in a data or
+constant area) is resident with its closure: a pointer may be called from
+any zone.  The relocations show it for a program's sources; an SDK library
+keeps its tables in its code, so the SDK names the members reached that way
+with --declared=MODULE (lib<name>.lib(<member>.rel)).  A pin of such a
+module to home or a far segment is refused.
 
 `link` writes OUTDIR/placed.lk (the link script to run instead), and for a
 placed program the rewritten objects, the veneer and area-order modules,
@@ -72,6 +81,7 @@ class Module(object):
         self.areas = []               # [name, size, flags]
         self.symbols = []             # [name, defined, area_index, value]
         self.refs = []                # (symbol, kind, from_area)
+        self.words = []               # (from_area, target_area) address words
         self._parse()
 
     def _parse(self):
@@ -111,6 +121,17 @@ class Module(object):
                     mode, pos = items[k], items[k + 1]
                     index = items[k + 2] | (items[k + 3] << 8)
                     if not mode & R_SYM:
+                        # An area-relative address word (a function
+                        # pointer to a static function has no symbol).
+                        # Inside a code area it is an operand or a jump
+                        # table of the module itself; anywhere else it is
+                        # data holding the address of code.
+                        if (not mode & (R_BYTE | R_PCR) and
+                                area < len(self.areas) and
+                                self.areas[area][0] not in CODE_AREAS and
+                                index < len(self.areas)):
+                            self.words.append((self.areas[area][0],
+                                               self.areas[index][0]))
                         continue
                     symbol = self.symbols[index][0]
                     at = base + pos - 4
@@ -329,16 +350,62 @@ def unit_edges(modules):
             if target is None or target == source:
                 continue
             edges[source].setdefault(target, []).append((symbol, kind))
+        for from_area, to_area in module.words:
+            if to_area in DATA_AREAS or to_area == CONST_AREA:
+                continue
+            source = unit_of(module, from_area)
+            target = (module.origin, "code")
+            if source != target:
+                edges[source].setdefault(target, []).append((to_area,
+                                                             "pointer"))
     return edges
 
 
-def place(modules, stack, resident_sources, pins):
+def pointed_units(modules, edges, declared):
+    """Code units whose address is stored in data: unit -> why, a list of
+    (source unit or None, what).  The address of code may be read from any
+    zone, so such code is resident.  A data or constant area holding it is
+    seen in the relocations; an SDK library compiled without a constant
+    area keeps its tables in its code, so the SDK declares those members
+    (`declared`, module origins)."""
+    pointed = OrderedDict()
+    for source, targets in edges.items():
+        if source[1] not in ("data", "const"):
+            continue
+        for target, refs in targets.items():
+            if target[1] == "code":
+                pointed.setdefault(target, []).append((source, refs[0][0]))
+    known = set(m.origin for m in modules)
+    for origin in sorted(declared):
+        if origin in known:
+            pointed.setdefault((origin, "code"), []).append((None, None))
+    return pointed
+
+
+def pointed_refusal(unit, why, zone):
+    source, _what = why[0]
+    if source is None:
+        by = "the SDK declares it reached through function pointers"
+    else:
+        by = "function pointers in the %s of %s point at it" % (
+            "constants" if source[1] == "const" else "data", source[0])
+    return ("%s: pinned to %s, but code reached through a function pointer "
+            "is resident (%s)" % (unit[0], zone, by))
+
+
+def place(modules, stack, resident_sources, pins, declared=()):
     """Assign every unit a zone: "resident", "home" or "farN".
 
     resident_sources: program object paths that are resident roots;
-    pins: {module origin: zone}."""
+    pins: {module origin: zone}; declared: library members the SDK declares
+    reached through function pointers."""
     plan = Plan()
     edges = unit_edges(modules)
+    pointed = pointed_units(modules, edges, declared)
+    for unit, why in pointed.items():
+        zone = pins.get(unit[0])
+        if zone is not None and zone != "resident":
+            raise PlaceError(pointed_refusal(unit, why, zone))
     for module in modules:
         plan.size[(module.origin, "code")] = module.code_size()
         plan.size[(module.origin, "data")] = module.data_size()
@@ -357,7 +424,8 @@ def place(modules, stack, resident_sources, pins):
         if o.endswith("crt0.rel") or o.startswith("libkos.lib("):
             plan.zone[(o, "code")] = "resident"
             plan.why[(o, "code")] = "runtime"
-        elif o in resident_sources or pins.get(o) == "resident":
+        elif (o in resident_sources or pins.get(o) == "resident" or
+              (o, "code") in pointed):
             roots.append((o, "code"))
     stack_units = list(roots)
     while stack_units:
@@ -372,6 +440,9 @@ def place(modules, stack, resident_sources, pins):
         for target in edges[unit]:
             if target[1] == "code" and plan.zone.get(target) != "resident":
                 stack_units.append(target)
+    for unit in pointed:
+        if plan.why.get(unit) == "root":
+            plan.why[unit] = "function pointer"
     # Data is resident by default.
     for unit in plan.size:
         if unit[1] == "data":
@@ -602,7 +673,7 @@ def assemble(source, workdir):
         os.path.basename(source))[0] + ".rel")
 
 
-def placed_link(script, outdir, stack, resident_sources, pins):
+def placed_link(script, outdir, stack, resident_sources, pins, pointers=()):
     objects, libraries, bases = parse_link_script(script)
     modules, _undefined = resolve(objects, libraries)
     os.makedirs(outdir, exist_ok=True)
@@ -618,13 +689,13 @@ def placed_link(script, outdir, stack, resident_sources, pins):
         with open(os.path.join(outdir, "placement.json"), "w") as handle:
             handle.write("null\n")
         return None
-    plan, edges = place(modules, stack, resident_sources, pins)
+    plan, edges = place(modules, stack, resident_sources, pins, pointers)
     need, bad = veneers(plan, edges)
     if need:
         # The veneers call the trampoline: its libkos members join the
         # link (resident, as all of libkos) and the placement is redone.
         modules, _undefined = resolve(objects, libraries, ("kos_vcall",))
-        plan, edges = place(modules, stack, resident_sources, pins)
+        plan, edges = place(modules, stack, resident_sources, pins, pointers)
         need, bad = veneers(plan, edges)
     if bad:
         raise PlaceError("\n".join("%s: %s (%s) from %s into %s" % b
@@ -676,7 +747,9 @@ def placed_link(script, outdir, stack, resident_sources, pins):
             handle.write(rewrite(module, code_area, data_area, renames))
         paths.append(path)
     # The veneers and the area order.
-    lines = ["\t.module kos_veneers", "\t.globl kos_vcall"]
+    lines = ["\t.module kos_veneers"]
+    if need:
+        lines.append("\t.globl kos_vcall")
     for symbol in need:
         lines.append("\t.globl %s" % symbol)
     lines.append("\t.area _CODE")
@@ -782,15 +855,25 @@ def verify(paths):
     return problems
 
 
+def split_args(args):
+    """(resident sources, pins, declared members) from the trailing
+    arguments: PATH, MODULE=ZONE and --declared=MODULE."""
+    declared = set(a[len("--declared="):] for a in args
+                   if a.startswith("--declared="))
+    rest = [a for a in args if not a.startswith("--declared=")]
+    return (set(a for a in rest if "=" not in a),
+            dict(a.split("=", 1) for a in rest if "=" in a), declared)
+
+
 def main(argv):
     if len(argv) == 3 and argv[1] == "analyze":
         analyze(argv[2])
         return 0
     if len(argv) >= 5 and argv[1] == "link":
-        resident = set(a for a in argv[5:] if "=" not in a)
-        pins = dict(a.split("=", 1) for a in argv[5:] if "=" in a)
+        resident, pins, pointers = split_args(argv[5:])
         try:
-            placed_link(argv[2], argv[3], int(argv[4], 0), resident, pins)
+            placed_link(argv[2], argv[3], int(argv[4], 0), resident, pins,
+                        pointers)
         except PlaceError as exc:
             sys.stderr.write("exeplace: %s\n" % exc)
             return 1
@@ -798,9 +881,12 @@ def main(argv):
     if len(argv) >= 3 and argv[1] == "plan":
         objects, libraries, _bases = parse_link_script(argv[2])
         modules, _undefined = resolve(objects, libraries)
-        resident = set(a for a in argv[3:] if not "=" in a)
-        pins = dict(a.split("=", 1) for a in argv[3:] if "=" in a)
-        plan, edges = place(modules, 1024, resident, pins)
+        resident, pins, declared = split_args(argv[3:])
+        try:
+            plan, edges = place(modules, 1024, resident, pins, declared)
+        except PlaceError as exc:
+            sys.stderr.write("exeplace: %s\n" % exc)
+            return 1
         print(report(plan, edges, 1024))
         return 0
     sys.stderr.write(__doc__)

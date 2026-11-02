@@ -60,11 +60,19 @@
 #   PLACE=MOD=ZONE:..   placement pins, colon separated: a program source
 #                       (by its name) or a library member (as
 #                       lib<name>.lib(<member>.rel)) to `resident`,
-#                       `home` or `farN`.  A program whose code and data
+#                       `home` or `farN`.  Written as is in the Makefile,
+#                       the parentheses included: the rule quotes each
+#                       pin for the shell.  A program whose code and data
 #                       do not fit its bank is placed without either:
 #                       tools/exeplace.py gives every object module a
 #                       zone and routes the calls between zones through
 #                       generated veneers (OBJDIR/place/placement.txt).
+#                       Code whose address is stored in data (a function
+#                       pointer in a program's tables) is resident, found
+#                       by the placer; the library members the SDK
+#                       declares below are resident in every placed
+#                       program that links the library.  A pin of such a
+#                       module to `home` or `farN` is refused.
 #   DATA1..DATA4=SRC:SRC  far-data sources (relative to DIR) compiled into
 #                       the areas `_DATA<n>` (their `const` objects) and
 #                       `_DATA<n>B` (their zeroed objects), the pair linked
@@ -116,6 +124,22 @@ KOS_MODULES  ?= $(KOS_BUILD)/modules
 # Every file that defines the program rules: editing one must relink (and,
 # where the sources are in-tree, re-archive).
 KOS_RULES    ?= $(KOS_SDK_ROOT)/mk/kos.mk
+
+# The library members whose code is reached through function pointers, per
+# library name (LIBS=): a member holding a table of function pointers, or
+# the target of a pointer stored in the library's data, is called from
+# wherever the library's callers run.  SDK libraries are compiled without a
+# constant area, so their tables sit in their code and the placer cannot
+# see them in the relocations: the SDK declares them here, and every
+# placed program that links the library gets them resident.  Add a member
+# when its code is reached through a pointer (an address stored in data, a
+# table of function pointers handed to another member), not for plain
+# calls.  libtui's mouse member is read through tui_mouse_hook; libkres's
+# adapters and caches are the tables handed to kres_install, and
+# kres_mut.rel's functions are installed as the read path's hooks.
+KOS_POINTER_MEMBERS_tui  := tui_mouse.rel
+KOS_POINTER_MEMBERS_kres := kres_mut.rel kres_adapter.rel \
+	kres_adapter_mut.rel kres_cache_xmem.rel
 
 SDCC    ?= sdcc
 SDASZ80 ?= sdasz80
@@ -221,6 +245,9 @@ $(1)_GRID   := $$(patsubst TUI_GRID=%,%,$$(filter TUI_GRID=%,$$($(1)_OPTS)))
 $$(if $$($(1)_GRID),$$(if $$(filter $$($(1)_GRID),$$(KOS_TUI_GRIDS)),,$$(error $(1): TUI_GRID=$$($(1)_GRID) is not one of $$(KOS_TUI_GRIDS))))
 $(1)_LIBS   := $$(if $$(filter LIBS=%,$$($(1)_OPTS)),$$(patsubst LIBS=%,%,$$(filter LIBS=%,$$($(1)_OPTS))),)
 $(1)_LIBFILES := $$(foreach name,$$(subst :, ,$$($(1)_LIBS)),$$(EXE_LIB_DIR)/lib$$(if $$(and $$(filter tui,$$(name)),$$(filter-out 85x26,$$($(1)_GRID))),tui_$$($(1)_GRID),$$(name)).lib)
+# The members the SDK declares reached through function pointers, named as
+# the placer names a library module: lib<name>.lib(<member>.rel).
+$(1)_DECLARED := $$(foreach name,$$(subst :, ,$$($(1)_LIBS)),$$(foreach m,$$(KOS_POINTER_MEMBERS_$$(name)),--declared=lib$$(if $$(and $$(filter tui,$$(name)),$$(filter-out 85x26,$$($(1)_GRID))),tui_$$($(1)_GRID),$$(name)).lib($$(m))))
 $(1)_LINKOBJS := $$($(1)_ORDERREL) $$(if $$($(1)_NOCRT0),,$$(EXE_CRT0)) $$(EXE_RUNTIME) $$($(1)_OBJS) $$($(1)_FAROBJS) $$($(1)_DATAOBJS)
 $(1)_EXE    := $$(EXE_USER_ROOT)/$(1).exe
 
@@ -366,7 +393,8 @@ $$($(1)_OBJDIR)/$(1).lk: $$($(1)_LINKOBJS) $$($(1)_LIBFILES) $$(EXE_LIBKOS) \
 # veneers and the zone bases (tools/exeplace.py).
 $$($(1)_OBJDIR)/$(1).link: $$($(1)_OBJDIR)/$(1).lk $$(KOS_TOOLS)/exeplace.py
 	$(KOS_PYTHON) $$(KOS_TOOLS)/exeplace.py link $$< $$($(1)_OBJDIR)/place \
-	    $$($(1)_STACK) $$($(1)_RESIDENT) $$($(1)_PINS)
+	    $$($(1)_STACK) $$($(1)_RESIDENT) $$(foreach p,$$($(1)_PINS),'$$(p)') \
+	    $$(foreach d,$$($(1)_DECLARED),'$$(d)')
 	$(SDLDZ80) -f $$($(1)_OBJDIR)/place/placed.lk
 	touch $$@
 

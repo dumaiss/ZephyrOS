@@ -103,6 +103,11 @@ void kc_link_close(void)
 	}
 }
 
+int kc_link_time(uint32_t *now)
+{
+	return timer_now(clock_handle, now);
+}
+
 static int receive_response(const struct kc_frame *request,
 			    struct kc_frame *response)
 {

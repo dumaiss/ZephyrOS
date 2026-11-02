@@ -27,6 +27,19 @@ selection, being contiguous, puts at most one selected span on a row.  TAB
 advances to the next multiple of eight.  Positions stay 32-bit; screen
 coordinates are bytes.
 
+## Input
+
+Keys arrive through `tui_getkey`.  The mouse is libtui's opt-in mouse:
+`tui_mouse_enable(0)` after `tui_init` (it fails quietly on a console without
+a render path or a mouse), after which `tui_getkey` also returns
+`TUI_KEY_MOUSE` and `tui_mouse_get` gives the event.  Every wait on input goes
+through `next_key`, which drops the events a surface does not use (all but a
+left press and the wheel in menus and dialogs) so they do not redraw it.  In
+the editing area `mouse_edit` maps a click to a document position with
+`ke_position_for_column` (TABs as drawn, the sideways scroll added), a drag to
+the mark, and the wheel to `ke_view_scroll`; a menu title opens `run_menu` at
+that menu.  The file dialog's double click is timed with `kos/timer.h`.
+
 ## Clipboard and history
 
 The clipboard uses two public 16-KiB mappable XMEM allocations and accepts up

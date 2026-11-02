@@ -12,6 +12,10 @@ transcript:
   object, oversized rejection, exhaustion and fragmentation, stale-handle
   rejection, no pre-zeroing, boundary and whole-object transfers, range
   rejection, multiple objects per bank;
+* the object table: 32 objects live system-wide, the 33rd refused with
+  `KOS_ENOSPC` while memory is free, handles above one byte, a freed
+  entry reused with a new generation and a handle wider than nine bits
+  refused;
 * the aperture outcomes: the token/address pair, direct access, buffer
   identity (a syscall buffer in the aperture names the far bank), the
   non-mappable refusal;
@@ -118,6 +122,8 @@ OUTCOMES = [
     "exhaustion-16k-count", "exhaustion-16k", "exhaustion-16k-refill",
     "exhaustion-mappable-count", "exhaustion-mappable",
     "exhaustion-mappable-refill",
+    "objects-32", "objects-33-refused", "objects-handles", "objects-reuse",
+    "objects-stale",
     "map-token", "map-address-low", "map-address-high", "map-token-page",
     "map-non-mappable",
     "aperture-open", "aperture-direct", "aperture-xmem-read",
@@ -209,7 +215,7 @@ class SegMapCallCounter:
     """Attributes every SYS_SEG_MAP the image issues.
 
     `by_class` keys are (program, caller symbol): `xmem_far` with
-    `___sdcc_bcall_ehl` is the trampoline filling its token cache,
+    `_bcall_token` is the trampoline's token lookup filling its cache,
     `xmem_far` with `_farcall` the primitive (no cache: a map per call),
     `xmem_far` with `_main` the program's own `segmap` calls, and
     `xmem_child` with `_main` the child's foreign-segment probe.  A call
@@ -412,7 +418,7 @@ class TestXmemSelftest(XmemSelftestReplay):
                        halt_ok=True, panic=None, on_step=counter)
         self.assertEqual(counter.by_class, {
             # The token cache: one SYS_SEG_MAP per far segment used.
-            ("xmem_far", "___sdcc_bcall_ehl"): {1: 1, 2: 1},
+            ("xmem_far", "_bcall_token"): {1: 1, 2: 1},
             # The primitive: segment 1's entry, its exit from far context
             # and segment 2's entry.
             ("xmem_far", "_farcall"): {1: 2, 2: 1},

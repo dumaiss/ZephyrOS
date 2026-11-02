@@ -139,6 +139,7 @@ SDK_FILES = {
     "examples/tui_demo.c",
     "examples/tui_keys.c",
     "examples/tui_dialog.c",
+    "examples/tui_mouse.c",
     "docs/sdk.md",
     "docs/tui.md",
     "docs/exe-format.md",
@@ -349,7 +350,8 @@ class TestSdkPackage(unittest.TestCase):
                                         ("examples", ["hello", "fardemo",
                                                       "files", "fardata",
                                                       "tui_demo", "tui_keys",
-                                                      "tui_dialog"]),
+                                                      "tui_dialog",
+                                                      "tui_mouse"]),
                                         ("tui", ["tui_sdkprobe",
                                                  "widget_sdkprobe"])):
                 workdir = os.path.join(source, directory)
@@ -520,7 +522,7 @@ class TestSdkPackage(unittest.TestCase):
         self.assertEqual(sorted(self._build()),
                          ["fardata", "fardemo", "files", "hello",
                           "tui_demo", "tui_dialog", "tui_keys",
-                          "tui_sdkprobe", "widget_sdkprobe"])
+                          "tui_mouse", "tui_sdkprobe", "widget_sdkprobe"])
 
     def test_the_packed_program_runs_in_the_simulator(self):
         """The store carries the SDK-built hello.exe as /system/hello.exe;
@@ -561,7 +563,8 @@ class TestSdkPackage(unittest.TestCase):
 
     def test_the_tui_examples_run_from_an_sdk_build(self):
         """The SDK-built standalone examples run from the card: the core
-        demo/key report and the widget dialog produce their pass lines."""
+        demo/key report, the widget dialog and the mouse form (driven by
+        its keys) produce their pass lines."""
         self._require_image()
         built = self._build()
         dialog_keys = (b"f" b"\x1b[Fm\r" b"\x1b[B\r" b"\x1b[C\r")
@@ -571,6 +574,8 @@ class TestSdkPackage(unittest.TestCase):
             ("tuidlg.exe", built["tui_dialog"], dialog_keys,
              "TUI DIALOG PASS name=Adam sel=2 checked=1 menu=10 "
              "input=1 confirm=4"),
+            ("tuimouse.exe", built["tui_mouse"], b" \r\x1b\r",
+             "TUI MOUSE PASS mouse=1 checked=1 clicks=1 sel=0 menu=0"),
         )
         for card_name, path, keys, expected in cases:
             stream = self._pack_test_store([(card_name, path)])

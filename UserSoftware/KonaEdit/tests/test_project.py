@@ -1,12 +1,13 @@
 """Static/package checks for the standalone KonaEdit consumer."""
 
 import json
+import re
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-REPORT = ROOT / "build/user/konaedit/konaedit.report.json"
+REPORT = ROOT / "build/user/kedit/kedit.report.json"
 
 
 class KonaEditProjectTest(unittest.TestCase):
@@ -37,6 +38,18 @@ class KonaEditProjectTest(unittest.TestCase):
         headroom = report["stack"]["base"] - linked_end
         self.assertGreaterEqual(report["stack"]["size"], 768)
         self.assertGreaterEqual(headroom, 512)
+
+    def test_the_mouse_member_stays_resident(self):
+        # tui_shutdown reaches libtui's mouse member through a pointer
+        # the placer cannot follow: it must be resident, below 8000h,
+        # from wherever it runs.
+        if not REPORT.is_file():
+            self.skipTest("build KonaEdit before checking its map")
+        listing = (ROOT / "build/user/kedit/kedit.map").read_text()
+        address = re.search(r"^\s+([0-9A-F]{8})\s+_tui_mouse_enable\s",
+                            listing, re.M)
+        self.assertIsNotNone(address)
+        self.assertLess(int(address.group(1), 16), 0x8000)
 
     def test_required_operator_documents_exist(self):
         for name in ("README.md", "DESIGN.md"):

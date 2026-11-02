@@ -47,7 +47,6 @@ The initial TUI SDK should:
 The first version does **not** need:
 
 - raw HID key events from the IOC;
-- mouse or pointer support;
 - a graphical UI;
 - multitasking or a window server;
 - a Turbo Vision-compatible object hierarchy;
@@ -87,6 +86,16 @@ sequences before KonaOS sees it.
 ```
 
 The application deals only with TUI concepts.
+
+The mouse is an opt-in layer beside the key API. `tui_mouse_enable()`
+binds the HID driver's `/dev/input/mouse` and the video driver's pointer
+(through libkos `kos/mouse.h`), and installs a hook: the key decoder reads
+the mouse once per poll that found no key and returns `TUI_KEY_MOUSE` for
+a click, release, wheel or drag event, in cells of the logical screen;
+`tui_shutdown()` disables it, and the widget runners take clicks through
+the same hook. A program that never enables the mouse links none of this.
+The pointer is a sprite over the V9958 text console, so the mouse needs
+that console's render path; the serial console has none.
 
 It never needs to know whether the underlying console is:
 
@@ -1103,6 +1112,7 @@ include/tui_widgets.h
 examples/tui_demo
 examples/tui_keys
 examples/tui_dialog
+examples/tui_mouse
 ```
 
 Document:

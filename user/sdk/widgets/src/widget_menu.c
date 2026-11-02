@@ -1,5 +1,8 @@
 /* Menu-bar interaction: left/right navigation, ENTER, declared
- * shortcuts, and ESC. */
+ * shortcuts, and ESC; with the mouse enabled, a left press on an item's
+ * label chooses it and the wheel moves the selection as left/right do.
+ * The mouse is reached through tui_mouse_hook only, so a program without
+ * the mouse links no mouse code. */
 
 #include "widget_internal.h"
 
@@ -25,6 +28,38 @@ tui_id_t tui_menu_run(const struct tui_menu_item *items, uint8_t count)
 			return TUI_ID_NONE;
 		}
 		key = tui_getkey();
+		if (key == TUI_KEY_MOUSE) {
+			struct tui_mouse ev;
+
+			if (tui_mouse_hook->get(&ev) < 0) {
+				continue;
+			}
+			if ((ev.pressed & TUI_MOUSE_LEFT) != 0u && ev.wrow == 0) {
+				/* The labels as tui_menubar() lays them out:
+				 * each followed by one blank. */
+				uint8_t x = 0u;
+
+				for (i = 0u; i < count; ++i) {
+					uint8_t end = (uint8_t)(x + (uint8_t)
+						w_strlen(items[i].label));
+
+					if ((uint8_t)ev.wcol >= x &&
+					    (uint8_t)ev.wcol < end) {
+						return items[i].id;
+					}
+					x = (uint8_t)(end + 1u);
+				}
+				continue;
+			}
+			/* Away from the user is towards the first item. */
+			if (ev.wheel > 0) {
+				key = TUI_KEY_LEFT;
+			} else if (ev.wheel < 0) {
+				key = TUI_KEY_RIGHT;
+			} else {
+				continue;
+			}
+		}
 		if (key == TUI_KEY_ESC) {
 			return TUI_ID_NONE;
 		}

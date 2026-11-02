@@ -1,4 +1,5 @@
 #include "kos.h"
+#include "kos/timer.h"
 #include "tui.h"
 
 #include "ke_file.h"
@@ -17,6 +18,9 @@
 #define KE_DIALOG_WIDTH 36u
 #define KE_DIALOG_HEIGHT 18u
 #define KE_DIR_PAGE 8u
+#define KE_WHEEL_LINES 3u
+/* 500 ms in the 25.6 us counts of the clock. */
+#define KE_DOUBLE_CLICK_COUNTS 19531ul
 
 enum ke_action {
 	ACT_NONE,
@@ -39,7 +43,8 @@ enum ke_action {
 	ACT_KEYS,
 	ACT_ABOUT,
 	ACT_MENU_LEFT = 250,
-	ACT_MENU_RIGHT
+	ACT_MENU_RIGHT,
+	ACT_MENU_CLOSE
 };
 
 /* What a key did to the document lines on screen. */
@@ -115,6 +120,14 @@ static uint8_t insert_mode;
 static uint8_t mark_active;
 static uint8_t have_match;
 static uint8_t match_case;
+/* The mouse: a drag in the editing area (left button held since a press
+ * at drag_anchor), the clock and the last list click for a double click. */
+static uint8_t drag_active;
+static ke_pos_t drag_anchor;
+static int clock_handle;
+static uint8_t click_valid;
+static uint8_t click_row;
+static uint32_t click_time;
 
 static void set_text(char *target, const char *source, uint16_t capacity)
 {
@@ -318,6 +331,53 @@ static void render_all(void)
 	(void)tui_end();
 }
 
+/* The next key.  A mouse event comes back as TUI_KEY_MOUSE with its
+ * state in *ev; unless `all`, only a left press or the wheel does. */
+static tui_key_t next_key(struct tui_mouse *ev, uint8_t all)
+{
+	for (;;) {
+		tui_key_t key = tui_getkey();
+
+		if (key != TUI_KEY_MOUSE) return key;
+		if (tui_mouse_get(ev) < 0) continue;
+		if (all != 0u || ev->kind == TUI_MOUSE_WHEEL ||
+		    (ev->pressed & TUI_MOUSE_LEFT) != 0u) return key;
+	}
+}
+
+static uint8_t left_press(const struct tui_mouse *ev)
+{
+	return (uint8_t)((ev->pressed & TUI_MOUSE_LEFT) != 0u);
+}
+
+/* 1 when the event's cell is on row `y`, columns [x, x + width). */
+static uint8_t over(const struct tui_mouse *ev, uint8_t x, uint8_t y,
+		    uint8_t width)
+{
+	return (uint8_t)(ev->row == y && ev->col >= x && ev->col < x + width);
+}
+
+/* A second left press on list row `row` within 500 ms of the first. */
+static uint8_t double_click(uint8_t row)
+{
+	uint32_t now = 0ul;
+	uint8_t twice;
+
+	if (clock_handle <= 0 || timer_now(clock_handle, &now) < 0) return 0u;
+	twice = (uint8_t)(click_valid != 0u && click_row == row &&
+			  now - click_time <= KE_DOUBLE_CLICK_COUNTS);
+	click_valid = (uint8_t)(twice == 0u);
+	click_row = row;
+	click_time = now;
+	return twice;
+}
+
+static const char *button_text(tui_id_t id)
+{
+	return id == TUI_ID_OK ? "OK" : id == TUI_ID_YES ? "YES" :
+	       id == TUI_ID_NO ? "NO" : "CANCEL";
+}
+
 static tui_id_t message_box(const char *title, const char *message,
 			    uint16_t buttons)
 {
@@ -343,6 +403,7 @@ static tui_id_t message_box(const char *title, const char *message,
 	for (;;) {
 		uint8_t i;
 		tui_key_t key;
+		struct tui_mouse ev;
 
 		tui_begin();
 		(void)tui_fill(&box, ' ', TUI_STYLE_NORMAL);
@@ -351,16 +412,26 @@ static tui_id_t message_box(const char *title, const char *message,
 		(void)ke_label((uint8_t)(box.x + 2u), (uint8_t)(box.y + 3u),
 				message);
 		for (i = 0u; i < count; ++i) {
-			const char *label = ids[i] == TUI_ID_OK ? "OK" :
-				ids[i] == TUI_ID_YES ? "YES" :
-				ids[i] == TUI_ID_NO ? "NO" : "CANCEL";
 			(void)ke_button((uint8_t)(box.x + 3u + i * 10u),
-					 (uint8_t)(box.y + 7u), label,
-					 i == focus);
+					 (uint8_t)(box.y + 7u),
+					 button_text(ids[i]), i == focus);
 		}
 		(void)tui_cursor_hide();
 		(void)tui_end();
-		key = tui_getkey();
+		key = next_key(&ev, 0u);
+		while (key == TUI_KEY_MOUSE) {
+			/* A left press on a button chooses it. */
+			for (i = 0u; left_press(&ev) && i < count; ++i) {
+				if (over(&ev, (uint8_t)(box.x + 3u + i * 10u),
+					 (uint8_t)(box.y + 7u),
+					 (uint8_t)(strlen(button_text(ids[i])) + 4u))) {
+					(void)tui_restore(&box, dialog_saved,
+							  sizeof(dialog_saved));
+					return ids[i];
+				}
+			}
+			key = next_key(&ev, 0u);
+		}
 		if (key == 13u || key == 10u) {
 			tui_id_t result = ids[focus];
 			(void)tui_restore(&box, dialog_saved, sizeof(dialog_saved));
@@ -408,6 +479,7 @@ static int prompt_text(const char *title, char *buffer, uint16_t capacity)
 	(void)tui_end();
 	for (;;) {
 		tui_key_t key;
+		struct tui_mouse ev;
 
 		tui_begin();
 		(void)ke_input((uint8_t)(box.x + 2u), (uint8_t)(box.y + 4u),
@@ -417,7 +489,9 @@ static int prompt_text(const char *title, char *buffer, uint16_t capacity)
 			(uint8_t)(box.y + 4u));
 		(void)tui_cursor_show();
 		(void)tui_end();
-		key = tui_getkey();
+		/* The one field is always focused: a click leaves it so. */
+		key = next_key(&ev, 0u);
+		if (key == TUI_KEY_MOUSE) continue;
 		if (key == TUI_KEY_ESC) {
 			(void)tui_restore(&box, dialog_saved, sizeof(dialog_saved));
 			return 0;
@@ -551,6 +625,9 @@ static int file_dialog(uint8_t saving, char *result_path)
 	uint8_t focus = 0u;
 	uint16_t name_length = 0u;
 	uint16_t need;
+	tui_key_t key = TUI_KEY_NONE;
+	struct tui_mouse ev;
+	uint8_t wheel_left = 0u;
 
 	set_text(dialog_path, "/fs", sizeof(dialog_path));
 	dialog_name[0] = '\0';
@@ -568,11 +645,53 @@ static int file_dialog(uint8_t saving, char *result_path)
 	(void)tui_cursor_hide();
 	(void)tui_end();
 	for (;;) {
-		tui_key_t key;
 		uint8_t old_selected = selected_entry;
 		uint8_t redraw = 0u;
 
-		key = tui_getkey();
+		if (wheel_left != 0u) {
+			--wheel_left;
+		} else {
+			key = next_key(&ev, 0u);
+		}
+		if (key == TUI_KEY_MOUSE) {
+			uint8_t was = focus;
+
+			key = TUI_KEY_NONE;
+			if (ev.kind == TUI_MOUSE_WHEEL) {
+				/* The wheel moves the list a row per notch. */
+				int16_t notches = ev.wheel > 0 ? ev.wheel : -ev.wheel;
+
+				focus = 0u;
+				if (notches > KE_DIR_PAGE) notches = KE_DIR_PAGE;
+				wheel_left = (uint8_t)(notches - 1);
+				key = ev.wheel > 0 ? TUI_KEY_UP : TUI_KEY_DOWN;
+			} else if (ev.row >= box.y + 4u &&
+				   ev.row < box.y + 4u + KE_DIR_PAGE &&
+				   ev.col >= box.x + 3u && ev.col < box.x + box.w - 3u) {
+				uint8_t row = (uint8_t)(ev.row - box.y - 4u);
+
+				/* A click selects the entry, a second opens it. */
+				focus = 0u;
+				if (row < count) {
+					selected_entry = row;
+					if (double_click(row)) key = 13u;
+				}
+			} else if (over(&ev, (uint8_t)(box.x + 8u),
+					(uint8_t)(box.y + 14u),
+					(uint8_t)(box.w - 10u))) {
+				focus = 1u;
+			} else if (over(&ev, (uint8_t)(box.x + 6u),
+					(uint8_t)(box.y + 16u), 8u)) {
+				/* With no name typed, Open takes the list's entry. */
+				focus = saving == 0u && dialog_name[0] == '\0' ? 0u : 2u;
+				key = 13u;
+			} else if (over(&ev, (uint8_t)(box.x + 21u),
+					(uint8_t)(box.y + 16u), 10u)) {
+				focus = 3u;
+				key = 13u;
+			}
+			if (focus != was) redraw = 2u;
+		}
 		if (key == TUI_KEY_ESC) break;
 		if (key == 9u) {
 			focus = (uint8_t)((focus + 1u) % 4u);
@@ -755,9 +874,29 @@ static uint8_t run_popup(uint8_t menu)
 	}
 	(void)tui_end();
 	for (;;) {
-		tui_key_t key = tui_getkey();
+		struct tui_mouse ev;
+		tui_key_t key = next_key(&ev, 0u);
 		uint8_t old = selected_row;
 
+		if (key == TUI_KEY_MOUSE) {
+			if (ev.kind == TUI_MOUSE_WHEEL) {
+				key = ev.wheel > 0 ? TUI_KEY_UP : TUI_KEY_DOWN;
+			} else if (ev.col > box.x && ev.col < box.x + box.w - 1u &&
+				   ev.row > box.y && ev.row < box.y + box.h - 1u) {
+				/* A click on an item runs it, as Enter does. */
+				uint8_t action = items[ev.row - box.y - 1u].action;
+
+				if (!action_enabled(action)) continue;
+				(void)tui_restore(&box, popup_saved, sizeof(popup_saved));
+				return action;
+			} else if (ev.col >= box.x && ev.col < box.x + box.w &&
+				   ev.row >= box.y && ev.row < box.y + box.h) {
+				continue;
+			} else {
+				selected_row = ACT_MENU_CLOSE;
+				break;
+			}
+		}
 		if (key == TUI_KEY_ESC) { selected_row = ACT_NONE; break; }
 		if (key == TUI_KEY_LEFT) { selected_row = ACT_MENU_LEFT; break; }
 		if (key == TUI_KEY_RIGHT) { selected_row = ACT_MENU_RIGHT; break; }
@@ -785,19 +924,47 @@ static uint8_t run_popup(uint8_t menu)
 	return selected_row;
 }
 
-static uint8_t run_menu(void)
+/* The menu whose title is under `column` of the bar, as ke_menubar lays
+ * them out (a blank between), or 0xFF. */
+static uint8_t menu_at(uint8_t column)
 {
-	uint8_t menu = 0u;
+	uint8_t x = 0u;
+	uint8_t menu;
 
+	for (menu = 0u; menu < 4u; ++menu) {
+		uint8_t end = (uint8_t)(x + strlen(menu_bar[menu].label));
+
+		if (column >= x && column < end) return menu;
+		x = (uint8_t)(end + 1u);
+	}
+	return 0xFFu;
+}
+
+/* The menu bar from `menu`; with `open` its pop-up opens at once. */
+static uint8_t run_menu(uint8_t menu, uint8_t open)
+{
 	for (;;) {
 		tui_id_t selected_id = menu_bar[menu].id;
+		struct tui_mouse ev;
 		tui_key_t key;
 
 		tui_begin();
 		(void)ke_menubar(menu_bar, 4u, selected_id);
 		(void)tui_cursor_hide();
 		(void)tui_end();
-		key = tui_getkey();
+		if (open != 0u) {
+			key = TUI_KEY_DOWN;
+			open = 0u;
+		} else {
+			key = next_key(&ev, 0u);
+		}
+		if (key == TUI_KEY_MOUSE) {
+			/* A press on a title opens it; anywhere else leaves. */
+			if (ev.kind == TUI_MOUSE_WHEEL) continue;
+			if (ev.row != 0u || menu_at(ev.col) == 0xFFu) break;
+			menu = menu_at(ev.col);
+			key = TUI_KEY_DOWN;
+		}
 		if (key == TUI_KEY_ESC || key == TUI_KEY_F1) break;
 		if (key == TUI_KEY_LEFT) menu = menu == 0u ? 3u : (uint8_t)(menu - 1u);
 		else if (key == TUI_KEY_RIGHT) menu = (uint8_t)((menu + 1u) % 4u);
@@ -806,6 +973,7 @@ static uint8_t run_menu(void)
 			if (action == ACT_MENU_LEFT) menu = menu == 0u ? 3u :
 							 (uint8_t)(menu - 1u);
 			else if (action == ACT_MENU_RIGHT) menu = (uint8_t)((menu + 1u) % 4u);
+			else if (action == ACT_MENU_CLOSE) break;
 			else if (action != ACT_NONE) return action;
 		}
 	}
@@ -1060,6 +1228,85 @@ static uint8_t perform_action(uint8_t action)
 	return 0u;
 }
 
+/* The document position under the event's cell: a row past the text is
+ * the last line, a column past the line end its end, TABs as drawn and
+ * the sideways scroll added. */
+static ke_pos_t position_at(const struct tui_mouse *ev)
+{
+	uint8_t row = ev->row < ke_view.first_row ? 0u :
+		      (uint8_t)(ev->row - ke_view.first_row);
+
+	if (row >= ke_view.rows) row = (uint8_t)(ke_view.rows - 1u);
+	while (row != 0u && ke_view.row_start[row] == KE_POS_NONE) --row;
+	return ke_position_for_column(&document, ke_view.row_start[row],
+				      ke_view.left_column + ev->col);
+}
+
+/* The wheel scrolls the view three lines a notch and, with the cursor
+ * out of it, brings the cursor to the nearest row, in the same column. */
+static void wheel_view(int16_t wheel)
+{
+	int8_t direction = wheel > 0 ? -1 : 1;
+	uint16_t lines = (uint16_t)((wheel > 0 ? wheel : -wheel) * KE_WHEEL_LINES);
+	uint32_t column = ke_visual_column(&document, cursor_position);
+
+	tui_begin();
+	set_view_selection();
+	/* Down stops with the last line on the bottom row. */
+	while (lines != 0u &&
+	       (direction < 0 || ke_view.row_start[ke_view.rows] != KE_POS_NONE) &&
+	       ke_view_scroll(direction)) --lines;
+	if (ke_view_row_of(cursor_position) == KE_VIEW_NONE) {
+		uint8_t row = 0u;
+
+		if (direction < 0) {
+			row = (uint8_t)(ke_view.rows - 1u);
+			while (row != 0u && ke_view.row_start[row] == KE_POS_NONE)
+				--row;
+		}
+		cursor_position = ke_position_for_column(&document,
+			ke_view.row_start[row], column);
+	}
+	(void)tui_end();
+}
+
+/* A mouse event in the editor: the menu bar, a click or drag in the text,
+ * the wheel.  Returns the menu's action, if one was chosen. */
+static uint8_t mouse_edit(const struct tui_mouse *ev)
+{
+	if (ev->kind == TUI_MOUSE_WHEEL) {
+		wheel_view(ev->wheel);
+		return ACT_NONE;
+	}
+	if (left_press(ev) && ev->row == 0u) {
+		uint8_t menu = menu_at(ev->col);
+
+		return menu == 0xFFu ? ACT_NONE : run_menu(menu, 1u);
+	}
+	if (left_press(ev) && ev->row >= ke_view.first_row &&
+	    ev->row < ke_view.first_row + ke_view.rows) {
+		/* A press places the cursor and clears any selection. */
+		cursor_position = position_at(ev);
+		mark_active = 0u;
+		drag_anchor = cursor_position;
+		drag_active = 1u;
+	} else if (drag_active != 0u && ev->kind == TUI_MOUSE_MOVE &&
+		   (ev->buttons & TUI_MOUSE_LEFT) != 0u) {
+		/* The cursor follows the drag from the anchor, which marks. */
+		ke_pos_t at = position_at(ev);
+
+		if (at != cursor_position) {
+			if (mark_active == 0u) {
+				mark_active = 1u;
+				mark_anchor = drag_anchor;
+			}
+			cursor_position = at;
+		}
+	}
+	if ((ev->released & TUI_MOUSE_LEFT) != 0u) drag_active = 0u;
+	return ACT_NONE;
+}
+
 static void move_vertical(int direction)
 {
 	uint32_t column = ke_visual_column(&document, cursor_position);
@@ -1140,6 +1387,9 @@ int ke_ui_run(const char *initial_path)
 		ke_store_dispose(&document);
 		return 1;
 	}
+	/* Without a mouse (the serial console, no driver) the keys do all. */
+	(void)tui_mouse_enable(0u);
+	clock_handle = timer_open();
 	ke_view_setup(&document, 1u, (uint8_t)(screen.rows - 2u), screen.cols);
 	(void)tui_set_style(TUI_STYLE_STATUS);
 	attr_status = tui_get_attr();
@@ -1159,9 +1409,12 @@ int ke_ui_run(const char *initial_path)
 	/* tui_init cleared the screen; render_all writes every cell. */
 	render_all();
 	for (;;) {
-		tui_key_t key = tui_getkey();
+		struct tui_mouse ev;
+		tui_key_t key = next_key(&ev, 1u);
 		uint8_t row = ke_view_row_of(cursor_position);
 		ke_pos_t old_cursor = cursor_position;
+		uint32_t old_top = ke_view.top_line;
+		uint8_t old_mark = mark_active;
 		ke_pos_t old_first;
 		ke_pos_t old_last;
 		uint8_t action = ACT_NONE;
@@ -1179,7 +1432,8 @@ int ke_ui_run(const char *initial_path)
 			/* The named keys share the high byte: one switch on
 			 * the low one. */
 			switch ((uint8_t)key) {
-			case (uint8_t)TUI_KEY_F1: action = run_menu(); break;
+			case (uint8_t)TUI_KEY_F1: action = run_menu(0u, 0u); break;
+			case (uint8_t)TUI_KEY_MOUSE: action = mouse_edit(&ev); break;
 			case (uint8_t)TUI_KEY_F2: action = ACT_SAVE; break;
 			case (uint8_t)TUI_KEY_F3: action = ACT_OPEN; break;
 			case (uint8_t)TUI_KEY_F4: action = ACT_FIND; break;
@@ -1277,6 +1531,11 @@ int ke_ui_run(const char *initial_path)
 			render_all();
 			continue;
 		}
+		/* A release, or a press on the cell the cursor is on, changes
+		 * nothing on the screen. */
+		if (key == TUI_KEY_MOUSE && cursor_position == old_cursor &&
+			mark_active == old_mark && ke_view.top_line == old_top)
+			continue;
 		tui_begin();
 		set_view_selection();
 		if (row == KE_VIEW_NONE && view_edit != VIEW_NONE)
@@ -1318,6 +1577,7 @@ int ke_ui_run(const char *initial_path)
 	}
 	ke_history_dispose(&history);
 	ke_store_dispose(&document);
+	if (clock_handle > 0) (void)unbind((unsigned char)clock_handle);
 	tui_shutdown();
 	return 0;
 }
