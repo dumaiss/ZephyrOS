@@ -140,6 +140,7 @@ SDK_FILES = {
     "examples/tui_keys.c",
     "examples/tui_dialog.c",
     "examples/tui_mouse.c",
+    "examples/gfx_mouse.c",
     "docs/sdk.md",
     "docs/tui.md",
     "docs/exe-format.md",
@@ -351,7 +352,8 @@ class TestSdkPackage(unittest.TestCase):
                                                       "files", "fardata",
                                                       "tui_demo", "tui_keys",
                                                       "tui_dialog",
-                                                      "tui_mouse"]),
+                                                      "tui_mouse",
+                                                      "gfx_mouse"]),
                                         ("tui", ["tui_sdkprobe",
                                                  "widget_sdkprobe"])):
                 workdir = os.path.join(source, directory)
@@ -520,8 +522,8 @@ class TestSdkPackage(unittest.TestCase):
         """`make` in template/, examples/ and the TUI fixture packs every
         program with the SDK alone; no compile or link names the OS tree."""
         self.assertEqual(sorted(self._build()),
-                         ["fardata", "fardemo", "files", "hello",
-                          "tui_demo", "tui_dialog", "tui_keys",
+                         ["fardata", "fardemo", "files", "gfx_mouse",
+                          "hello", "tui_demo", "tui_dialog", "tui_keys",
                           "tui_mouse", "tui_sdkprobe", "widget_sdkprobe"])
 
     def test_the_packed_program_runs_in_the_simulator(self):

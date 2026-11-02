@@ -29,6 +29,9 @@ $(eval $(call exe_program,tui_dialog,.,tui_dialog.c,STACK=512,\
 $(eval $(call exe_program,tui_mouse,.,tui_mouse.c,STACK=512,\
 	LIBS=tui_widgets:tui))
 
+# The graphics example: libgfx's pointer following the mouse.
+$(eval $(call exe_program,gfx_mouse,.,gfx_mouse.c,STACK=256,LIBS=gfx))
+
 # The far-data example: levels.c is compiled into the
 # `_DATA1`/`_DATA1B` pair linked at 8000h as one mappable DATA segment and
 # mapped by the program itself, while fardata_far.c is the container's
@@ -41,4 +44,5 @@ $(eval $(call exe_program,fardata,.,fardata.c,\
 # `make` packs every program listed here; each declaration is a target of
 # its own name too (`make fardemo`).
 .DEFAULT_GOAL := all
-all: hello fardemo files fardata tui_demo tui_keys tui_dialog tui_mouse
+all: hello fardemo files fardata tui_demo tui_keys tui_dialog tui_mouse \
+	gfx_mouse

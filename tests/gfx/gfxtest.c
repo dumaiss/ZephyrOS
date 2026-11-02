@@ -32,6 +32,12 @@
  *                            text over stripes (the LRU slot reuse),
  *                            the stale redraw, the refusals and the
  *                            out-of-range count, two keys
+ *   gfxtest pointer          the pointer: R#16 marks around each
+ *                            show, hide, shape and mode step in G6 and
+ *                            G7 (both edges, the busy engine, the
+ *                            display switch, a full-screen fill shown
+ *                            and hidden, a move inside an upload), the
+ *                            refusals, one key
  *
  * While /dev/video is held the console's output to the VDP is dropped,
  * so every line is printed outside the hold.
@@ -1188,6 +1194,168 @@ static int gfxtest_pages(void)
 	return 1;
 }
 
+/* The pointer mode.  Each step sits between two marks, so the replay
+ * reads its register writes, VRAM address sets and data-port bytes in
+ * the window.  A refusal or failure sets the step's bit; the bits are
+ * printed after the release. */
+static const uint8_t gfxtest_pointer_box[32] = {
+	0xFFu, 0x80u, 0x80u, 0x80u, 0x80u, 0x80u, 0x80u, 0x80u,
+	0x80u, 0x80u, 0x80u, 0x80u, 0x80u, 0x80u, 0x80u, 0xFFu,
+	0xFFu, 0x01u, 0x01u, 0x01u, 0x01u, 0x01u, 0x01u, 0x01u,
+	0x01u, 0x01u, 0x01u, 0x01u, 0x01u, 0x01u, 0x01u, 0xFFu
+};
+
+static int gfxtest_pointer(void)
+{
+	unsigned long fails = 0ul;
+	unsigned int i;
+	int result;
+
+	result = gfx_open();
+	if (result < 0) {
+		printf("gfxtest: FAIL open %d\r\n", result);
+		return 1;
+	}
+	/* Before a mode: every call is refused. */
+	if (gfx_pointer_show(0, 0) != -KOS_EINVAL ||
+	    gfx_pointer_hide() != -KOS_EINVAL ||
+	    gfx_pointer_shape(gfxtest_pointer_box, 1u) != -KOS_EINVAL) {
+		fails |= 0x1ul;
+	}
+	result = gfx_set_mode(GFX_MODE_512x212_16);
+	result |= gfx_clear(0x00u);
+	result |= gfx_wait();
+	result |= gfx_display_enable(1u);
+	if (result < 0) {
+		fails |= 0x2ul;
+	}
+	gfxtest_mark();            /* 0: the first show installs, G6 */
+	if (gfx_pointer_show(0, 0) != 0) {
+		fails |= 0x4ul;
+	}
+	gfxtest_mark();
+	gfxtest_mark();            /* 1: the bottom-right edge */
+	if (gfx_pointer_show(511, 211) != 0) {
+		fails |= 0x8ul;
+	}
+	gfxtest_mark();
+	gfxtest_mark();            /* 2: the same place: no SAT write */
+	if (gfx_pointer_show(511, 211) != 0) {
+		fails |= 0x10ul;
+	}
+	gfxtest_mark();
+	gfxtest_mark();            /* 3: one move */
+	if (gfx_pointer_show(301, 100) != 0) {
+		fails |= 0x20ul;
+	}
+	gfxtest_mark();
+	gfxtest_mark();            /* 4: the display off and on keeps SI */
+	result = gfx_display_enable(0u);
+	result |= gfx_display_enable(1u);
+	if (result != 0) {
+		fails |= 0x40ul;
+	}
+	gfxtest_mark();
+	gfxtest_mark();            /* 5: a move behind a running fill */
+	result = gfx_clear(0x05u);
+	result |= gfx_pointer_show(10, 20);
+	if (result != 0) {
+		fails |= 0x80ul;
+	}
+	gfxtest_mark();
+	gfxtest_mark();            /* 6: a full-screen fill, shown */
+	result = gfx_fill_rect(0u, 0u, 512u, 212u, 0x03u, GFX_OP_COPY);
+	result |= gfx_wait();
+	if (result != 0) {
+		fails |= 0x100ul;
+	}
+	gfxtest_mark();
+	gfxtest_mark();            /* 7: hide */
+	if (gfx_pointer_hide() != 0) {
+		fails |= 0x200ul;
+	}
+	gfxtest_mark();
+	gfxtest_mark();            /* 8: the same fill, hidden */
+	result = gfx_fill_rect(0u, 0u, 512u, 212u, 0x03u, GFX_OP_COPY);
+	result |= gfx_wait();
+	if (result != 0) {
+		fails |= 0x400ul;
+	}
+	gfxtest_mark();
+	gfxtest_mark();            /* 9: hide again: nothing */
+	if (gfx_pointer_hide() != 0) {
+		fails |= 0x800ul;
+	}
+	gfxtest_mark();
+	gfxtest_mark();            /* 10: shown again where it was */
+	if (gfx_pointer_show(10, 20) != 0) {
+		fails |= 0x1000ul;
+	}
+	gfxtest_mark();
+	gfxtest_mark();            /* 11: a shape while shown */
+	if (gfx_pointer_shape(gfxtest_pointer_box, 0x0Au) != 0) {
+		fails |= 0x2000ul;
+	}
+	gfxtest_mark();
+	/* The G6 refusals, outside the windows. */
+	if (gfx_pointer_show(512, 0) != -KOS_EINVAL ||
+	    gfx_pointer_show(0, 212) != -KOS_EINVAL ||
+	    gfx_pointer_show(-1, 0) != -KOS_EINVAL ||
+	    gfx_pointer_show(0, -1) != -KOS_EINVAL ||
+	    gfx_pointer_shape(gfxtest_pointer_box, 16u) != -KOS_EINVAL) {
+		fails |= 0x4000ul;
+	}
+	gfxtest_mark();            /* 12: the mode set returns the band */
+	result = gfx_set_mode(GFX_MODE_256x212_256);
+	result |= gfx_display_enable(1u);
+	if (result != 0) {
+		fails |= 0x8000ul;
+	}
+	gfxtest_mark();
+	gfxtest_mark();            /* 13: G7: installed again, the edge */
+	if (gfx_pointer_show(255, 211) != 0) {
+		fails |= 0x10000ul;
+	}
+	gfxtest_mark();
+	gfxtest_mark();            /* 14: the top-left edge */
+	if (gfx_pointer_show(0, 0) != 0) {
+		fails |= 0x20000ul;
+	}
+	gfxtest_mark();
+	/* The G7 refusals. */
+	if (gfx_pointer_show(256, 0) != -KOS_EINVAL ||
+	    gfx_pointer_show(0, 212) != -KOS_EINVAL) {
+		fails |= 0x40000ul;
+	}
+	gfxtest_mark();            /* 15: a move inside an upload waits */
+	for (i = 0u; i < 256u; ++i) {
+		gfxtest_upload_buffer[i] = (unsigned char)i;
+	}
+	result = gfx_upload_begin(0u, 300u, 256u, 1u);
+	result |= gfx_pointer_show(100, 50);
+	if (gfx_upload_write(gfxtest_upload_buffer, 256u) != 256) {
+		result = -1;
+	}
+	result |= gfx_upload_end();
+	if (result != 0) {
+		fails |= 0x80000ul;
+	}
+	gfxtest_mark();
+	gfxtest_mark();            /* 16: the next show places it */
+	if (gfx_pointer_show(100, 50) != 0) {
+		fails |= 0x100000ul;
+	}
+	gfxtest_mark();
+	(void)getchar(); /* the key: the peer holds every window */
+	gfx_close();
+	printf("gfxtest: pointer %lx\r\n", fails);
+	if (fails == 0ul) {
+		printf("gfxtest: pointer PASS\r\n");
+		return 0;
+	}
+	return 1;
+}
+
 int main(int argc, char **argv)
 {
 	int leak;
@@ -1226,6 +1394,9 @@ int main(int argc, char **argv)
 	}
 	if (strcmp(argv[0], "atlas") == 0) {
 		return gfxtest_atlas();
+	}
+	if (strcmp(argv[0], "pointer") == 0) {
+		return gfxtest_pointer();
 	}
 	if (strcmp(argv[0], "mode6") == 0) {
 		return gfxtest_run("mode6", GFX_MODE_512x212_16,

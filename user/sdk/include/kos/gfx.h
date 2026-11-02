@@ -200,7 +200,8 @@ struct gfx_text_style {
  * colour, built on the colour's first use and rebuilt least recently
  * used when the band is full.  The band must lie entirely in one
  * page's spare lines (212-255 or 468-511), must hold one atlas of the
- * range, and rebuilds discard every atlas.  -KOS_EINVAL without a mode
+ * range, and rebuilds discard every atlas; a program that uses the
+ * pointer keeps it off lines 496-511.  -KOS_EINVAL without a mode
  * set or a bad band; -KOS_ENOTSUP in YJK.  No VIDEO IPC. */
 int gfx_text_atlas(enum gfx_font font, uint16_t y, uint16_t lines,
 		   uint8_t first, uint16_t count);
@@ -229,6 +230,34 @@ uint16_t gfx_text_width(const char *text, enum gfx_font font);
  * -KOS_ENOTSUP.  No VIDEO IPC. */
 int gfx_set_palette(uint8_t first, uint8_t count,
 		    const struct gfx_rgb *colors);
+
+/* The pointer: a 16x16 hardware sprite over both pages, its hot spot
+ * the pattern's top-left pixel.  While it is in use (from the first
+ * gfx_pointer_show until the next gfx_set_mode) page 1's lines 496-511
+ * hold its tables and are not the program's; gfx_set_mode turns it off
+ * and returns the band.  Sprites run only while it is shown, so the
+ * command engine keeps its sprites-off speed otherwise.  No VIDEO IPC.
+ *
+ * gfx_pointer_show places it at (x, y) in the mode's pixels (x
+ * 0..width-1, y 0..211) and shows it; the first use after a mode set
+ * installs the tables.  The sprite table is written only when the
+ * position changed (after the command engine; between
+ * gfx_upload_begin and gfx_upload_end the move waits for the next show
+ * after the upload).  In the 16-colour mode the position has a
+ * two-pixel step and the sprite's dots are two pixels wide.
+ * gfx_pointer_hide hides it.  Both: 0, or -KOS_EINVAL out of range or
+ * before gfx_set_mode. */
+int gfx_pointer_show(int x, int y);
+int gfx_pointer_hide(void);
+
+/* The pointer's shape: 32 pattern bytes (the left eight columns'
+ * sixteen rows, top to bottom, then the right eight's; bit 7 the left
+ * dot) in one colour 0..15 (the palette entry in the 16-colour mode,
+ * the V9958's fixed sprite colour otherwise); NULL is the default
+ * arrow.  Until the first call the pointer is the white arrow.  The
+ * shape outlasts a mode set.  0, or -KOS_EINVAL for a colour above 15
+ * or before gfx_set_mode.  No VIDEO IPC. */
+int gfx_pointer_shape(const uint8_t *pattern, uint8_t color);
 
 /* Begin a streaming pixel upload into the rectangle (x, y, width,
  * height): the geometry is pixels, y may target the off-screen page

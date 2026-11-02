@@ -1231,8 +1231,8 @@ all: $(EXE_USER_ROOT)/tui_test.exe $(EXE_USER_ROOT)/tui_core_probe.exe \
 	$(EXE_USER_ROOT)/tui_putwide.exe $(EXE_USER_ROOT)/tui_mprobe.exe \
 	$(EXE_USER_ROOT)/tui_mplaced.exe $(EXE_USER_ROOT)/tui_mdeclared.exe
 
-# Standalone SDK TUI examples, built in-tree for the simulator acceptance
-# only.  They are not added to any store.
+# Standalone SDK TUI and graphics examples, built in-tree for the
+# simulator acceptance only.  They are not added to any store.
 $(eval $(call exe_program,tui_demo,user/sdk/examples,\
 	tui_demo.c,STACK=512,LIBS=tui))
 $(eval $(call exe_program,tui_keys,user/sdk/examples,\
@@ -1241,9 +1241,12 @@ $(eval $(call exe_program,tui_dialog,user/sdk/examples,\
 	tui_dialog.c,STACK=512,LIBS=tui_widgets:tui))
 $(eval $(call exe_program,tui_mouse,user/sdk/examples,\
 	tui_mouse.c,STACK=512,LIBS=tui_widgets:tui))
+$(eval $(call exe_program,gfx_mouse,user/sdk/examples,\
+	gfx_mouse.c,STACK=256,LIBS=gfx))
 
 all: $(EXE_USER_ROOT)/tui_demo.exe $(EXE_USER_ROOT)/tui_keys.exe \
-	$(EXE_USER_ROOT)/tui_dialog.exe $(EXE_USER_ROOT)/tui_mouse.exe
+	$(EXE_USER_ROOT)/tui_dialog.exe $(EXE_USER_ROOT)/tui_mouse.exe \
+	$(EXE_USER_ROOT)/gfx_mouse.exe
 
 # SDK outcome programs for the console-order and stream replays
 # (tests/test_io_sim.py): the `fs` image's `/system/iomix.exe` with its

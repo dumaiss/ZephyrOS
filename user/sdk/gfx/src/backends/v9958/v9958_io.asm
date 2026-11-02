@@ -36,6 +36,10 @@
 	.globl _gfx_v9958_port_indirect
 	.globl _gfx_v9958_port_data
 	.globl _gfx_v9958_port_palette
+	.globl _gfx_v9958_r1
+	.globl _gfx_pointer_flags
+	.globl _gfx_pointer_sat
+	.globl _gfx_upload_active
 	.globl _gfx_font_transpose6
 	.globl _gfx_font_transpose4
 
@@ -55,6 +59,25 @@ _gfx_v9958_port_indirect::
 _gfx_v9958_port_data::
 	.ds 1
 _gfx_v9958_port_palette::
+	.ds 1
+
+; R#1 as last written: the display bit and, while the pointer is shown,
+; SI (16x16 sprites).  The mode set clears it with the register.
+_gfx_v9958_r1::
+	.ds 1
+
+; The pointer (gfx_pointer.asm, gfx_pointer.c): bit 0 the tables are
+; installed in the band, bit 1 the pointer is shown; the SAT entry's Y
+; and X as last written.  The mode set clears the flags, so the next
+; show installs the tables again.
+_gfx_pointer_flags::
+	.ds 1
+_gfx_pointer_sat::
+	.ds 2
+
+; 1 between gfx_upload_begin and gfx_upload_end (gfx_upload.asm): the
+; stream keeps its VRAM address across calls, so a pointer move waits.
+_gfx_upload_active::
 	.ds 1
 
 	.area _CODE

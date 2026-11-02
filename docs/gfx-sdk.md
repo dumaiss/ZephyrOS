@@ -173,7 +173,7 @@ exit
 
 ### 2.6 Drawing code is assembly
 
-Speed comes before code size. Every routine that draws or moves pixels is Z80 assembly, from the public entry point to the port: the shapes, fills, copies, upload, text, the glyph atlas and the batch. The header's prototype is the assembly entry, with no C wrapper. Setup and rare calls (open/close, mode, display, palette, information, atlas setup, glyph redefinition) stay in C.
+Speed comes before code size. Every routine that draws or moves pixels is Z80 assembly, from the public entry point to the port: the shapes, fills, copies, upload, text, the glyph atlas, the batch and the pointer's show, move and hide. The header's prototype is the assembly entry, with no C wrapper. Setup and rare calls (open/close, mode, display, palette, information, atlas setup, glyph redefinition, the pointer's table install and shape) stay in C.
 
 ---
 
@@ -262,6 +262,7 @@ libgfx
  |
  +-- gfx.c, gfx_mode.c     open/close, mode, display, pages (C)
  +-- gfx_font*.c, atlas.c  the fonts' tables and the atlas layout (C)
+ +-- gfx_pointer.c         the pointer's tables and shape (C)
  |
  `-- backends/
       `-- v9958/
@@ -270,6 +271,7 @@ libgfx
            +-- gfx_text.asm      text
            +-- gfx_atlas_draw.asm transparent text
            +-- gfx_upload.asm    streaming upload
+           +-- gfx_pointer.asm   the pointer's show, move and hide
            `-- v9958_gfx.c, v9958_io.asm  mode setup, palette, port I/O
 ```
 
@@ -371,7 +373,8 @@ display timing.
 **Coordinates and pages.** Both GRAPHIC 6 and GRAPHIC 7 have two 256-line
 VRAM pages. y runs 0-511: lines 0-211 are the visible screen (page 0) and
 lines 256-511 the off-screen page, which belongs to the application while
-libgfx holds the display (section 15).
+libgfx holds the display, apart from the pointer's band while the pointer
+is in use (section 15).
 
 ---
 
@@ -848,7 +851,9 @@ VRAM, copied by the VDP.
 
 - **The atlas area:** `gfx_text_atlas(font, y, lines, first, count)` gives
   libgfx an off-screen band (y and line count) and a glyph range (`first`,
-  `count`). libgfx builds one atlas per text colour in that band:
+  `count`). A program that uses the pointer keeps the band clear of the
+  pointer's lines 496-511 (section 15.2). libgfx builds one atlas per
+  text colour in that band:
   - each atlas is the range's glyphs in that colour on colour 0, drawn
     with the opaque sink (expansion, then data-port writes);
   - glyphs are packed in rows one cell high: for the 6×8 font, 85 per
@@ -885,10 +890,17 @@ HMMM copy from a VRAM atlas about 3,380.
 
 While `libgfx` holds the display, the application owns the graphics-mode
 VRAM through coordinates: page 0 (y 0-255) and page 1 (y 256-511), each
-with 212 visible lines and 44 spare ones. The only band libgfx uses is the
-one the application hands it for the glyph atlas (§14.1), so it needs no
-allocator, and the application addresses its off-screen assets by
-coordinate.
+with 212 visible lines and 44 spare ones. libgfx uses two bands: the one
+the application hands it for the glyph atlas (§14.1), and, while the
+pointer is in use, page 1's lines 496-511 for the pointer's tables
+(§15.2). It needs no allocator, and the application addresses its
+off-screen assets by coordinate.
+
+| Lines | Owner |
+|---|---|
+| 0-211, 256-467 | the application (the visible lines of both pages) |
+| 212-255, 468-495 | the application (spare; the atlas band goes here) |
+| 496-511 | the pointer, from its first `gfx_pointer_show` until the next `gfx_set_mode`; the application's otherwise |
 
 ## 15.1 Page flipping (v1.1)
 
@@ -922,6 +934,64 @@ int gfx_wait_vblank(void);
 - **Not provided:** independent per-band page switching, by changing R#2
   from a line interrupt mid-frame. It would need interrupt handling in the
   resident V9958 driver.
+
+## 15.2 The pointer
+
+libgfx draws its own mouse pointer while it holds the display: the console's
+pointer (`KVIDEO_OP_POINTER`) is refused with `-KOS_EBUSY` during an
+exclusive hold.
+
+```c
+int gfx_pointer_show(int x, int y);
+int gfx_pointer_hide(void);
+int gfx_pointer_shape(const uint8_t *pattern, uint8_t color);
+```
+
+- **The sprite:** one 16x16 sprite-mode-2 sprite, the same in both drawing
+  modes. Slot 0 is the pointer (pattern 0), slot 1 holds the `D8h`
+  terminator. The tables sit where the console keeps its own: colours
+  `1F000h`, SAT `1F200h`, patterns `1F800h` (R#5 `E4h`, R#11 `03h`, R#6
+  `3Fh`), page 1's lines 496-511.
+- **`gfx_pointer_show(x, y)`:** places the hot spot (the pattern's
+  top-left dot) at a pixel of the current mode (x 0-511 or 0-255, y
+  0-211) and shows the pointer. The first show after a mode set installs
+  the tables (registers, colours, pattern, SAT). The V9958 draws a sprite
+  one line below its SAT Y, so Y is y - 1; a Y of `D8h` would end the
+  table, so it is drawn one line higher (`D7h`). With 212 lines and no
+  display offset no y reaches it; the rule guards the move path, and an
+  assembly-time check fails the build if the screen ever grows into it.
+  X is x / 2 in GRAPHIC 6 (a sprite dot is two pixels wide there) and x
+  in GRAPHIC 7.
+- **Cost:** the SAT is written only when the entry changes (Y and X,
+  two data-port bytes after the command engine finishes); an unchanged
+  show touches no port, so a frame loop can call it every pass. Between
+  `gfx_upload_begin` and `gfx_upload_end` the stream owns the VRAM
+  address: a move waits for the next show after the upload.
+- **Sprites only while shown:** a show after a hide (or the first) sets
+  R#1's SI (16x16) and clears R#8's SPD, after the SAT is written;
+  `gfx_pointer_hide` sets SPD first, then clears SI. A program that never
+  shows the pointer runs the command engine with sprites off, as without
+  the pointer. `gfx_display_enable` keeps SI.
+- **The shape:** `gfx_pointer_shape` takes 32 pattern bytes (the left
+  eight columns' sixteen rows, then the right eight's; bit 7 the left
+  dot) and one colour 0-15: the palette entry in GRAPHIC 6, the V9958's
+  fixed sprite colour in GRAPHIC 7. `NULL` is the default arrow. The
+  white arrow is the shape until the first call; the shape is kept in RAM
+  and outlasts a mode set.
+- **The band:** from the first show until the next `gfx_set_mode`, lines
+  496-511 hold the tables. `gfx_set_mode` turns the pointer off (sprites
+  off, SI clear, the sprite bases zero) and returns the band; the next
+  show installs the tables again. A program switching modes shows the
+  pointer again after the switch.
+- **Errors:** `-KOS_EINVAL` for a position outside the mode, a colour
+  above 15, or any call before `gfx_set_mode`.
+- **Release:** `gfx_close` (or the exit) re-runs the console's bring-up,
+  which rewrites the sprite tables with the console's own, its pointer
+  hidden.
+
+A program tracks the mouse with `kos/mouse.h` over the mode's area
+(`mouse_init(&m, handle, 512, 212)`) and passes the position each pass;
+`user/sdk/examples/gfx_mouse.c` is the example.
 
 There is no kernel VRAM allocator. There is no cross-process VRAM
 ownership problem, because the machine is single-tasking and VIDEO is held
@@ -1107,7 +1177,6 @@ windows
 widgets
 menus
 buttons
-mouse handling
 proportional fonts
 UTF-8
 font files

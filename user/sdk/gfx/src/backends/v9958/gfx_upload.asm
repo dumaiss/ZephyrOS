@@ -33,14 +33,13 @@
 	.globl _gfx_draw_mode
 	.globl _gfx_draw_width
 	.globl _gfx_v9958_io_stream_vram
+	.globl _gfx_upload_active
 
 GFX_MODE_G6             = 0
 GFX_MODE_YJK            = 2
 
 	.area _DATA
 
-up_active:
-	.ds 1
 up_full:
 	.ds 1			; the rectangle spans the full width
 up_addressed:
@@ -85,7 +84,7 @@ _gfx_upload_begin::
 	ld	a,(_gfx_draw_ready)
 	or	a
 	jp	z,gfx_ret_einval
-	ld	a,(up_active)
+	ld	a,(_gfx_upload_active)
 	or	a
 	jp	nz,gfx_ret_einval
 	ld	hl,(up_x)		; a zero size is refused, as the bounds
@@ -120,7 +119,7 @@ up_start:
 	call	_gfx_flush
 	call	gfx_wait_ce
 	ld	a,#1
-	ld	(up_active),a
+	ld	(_gfx_upload_active),a
 	xor	a
 	ld	(up_addressed),a
 	ld	(up_full),a
@@ -202,7 +201,7 @@ up_r14:
 _gfx_upload_write::
 	ld	(up_src),hl
 	ld	(up_len),de
-	ld	a,(up_active)
+	ld	a,(_gfx_upload_active)
 	or	a
 	jp	z,gfx_ret_einval
 	ld	a,h
@@ -301,11 +300,11 @@ up_write_end:
 
 ; ---------------------------------------------------------------------------
 _gfx_upload_end::
-	ld	a,(up_active)
+	ld	a,(_gfx_upload_active)
 	or	a
 	jp	z,gfx_ret_einval
 	xor	a
-	ld	(up_active),a
+	ld	(_gfx_upload_active),a
 	ld	hl,(up_remaining)
 	ld	a,h
 	or	l

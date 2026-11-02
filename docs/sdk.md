@@ -73,6 +73,7 @@ user/sdk/
     src/gfx_font4.c       the 4x6 RAM font, the glyph calls' dispatch
                           (font + stale marks)
     src/gfx_atlas.c       gfx_text_atlas: the atlas layout
+    src/gfx_pointer.c     gfx_pointer_shape, the pointer's table install
     src/backends/v9958/   the V9958 backend: the drawing, in assembly
       gfx_cmd.asm         gfx_begin/end/flush, gfx_clear, gfx_fill_rect,
                           gfx_copy_rect, gfx_rect/line/point, the issue
@@ -80,8 +81,10 @@ user/sdk/
       gfx_text.asm        gfx_text, gfx_text_n, the scanline emit
       gfx_atlas_draw.asm  transparent text: the atlas builds and copies
       gfx_upload.asm      gfx_upload_begin/write/end (pixel streaming)
+      gfx_pointer.asm     gfx_pointer_show, gfx_pointer_hide
       v9958_gfx.c         mode, display, page switch and palette setup
-      v9958_io.asm        the setup's port I/O, the font transposes
+      v9958_io.asm        the setup's port I/O, the font transposes,
+                          the R#1 and pointer state bytes
   template/               the copyable minimal program (Makefile, hello.c)
   examples/               hello, fardemo, fardata, files
 
@@ -948,7 +951,10 @@ int pointer_hide(int video);
   hold on `/dev/video`) hides it; a program hides it before it exits,
   since the shell runs the next program without a reset.
 - While a program holds `/dev/video` exclusively (libgfx), both calls
-  are `-KOS_EBUSY` and touch no port.
+  are `-KOS_EBUSY` and touch no port. A libgfx program shows libgfx's own
+  pointer instead: `gfx_pointer_show(x, y)` with the position tracked over
+  the mode's area (`docs/gfx-sdk.md` section 15.2, the `gfx_mouse`
+  example).
 
 A libtui program gets the mouse and the pointer with one call,
 `tui_mouse_enable()`, and reads clicks and the wheel through its key loop
@@ -1049,6 +1055,7 @@ the gates the same way any client does:
 | `gfx_upload_begin`, `gfx_upload_write`, `gfx_upload_end` | `gfx_upload`, `gfx_v9958_io` |
 | `gfx_font_set_glyph`, `gfx_font_reset_glyph`, `gfx_font_reset` | `gfx_font` |
 | `gfx_text`, `gfx_text_n`, `gfx_text_width` | `gfx_text`, `gfx_batch`, `gfx_v9958_io`, `strlen` |
+| `gfx_pointer_show`, `gfx_pointer_hide`, `gfx_pointer_shape` | `gfx_pointer` (both members), `gfx_v9958_io`, `memcpy`, `memset` |
 
 The backend's assembly member is pulled only through the backend C
 member, so a program that calls none of the drawing entry points links
@@ -1154,6 +1161,10 @@ The examples:
 - **`tui_mouse`**: the same widgets driven by the mouse: a clickable menu
   bar, checkbox and button, a list the wheel scrolls, a confirm box and a
   status line showing each event; the keys work alongside.
+- **`gfx_mouse`** (`LIBS=gfx`): libgfx's pointer following the mouse in
+  the 512 x 212 16-colour mode; the left button paints under it, the
+  right button switches to the 256 x 212 256-colour mode and back, a key
+  exits. On a card it runs as an 8.3 name, `GFXMOUSE.EXE`.
 
 ## 11. The standalone SDK
 
@@ -1179,7 +1190,7 @@ kos-sdk-<version>/
   mk/kos.mk        the program rule
   template/        Makefile and hello.c
   examples/        hello, fardemo, fardata, files, tui_demo, tui_keys,
-                   tui_dialog, tui_mouse
+                   tui_dialog, tui_mouse, gfx_mouse
   docs/            sdk.md, tui.md, exe-format.md
 ```
 

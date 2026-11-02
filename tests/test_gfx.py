@@ -29,6 +29,13 @@ and copy rectangles (HMMV/HMMM, the four overlap directions with their
 DIX/DIY blocks pinned, copies across the pages, the G6 odd-x refusal
 queuing nothing), and gfx_clear as the visible page's fill.
 
+The pointer: `gfxtest pointer` steps between R#16 marks (the tables and
+their registers, the SAT bytes at both edges in G6 and G7, the
+terminator, SI across the display switch, SPD on show and hide, no SAT
+write while the engine runs or inside an upload, the mode set returning
+the band), the `gfx_mouse` example with the controller scripted, and the
+pointer members linked only by the pointer calls.
+
 The V9958 peer is the observable (`regs`, `vram`, `commands`,
 `vram_writes`, `protocol_errors`); the driver's exclusive flag is read
 from its bank-6 state, as tests/test_device_release.py does.
@@ -56,6 +63,7 @@ PVIEW_EXE = os.path.join(ROOT, "UserSoftware", "PView", "build", "user",
                          "pview.exe")
 GFXDEMO_EXE = os.path.join(ROOT, "UserSoftware", "GfxDemo", "build",
                            "user", "gfxdemo.exe")
+GFXMOUSE_EXE = os.path.join(ROOT, "build", "user", "gfx_mouse.exe")
 FIXTURES = os.path.join(ROOT, "tests", "gfx", "fixtures")
 FONT_ASSET = os.path.join(ROOT, "drivers", "v9958", "assets",
                           "font_cp850_6x8.inc")
@@ -64,6 +72,7 @@ FONT4_ASSET = os.path.join(ROOT, "drivers", "v9958", "assets",
 DEV_NAME = "GFXTEST.EXE"
 PVIEW_DEV = "PVIEW.EXE"
 GFXDEMO_DEV = "GFXDEMO.EXE"
+GFXMOUSE_DEV = "GFXMOUSE.EXE"
 MODULE_DIR = os.path.join(ROOT, "build", "modules")
 PROTOCOL_H = os.path.join(ROOT, "abi", "kos", "protocol.h")
 KVIDEO_H = os.path.join(ROOT, "abi", "kos", "kvideo.h")
@@ -352,6 +361,42 @@ class GfxHostTests(unittest.TestCase):
         fontpack = read_text(FONTPACK)
         self.assertIn('command == "table"', fontpack)
         self.assertIn('command == "table4x6"', fontpack)
+
+    def test_pointer_members_link_only_with_the_pointer(self):
+        """The pointer's two members define its calls, and no other
+        libgfx member references them: a program that never calls
+        gfx_pointer_* links no pointer code.  The state the mode set
+        clears lives in the port layer."""
+        build = os.path.join(ROOT, "build", "user", "sdk", "gfx")
+        if not os.path.isdir(build):
+            self.skipTest("%s missing; run make" % build)
+        entries = ("_gfx_pointer_show", "_gfx_pointer_hide",
+                   "_gfx_pointer_shape", "_gfx_pointer_install")
+        members = {}
+        for directory, _dirs, names in os.walk(build):
+            for name in names:
+                if name.endswith(".rel"):
+                    path = os.path.join(directory, name)
+                    members[os.path.relpath(path, build)] = read_text(path)
+        pointer = ("gfx_pointer.rel",
+                   os.path.join("backends", "v9958", "gfx_pointer.rel"))
+        for name in pointer:
+            self.assertIn(name, members)
+        defined = [line.split()[1] for text in members.values()
+                   for line in text.splitlines()
+                   if line.startswith("S _gfx_pointer_") and
+                   " Def" in line]
+        self.assertEqual(sorted(name for name in defined
+                                if name in entries), sorted(entries))
+        for name, text in members.items():
+            if name in pointer:
+                continue
+            for entry in entries:
+                self.assertNotIn("S %s Ref" % entry, text,
+                                 "%s references %s" % (name, entry))
+        self.assertIn("S _gfx_pointer_flags Def",
+                      members[os.path.join("backends", "v9958",
+                                           "v9958_io.rel")])
 
     def test_makefile_wires_gfxtest_with_libgfx(self):
         makefile = read_text(MAKEFILE)
@@ -2399,6 +2444,310 @@ class TestGfxAtlas(GfxReplay):
         self.assert_restored(z, before)
         self.assertEqual(self.exclusive(z), 0,
                          "the exclusive flag survived the run")
+
+
+# The pointer's tables in the band (page 1, lines 496-511).
+PTR_COLORS = 0x1F000
+PTR_SAT = 0x1F200
+PTR_PATTERN = 0x1F800
+# The default arrow (user/sdk/gfx/src/gfx_pointer.c) and gfxtest's box.
+PTR_ARROW = bytes((0x80, 0xC0, 0xE0, 0xF0, 0xF8, 0xFC, 0xFE, 0xFF,
+                   0xFF, 0xFF, 0xFC, 0xEE, 0xCE, 0x87, 0x07, 0x03,
+                   0, 0, 0, 0, 0, 0, 0, 0,
+                   0x80, 0xC0, 0, 0, 0, 0, 0, 0))
+PTR_BOX = bytes([0xFF] + [0x80] * 14 + [0xFF] + [0xFF] + [0x01] * 14 +
+                [0xFF])
+# The installed SAT: slot 0's Y the terminator until the first
+# placement, slot 1 the terminator.
+PTR_SAT_INIT = [(PTR_SAT + i, v) for i, v in
+                enumerate((0xD8, 0x00, 0x00, 0x00, 0xD8))]
+# The console's own pointer slot as its reset leaves it: hidden.
+CONSOLE_POINTER_HIDDEN = bytes((0x00, 0x00, 0x02, 0x00))
+POINTER_WINDOWS = 17
+
+
+class TestGfxPointer(GfxReplay):
+    """`gfxtest pointer`: the pointer on the peer, window by window
+    between the R#16 marks, with the frame clock and the duration model
+    on - the tables and their registers, the SAT bytes at both edges in
+    G6 (X = x / 2) and G7 (X = x), Y one line up, the terminator in
+    slot 1, SI kept across the display switch, SPD cleared on show and
+    set on hide, no SAT write while the engine runs or inside an upload,
+    the mode set returning the band, and the console's own pointer
+    hidden after the release."""
+
+    def test_pointer_tables_placement_and_band(self):
+        z = self.start()
+        before = self.snapshot(z)
+        ops = []
+        since = len(z.glyphs)
+        z.hid.hid_queue.extend(b"/fs/gfxtest.exe pointer\r")
+        self.run_recording(z, ops, lambda z: OPS_DIRECT_INFO in ops)
+        peer = z.vdp
+        peer.frame_period = FRAME_TSTATES
+        peer.duration_model = True
+        # Each mark: its time and the peer's VRAM write and address
+        # counts when it landed (the step that writes it writes nothing
+        # else).
+        marks = []
+        scan = {"at": len(peer.reg_writes)}
+
+        def all_marked(z):
+            writes = peer.reg_writes
+            for value, reg, now in writes[scan["at"]:]:
+                if reg == 16 and value == 15:
+                    marks.append((now, len(peer.vram_writes)))
+            scan["at"] = len(writes)
+            return len(marks) >= 2 * POINTER_WINDOWS
+        self.run_recording(z, ops, all_marked)
+        self.assertEqual(len(marks), 2 * POINTER_WINDOWS, marks)
+        held_sat = bytes(peer.vram[PTR_SAT:PTR_SAT + 8])
+        reads = [now for now, _ce, _vr in peer.status_reads]
+
+        def window(index):
+            (start, v0), (end, v1) = marks[2 * index], marks[2 * index + 1]
+            regs = [(reg, value) for value, reg, now in peer.reg_writes
+                    if start <= now <= end and reg != 16]
+            return {"start": start, "end": end, "regs": regs,
+                    "vram": peer.vram_writes[v0:v1],
+                    "addrs": [(now, addr) for now, addr in peer.addr_writes
+                              if start <= now <= end]}
+
+        def figure(index):
+            w = window(index)
+            waits = self.irq_time(w["start"], w["end"])
+            inside = [t for t in reads if w["start"] <= t < w["end"]]
+            for before_t, after_t in zip(inside, inside[1:]):
+                if after_t - before_t <= 48:
+                    waits += after_t - before_t
+            total = w["end"] - w["start"]
+            return total - waits, total
+
+        def sat(w):
+            return [(a, v) for a, v in w["vram"]
+                    if PTR_SAT <= a < PTR_SAT + 8]
+
+        def band(w, base, length):
+            return bytes(v for a, v in w["vram"]
+                         if base <= a < base + length)
+
+        def install(w, pattern, color, label):
+            regs = dict(w["regs"])
+            self.assertEqual((regs.get(5), regs.get(11), regs.get(6)),
+                             (0xE4, 0x03, 0x3F),
+                             "%s: R#5/R#11/R#6 at 1F200h/1F800h" % label)
+            self.assertEqual(band(w, PTR_PATTERN, 32), pattern,
+                             "%s: the pattern" % label)
+            self.assertEqual(band(w, PTR_COLORS, 16), bytes([color]) * 16,
+                             "%s: the colour table" % label)
+            self.assertEqual(sat(w)[:5], PTR_SAT_INIT,
+                             "%s: the installed SAT" % label)
+
+        def placed(w, y, x, label):
+            self.assertEqual(sat(w)[-2:], [(PTR_SAT, y), (PTR_SAT + 1, x)],
+                             "%s: the SAT entry" % label)
+
+        def turned_on(w, label):
+            on = [(r, v) for r, v in w["regs"] if r in (1, 8)]
+            self.assertEqual(on, [(1, 0x42), (8, 0x08)],
+                             "%s: SI set, then SPD clear" % label)
+
+        # 0: the first show installs and places at the top-left (G6).
+        w = window(0)
+        install(w, PTR_ARROW, 0x0F, "first show")
+        placed(w, 0xFF, 0x00, "G6 (0, 0)")
+        turned_on(w, "first show")
+        sat_at = [now for now, addr in w["addrs"] if addr == PTR_SAT][-1]
+        spd_at = [now for value, reg, now in peer.reg_writes
+                  if reg == 8 and value == 0x08 and now >= w["start"]][0]
+        self.assertLess(sat_at, spd_at, "the SAT before the sprites")
+        # 1: the bottom-right edge: X = 511 / 2, Y = 211 - 1.
+        w = window(1)
+        self.assertEqual(sat(w), [(PTR_SAT, 0xD2), (PTR_SAT + 1, 0xFF)],
+                         "G6 (511, 211)")
+        self.assertEqual(w["regs"], [(14, 0x07)],
+                         "a move writes only the address's R#14")
+        # 2: the same place: nothing written.
+        w = window(2)
+        self.assertEqual((w["vram"], w["addrs"], w["regs"]), ([], [], []),
+                         "an unchanged show touches no port")
+        # 3: one move (X = 301 / 2).
+        w = window(3)
+        self.assertEqual(sat(w), [(PTR_SAT, 99), (PTR_SAT + 1, 150)],
+                         "G6 (301, 100)")
+        # 4: the display switch keeps SI.
+        w = window(4)
+        self.assertEqual(w["regs"], [(1, 0x02), (1, 0x42)],
+                         "display off and on with SI kept")
+        # 5: the move behind a running clear waits for the engine.
+        w = window(5)
+        clear = [c for c in peer.commands
+                 if w["start"] <= c["start"] <= w["end"]]
+        self.assertEqual([c["code"] for c in clear], [0xC0], clear)
+        placed(w, 19, 5, "G6 (10, 20)")
+        sat_at = [now for now, addr in w["addrs"] if addr == PTR_SAT][0]
+        self.assertGreaterEqual(sat_at, clear[0]["busy_until"],
+                                "the SAT waited for the clear")
+        self.assertIn(1, [ce for now, ce, _vr in peer.status_reads
+                          if clear[0]["start"] <= now < sat_at],
+                      "the show polled a busy engine")
+        # 7: hide: SPD first, then SI clear; no VRAM.
+        w = window(7)
+        self.assertEqual(w["regs"], [(8, 0x0A), (1, 0x40)],
+                         "hide: SPD set, then SI clear")
+        self.assertEqual(w["vram"], [], "hide writes no VRAM")
+        # 9: hide again: nothing.
+        w = window(9)
+        self.assertEqual((w["vram"], w["addrs"], w["regs"]), ([], [], []),
+                         "a second hide touches no port")
+        # 10: shown again where it was: the registers only.
+        w = window(10)
+        self.assertEqual(w["vram"], [], "the same place: no SAT write")
+        turned_on(w, "show after hide")
+        # 11: a shape while shown uploads at once.
+        w = window(11)
+        self.assertEqual(band(w, PTR_PATTERN, 32), PTR_BOX, "the shape")
+        self.assertEqual(band(w, PTR_COLORS, 16), bytes([0x0A]) * 16,
+                         "the shape's colour")
+        self.assertEqual(sat(w), [], "a shape leaves the SAT")
+        # 12: the mode set returns the band: sprites off, SI clear, the
+        # bases zero; the display enable has no SI.
+        w = window(12)
+        regs = w["regs"]
+        self.assertIn((8, 0x0A), regs, "the mode set's sprites off")
+        for reg in (5, 6, 11):
+            self.assertIn((reg, 0x00), regs, "R#%u back to 0" % reg)
+        self.assertEqual([v for r, v in regs if r == 1], [0x00, 0x40],
+                         "R#1 without SI after the mode set")
+        self.assertEqual(w["vram"], [], "the mode set writes no VRAM")
+        # 13: G7 installs again with the kept shape: X = x.
+        w = window(13)
+        install(w, PTR_BOX, 0x0A, "G7 first show")
+        placed(w, 0xD2, 0xFF, "G7 (255, 211)")
+        turned_on(w, "G7 first show")
+        # 14: the top-left edge.
+        w = window(14)
+        self.assertEqual(sat(w), [(PTR_SAT, 0xFF), (PTR_SAT + 1, 0x00)],
+                         "G7 (0, 0)")
+        # 15: a move inside an upload leaves the stream's address.
+        w = window(15)
+        self.assertNotIn(PTR_SAT, [a for _now, a in w["addrs"]],
+                         "no SAT address inside the upload")
+        self.assertEqual(bytes(peer.vram[300 * 256:301 * 256]),
+                         bytes(range(256)), "the upload's row")
+        # 16: the next show places it.
+        w = window(16)
+        self.assertEqual(sat(w), [(PTR_SAT, 49), (PTR_SAT + 1, 100)],
+                         "G7 (100, 50) after the upload")
+        # While held: slot 1 is the terminator, slot 0 pattern 0.
+        self.assertEqual(held_sat[2:5], bytes((0x00, 0x00, 0xD8)),
+                         "slot 0 pattern 0, slot 1 the terminator")
+        # No SAT address was ever set while a command ran.
+        for now, addr in peer.addr_writes:
+            if addr != PTR_SAT or now < marks[0][0]:
+                continue
+            for c in peer.commands:
+                if c["busy_until"] is None:
+                    continue
+                self.assertFalse(c["start"] <= now < c["busy_until"],
+                                 "a SAT write at %d inside a command" % now)
+
+        for index, name in ((0, "first show"), (1, "edge move"),
+                            (2, "unchanged"), (3, "move"),
+                            (7, "hide"), (6, "fill shown"),
+                            (8, "fill hidden")):
+            cpu, total = figure(index)
+            print("gfx pointer: %-11s cpu %7d total %8d" % (name, cpu,
+                                                           total))
+        regs6 = dict(window(6)["regs"])
+        self.assertNotIn(8, regs6, "the fill leaves R#8")
+
+        z.hid.hid_queue.extend(b"x")
+        self.run_recording(
+            z, ops, lambda z: "gfxtest: pointer" in "".join(z.glyphs[since:]))
+        self.run_to(z, SHELL_PROMPT, since=since)
+        self.settle(z, lambda z: z.vdp.regs[8] == 0x08)
+        fresh = self.trace(z, since)
+        self.assertIn("gfxtest: pointer PASS", fresh)
+        self.assert_hold_sequence(ops)
+        self.assert_restored(z, before)
+        self.assertEqual(bytes(peer.vram[PTR_SAT + 4:PTR_SAT + 8]),
+                         CONSOLE_POINTER_HIDDEN,
+                         "the console's pointer is hidden after the release")
+
+
+class TestGfxMouse(GfxReplay):
+    """`gfx_mouse` (the SDK example) with the emulated controller
+    scripted: the pointer at the tracked position in G6, a left press
+    painting under it, a right press switching to G7 with the pointer
+    installed again at the same place, a move to the top-left edge, and
+    the console back after the key."""
+
+    # (flags, buttons, pressed, dx, dy, wheel) per CMD_HID_MOUSE.
+    SCRIPT = [
+        (3, 0, 0, 0, 0, 0),          # the centre: (256, 106)
+        (3, 0, 0, 100, 50, 0),       # (356, 156)
+        (3, 1, 1, 0, 0, 0),          # left: paint
+        (3, 0, 0, 0, 0, 0),
+        (3, 2, 2, 0, 0, 0),          # right: G7, x 356 / 2
+        (3, 0, 0, -400, -200, 0),    # the top-left edge
+    ]
+
+    def setUp(self):
+        super().setUp()
+        if not os.path.exists(GFXMOUSE_EXE):
+            self.skipTest("%s missing; run make" % GFXMOUSE_EXE)
+
+    def test_pointer_follows_paints_and_switches(self):
+        with open(GFXMOUSE_EXE, "rb") as handle:
+            files = {"/".join(KEEP_NAME): KEEP_CONTENT,
+                     GFXMOUSE_DEV: handle.read()}
+        z = self.start(files)
+        before = self.snapshot(z)
+        peer = z.vdp
+        ops = []
+        since = len(z.glyphs)
+        z.hid.mouse_reports.extend(self.SCRIPT)
+        z.hid.hid_queue.extend(b"/fs/gfxmouse.exe\r")
+        self.run_recording(z, ops, lambda z: OPS_DIRECT_INFO in ops)
+        v0 = len(peer.vram_writes)
+        c0 = len(peer.commands)
+        r0 = len(peer.reg_writes)
+
+        def placements():
+            return [v for a, v in peer.vram_writes[v0:]
+                    if a in (PTR_SAT, PTR_SAT + 1)]
+        # The G7 install's terminator mark, then (Y FFh, X 0): the edge.
+        self.run_recording(
+            z, ops, lambda z: not z.hid.mouse_reports and
+            placements()[-2:] == [0xFF, 0x00])
+        sat = placements()
+        pairs = list(zip(sat[::2], sat[1::2]))
+        # Each install writes Y D8h (with X 0) before the first place.
+        self.assertEqual(pairs, [(0xD8, 0x00), (105, 128), (155, 178),
+                                 (0xD8, 0x00), (155, 178), (0xFF, 0x00)],
+                         "the SAT entries in order")
+        # The paint: one aligned fill under the pointer in G6.
+        fills = [c["fill"] for c in peer.commands[c0:]
+                 if c["code"] == 0xC0]
+        self.assertIn((356, 156, 4, 4, 0xAA), fills, "the brush")
+        modes = [value for value, reg, _now in peer.reg_writes[r0:]
+                 if reg == 0]
+        self.assertEqual(modes, [0x0A, 0x0E], "G6, then G7")
+        self.assertEqual(peer.regs[8], 0x08, "sprites on while shown")
+        self.assertEqual(peer.regs[1], 0x42, "display on with SI")
+
+        z.hid.hid_queue.extend(b"x")
+        self.run_recording(
+            z, ops, lambda z: "gfx_mouse: done" in
+            "".join(z.glyphs[since:]))
+        self.run_to(z, SHELL_PROMPT, since=since)
+        self.settle(z, lambda z: z.vdp.regs[8] == 0x08)
+        self.assert_hold_sequence(ops)
+        self.assert_restored(z, before)
+        self.assertEqual(bytes(peer.vram[PTR_SAT + 4:PTR_SAT + 8]),
+                         CONSOLE_POINTER_HIDDEN,
+                         "the console's pointer is hidden after the release")
 
 
 class TestGfxDemo(GfxReplay):

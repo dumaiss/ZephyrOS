@@ -164,16 +164,51 @@ void gfx_v9958_io_wait_vblank(void);
 void gfx_v9958_io_set_vram(uint8_t r14, uint16_t offset);
 void gfx_v9958_io_stream_vram(const uint8_t *src, uint16_t length);
 void gfx_v9958_io_palette_byte(uint8_t value);
+/* R#1 as last written (the display bit, SI while the pointer shows). */
+extern uint8_t gfx_v9958_r1;
+/* 1 while an upload is open (gfx_upload.asm). */
+extern uint8_t gfx_upload_active;
 /* Lay a const font out in its row-major RAM pages (the 6x8 or the 4x6
  * row byte encoding above). */
 void gfx_font_transpose6(uint8_t page, const uint8_t *src);
 void gfx_font_transpose4(uint8_t page, const uint8_t *src);
 
+/* --- the pointer (gfx_pointer.c sets up, gfx_pointer.asm moves) ------
+ *
+ * A 16x16 sprite-mode-2 sprite: slot 0 the pointer (pattern 0), slot 1
+ * the D8h terminator.  The tables sit where the console keeps its own,
+ * in page 1's lines 496-511, which the program gives up while the
+ * pointer is in use: colours 1F000h, SAT 1F200h, patterns 1F800h.  The
+ * state bytes live in the port layer (v9958_io.asm), so the mode set
+ * clears them without linking the pointer. */
+#define GFX_POINTER_INSTALLED 0x01u
+#define GFX_POINTER_SHOWN     0x02u
+extern uint8_t gfx_pointer_flags;
+extern uint8_t gfx_pointer_sat[2];  /* Y, X as last written */
+
+#define GFX_POINTER_A16_A14     0x07u   /* R#14 for the band          */
+#define GFX_POINTER_COLOR_ADDR  0x3000u /* 1F000h, low 14 bits        */
+#define GFX_POINTER_SAT_ADDR    0x3200u /* 1F200h                     */
+#define GFX_POINTER_PATTERN_ADDR 0x3800u /* 1F800h                    */
+#define GFX_POINTER_BYTES       32u     /* one 16x16 pattern          */
+#define GFX_POINTER_LINES       16u     /* colour bytes per sprite    */
+#define GFX_POINTER_COLOR_MAX   15u
+#define GFX_SAT_TERMINATOR      0xD8u
+
+/* Install the tables in the band: R#5/R#11/R#6, the colours, the
+ * pattern and the SAT (the pointer's Y the terminator until the first
+ * placement, the terminator in slot 1).  gfx_pointer_show calls it at
+ * its first use after a mode set. */
+void gfx_pointer_install(void);
+
 /* V9958 register numbers (V9958 facts, private to the backend). */
 #define GFX_V9958_REG_R0  0u
 #define GFX_V9958_REG_R1  1u
 #define GFX_V9958_REG_R2  2u
+#define GFX_V9958_REG_R5  5u
+#define GFX_V9958_REG_R6  6u
 #define GFX_V9958_REG_R8  8u
+#define GFX_V9958_REG_R11 11u
 #define GFX_V9958_REG_R15 15u
 #define GFX_V9958_REG_R16 16u
 #define GFX_V9958_REG_R17 17u
@@ -190,11 +225,18 @@ void gfx_font_transpose4(uint8_t page, const uint8_t *src);
 #define GFX_V9958_R0_G7        0x0Eu
 #define GFX_V9958_R1_DISPLAY_OFF 0x00u
 #define GFX_V9958_R1_DISPLAY_ON  0x40u
+#define GFX_V9958_R1_SI          0x02u /* 16x16 sprites              */
 #define GFX_V9958_R2_PAGE_ZERO 0x1Fu
 #define GFX_V9958_R2_PAGE_BIT  0x20u
 #define GFX_V9958_R8_SPRITES_OFF 0x02u
 #define GFX_V9958_R8_64K_DRAM  0x08u
 #define GFX_V9958_R9_212       0x80u
+/* The sprite tables' bases (the console's own, drivers/v9958):
+ * SAT (R#11 << 15) | (R#5 << 7) = 1F200h, colours 512 below it,
+ * patterns R#6 << 11 = 1F800h. */
+#define GFX_V9958_R5_SPRITE_BASE    0xE4u
+#define GFX_V9958_R6_SPRITE_PATTERN 0x3Fu
+#define GFX_V9958_R11_SPRITE_ATTR   0x03u
 #define GFX_V9958_R15_STATUS2  0x02u
 #define GFX_V9958_R25_WAIT_ON  0x04u
 #define GFX_V9958_R25_YJK      0x08u /* R#25 bit 3; bit 4 (10h) is YAE */

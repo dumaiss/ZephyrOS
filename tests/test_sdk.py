@@ -420,12 +420,14 @@ class TestSdkBoundary(unittest.TestCase):
         # outcome programs (`tests/test_reader.py`); `mouse` is the mouse
         # outcome program (`tests/test_mouse.py`); `tui_mplaced` and
         # `tui_mdeclared` are the mouse probe placed
-        # (`tests/test_exeplace.py`).
+        # (`tests/test_exeplace.py`); `gfx_mouse` is the graphics
+        # pointer example (`tests/test_gfx.py`).
         self.assertEqual(sorted(name for name, _d, _s, _o in programs),
                          ["banks", "beat", "devtest", "events",
                           "exe2big", "exe2probe", "exe2seg", "exetest",
                           "far_data",
-                          "fardemo", "fs_child", "fs_selftest", "gfxtest",
+                          "fardemo", "fs_child", "fs_selftest",
+                          "gfx_mouse", "gfxtest",
                           "hello",
                           "hwtest", "iobench", "iomix", "iomix_child",
                           "iostream", "ipc", "ipccopy",

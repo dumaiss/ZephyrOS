@@ -87,13 +87,21 @@ void v9958_set_mode(struct gfx_state *state, enum gfx_mode mode)
 				 v9958_common_regs[i][1]);
 	}
 	gfx_v9958_io_reg(r25, GFX_V9958_REG_R25);
+	/* The registers above turned the pointer off (sprites off, SI
+	 * clear, the sprite bases zero): the band is the program's again
+	 * and the next show installs the tables anew. */
+	gfx_v9958_r1 = GFX_V9958_R1_DISPLAY_OFF;
+	gfx_pointer_flags = 0u;
 }
 
+/* R#1 keeps SI while the pointer is shown. */
 void v9958_display_enable(struct gfx_state *state, uint8_t enabled)
 {
 	v9958_load_ports(&state->info);
-	gfx_v9958_io_reg(enabled != 0u ? GFX_V9958_R1_DISPLAY_ON :
-			 GFX_V9958_R1_DISPLAY_OFF, GFX_V9958_REG_R1);
+	gfx_v9958_r1 = (uint8_t)((gfx_v9958_r1 & GFX_V9958_R1_SI) |
+				 (enabled != 0u ? GFX_V9958_R1_DISPLAY_ON :
+				  GFX_V9958_R1_DISPLAY_OFF));
+	gfx_v9958_io_reg(gfx_v9958_r1, GFX_V9958_REG_R1);
 }
 
 /* Wait for the command engine: gfx_wait, and the CPU VRAM paths that

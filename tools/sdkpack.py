@@ -17,7 +17,7 @@
       template/        Makefile + hello.c
       examples/        hello, fardemo (__banked), files (open/read/list),
                        fardata (DATA1= + FAR1=, far data and a banked call),
-                       tui_demo, tui_keys, tui_dialog, tui_mouse
+                       tui_demo, tui_keys, tui_dialog, tui_mouse, gfx_mouse
       docs/            sdk.md, tui.md, exe-format.md
 
 Nothing in the tree names a path outside it: every copied file is checked
@@ -155,7 +155,8 @@ def tree_files(root, headers, abi, libkos, libtui, libtui_wide,
               for name in ("Makefile", "hello.c", "fardemo.c",
                            "fardemo_far.c", "files.c", "fardata.c",
                            "fardata_far.c", "levels.c", "tui_demo.c",
-                           "tui_keys.c", "tui_dialog.c", "tui_mouse.c")]
+                           "tui_keys.c", "tui_dialog.c", "tui_mouse.c",
+                           "gfx_mouse.c")]
     files += [("docs/%s" % name, root / "docs" / name)
               for name in DOC_FILES]
     return files
