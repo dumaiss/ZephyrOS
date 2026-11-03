@@ -421,7 +421,9 @@ class TestSdkBoundary(unittest.TestCase):
         # outcome program (`tests/test_mouse.py`); `tui_mplaced` and
         # `tui_mdeclared` are the mouse probe placed
         # (`tests/test_exeplace.py`); `gfx_mouse` is the graphics
-        # pointer example (`tests/test_gfx.py`).
+        # pointer example (`tests/test_gfx.py`); `joy` is the
+        # game-controller outcome program (`tests/test_joy.py`); `serial`
+        # is the serial-hold card program (`tests/test_serial.py`).
         self.assertEqual(sorted(name for name, _d, _s, _o in programs),
                          ["banks", "beat", "devtest", "events",
                           "exe2big", "exe2probe", "exe2seg", "exetest",
@@ -430,10 +432,10 @@ class TestSdkBoundary(unittest.TestCase):
                           "gfx_mouse", "gfxtest",
                           "hello",
                           "hwtest", "iobench", "iomix", "iomix_child",
-                          "iostream", "ipc", "ipccopy",
+                          "iostream", "ipc", "ipccopy", "joy",
                           "kresread", "krestest", "monitor", "mouse", "ns",
                           "nschild", "placetest", "readermap", "readertest",
-                          "readphase",
+                          "readphase", "serial",
                           "shell", "sndprobe", "sndtest", "sound",
                           "textbench", "timer",
                           "tui_core_probe", "tui_demo", "tui_dialog",

@@ -1,9 +1,12 @@
+import contextlib
 import importlib.util
+import io
 import os
 import subprocess
 import struct
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -70,6 +73,51 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(writer.writes, [b"a", b"b", b"c"])
         self.assertEqual(writer.flushes, 3)
         self.assertEqual(sleep.call_count, 3)
+
+    def open_port(self, *options):
+        """Run main() in port mode against a stand-in pyserial; returns
+        the Serial() keywords and the pace serve_stream was given."""
+        opened = {}
+        served = {}
+
+        class Device:
+            def __init__(self, **keywords):
+                opened.update(keywords)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return False
+
+            def reset_input_buffer(self):
+                pass
+
+        def serve(_reader, _writer, _service, pace, _trace):
+            served["pace"] = pace
+
+        fake = types.SimpleNamespace(Serial=Device, EIGHTBITS=8,
+                                     PARITY_NONE="N", STOPBITS_ONE=1)
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.dict(sys.modules, {"serial": fake}), \
+                mock.patch.object(host, "serve_stream", serve), \
+                mock.patch.object(sys, "argv", [
+                    "kcommander_host.py", "--port", "/dev/ttyUSB0",
+                    "--root", directory, *options]), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(host.main(), 0)
+        return opened, served["pace"]
+
+    def test_the_port_uses_rts_cts_and_no_pacing_by_default(self):
+        opened, pace = self.open_port()
+        self.assertIs(opened["rtscts"], True)
+        self.assertIsNone(opened["write_timeout"])
+        self.assertEqual(pace, 0.0)
+
+    def test_pacing_is_the_fallback_without_flow_control(self):
+        opened, pace = self.open_port("--pace-ms", "4")
+        self.assertIs(opened["rtscts"], False)
+        self.assertEqual(pace, 0.004)
 
 
 class ServiceTests(unittest.TestCase):

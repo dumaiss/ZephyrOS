@@ -163,13 +163,13 @@ class TestHidDriverArtifact(unittest.TestCase):
         system = _load_json(PRODUCTION_SYSTEM)
         self.assertEqual(system["drivers"],
                          ["sio", "ioc", "hid", "v9958", "console-v9958-hid",
-                          "timer", "sound", "iocfat"])
+                          "timer", "sound", "joy", "iocfat"])
         self.assertEqual(system["store"],
                          ["shell.exe", "monitor.exe",
                           # The production feature exerciser and the
                           # outcome programs it runs.
                           "hwtest.exe", "timer.exe", "beat.exe",
-                          "mouse.exe", "xmem_selftest.exe",
+                          "mouse.exe", "joy.exe", "xmem_selftest.exe",
                           "xmem_child.exe", "xmem_far.exe",
                           "fs_selftest.exe", "fs_child.exe"])
         # The boot manifest orders the drivers; HID's declared dependency

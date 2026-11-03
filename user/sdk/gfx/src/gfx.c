@@ -73,6 +73,9 @@ int gfx_open(void)
 	/* The drawing assembly reaches the ports through the mirrored
 	 * bytes from here on. */
 	v9958_load_ports(&gfx_state.info);
+	/* No upload survives a close: the pointer's SAT write waits only
+	 * while the stream owns the VRAM address. */
+	gfx_upload_active = 0u;
 	/* The RAM font starts from the built-in (gfx_font.c). */
 	gfx_font_install();
 	gfx_draw_open = 1u;

@@ -206,7 +206,7 @@ No peripheral gets a hardware reset: a warm reboot is invisible to the
 V9958, the SIO, the CTC, the IOC and the keyboard controller. Each driver's
 bring-up therefore programs its device fully from any state rather than
 from power-on defaults, which is what makes the reboot indistinguishable
-from a cold start (`docs/devices.md` section 14).
+from a cold start (`docs/devices.md` section 15).
 
 The SDK wrapper is `void reboot(void)`; it does not return. The monitor's
 `B` command and the shell's `reboot` built-in call it.
@@ -229,7 +229,7 @@ then write the device's ports or reprogram it beyond the protocol — and
 two failures come with it: a device whose driver declares no release
 notification answers `-KOS_ENOTSUP`, and a device another handle already
 holds exclusively answers `-KOS_EBUSY`. The takeover contract is
-`docs/devices.md` section 2. Files and the other providers define no
+`docs/devices.md` section 15. Files and the other providers define no
 exclusive flag, so `KOS_BIND_EXCLUSIVE` there is `-KOS_EINVAL`.
 
 What a takeover permits is the device's protocol answer: the video driver
@@ -237,7 +237,10 @@ serves `KVIDEO_OP_DIRECT_INFO` (6, `abi/kos/protocol.h`) only to its
 exclusive holder, replying with the struct `kvideo_direct_info`
 (`abi/kos/kvideo.h`) — the backend, the capability flags, the VRAM size
 and the ports the holder writes directly. `libgfx` consumes it
-(`docs/gfx-sdk.md`).
+(`docs/gfx-sdk.md`). The serial driver lists its ports and baud rate with
+`KSIO_OP_INFO` (5) on any handle, and while the port is held exclusively
+it leaves them to the holder (`kos/serial.h`, `docs/devices.md`
+section 3).
 
 Paths are routed by the first component, case-insensitively, to the three
 roots: `/fs` (the filesystem driver), `/system` (ROMFS) and `/dev` (the
@@ -410,7 +413,7 @@ display.
 the input queue; a console whose output driver owns the display forwards
 the display reset to it. The kernel runs it before every start of the
 boot program, so no program inherits a terminal another program left
-behind (`docs/devices.md` section 14).
+behind (`docs/devices.md` section 15).
 
 `getchar`, `console_puts` and `console_readline` are built on these. A
 process without standard handles gets `-KOS_EINVAL`. The build decides which

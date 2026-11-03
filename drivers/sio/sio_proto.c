@@ -17,6 +17,14 @@
  * The driver owns no IRQ: the SIO interrupt mode stays disabled
  * (WR1 = 00h), exactly as the early console leaves it.
  *
+ * The exclusive hold (KOS_OP_ACQUIRE; the manifest declares the release
+ * notification) gives a program the ports KSIO_OP_INFO lists.  While it
+ * lasts the driver touches no SIO0/B register for any caller - the
+ * console's rescue scan and tee included: GETC answers -KOS_EAGAIN, POLL
+ * and READ 0, and PUTC and WRITE are counted in `dropped` and answer as
+ * if sent, as the V9958 driver does for a held display.  The hold's end
+ * (KOS_OP_RELEASE, arg1 != 0) rewrites the setup and drains the FIFO.
+ *
  * Data movement: WRITE copies the caller's buffer into this driver's
  * DRIVER_IO staging block in bounded chunks; READ drains the receiver
  * into the same block.  Both are descriptor copies (4.9) - the driver
@@ -26,6 +34,8 @@
 #include "kos/errno.h"
 #include "driver.h"
 #include "kos/protocol.h"
+
+#include "hardware.h"
 
 #include "sio.h"
 
@@ -101,7 +111,20 @@ static int16_t sio_read_buffer(struct kos_ipc_frame *frame)
 	return (int16_t)done;
 }
 
-int16_t sio_driver_dispatch(struct kos_ipc_frame *frame)
+/* Count `amount` bytes PUTC or WRITE answered without sending
+ * (saturating). */
+static void sio_drop(uint16_t amount)
+{
+	uint16_t total = (uint16_t)(sio0b_state.dropped + amount);
+
+	if (total < amount) {
+		total = 0xFFFFu;
+	}
+	sio0b_state.dropped = total;
+}
+
+/* The ordinary serial operations: the port is the driver's. */
+static int16_t sio_serve(struct kos_ipc_frame *frame)
 {
 	switch (frame->op) {
 	case KSIO_OP_PUTC:
@@ -112,11 +135,65 @@ int16_t sio_driver_dispatch(struct kos_ipc_frame *frame)
 		return (int16_t)sio0b_poll(&sio0b_state);
 	case KSIO_OP_GETC:
 		return (int16_t)sio0b_getc(&sio0b_state);
-	case KSIO_OP_READ:
-		return sio_read_buffer(frame);
 	default:
-		return (int16_t)-KOS_EINVAL;
+		return sio_read_buffer(frame);
 	}
+}
+
+int16_t sio_driver_dispatch(struct kos_ipc_frame *frame)
+{
+	uint8_t op = frame->op;
+
+	if (op <= KSIO_OP_READ) {
+		if (sio0b_state.exclusive == 0u) {
+			return sio_serve(frame);
+		}
+		/* Held: no port is touched.  Nothing is pending for POLL
+		 * and READ. */
+		if (op == KSIO_OP_GETC) {
+			return (int16_t)-KOS_EAGAIN;
+		}
+		if (op == KSIO_OP_PUTC) {
+			sio_drop(1u);
+		} else if (op == KSIO_OP_WRITE) {
+			sio_drop(frame->arg1);
+			return (int16_t)frame->arg1;
+		}
+		return 0;
+	}
+	if (op == KSIO_OP_INFO) {
+		/* The direct-I/O flag, the data and control ports, and the
+		 * baud rate little-endian. */
+		uint8_t *info = frame->payload;
+
+		*info++ = KSIO_CAP_DIRECT_IO;
+		*info++ = KOS_SIO0B_DATA;
+		*info++ = KOS_SIO0B_CTRL;
+		*info++ = (uint8_t)(KOS_SIO0B_BAUD & 0xFFu);
+		*info++ = (uint8_t)((KOS_SIO0B_BAUD >> 8) & 0xFFu);
+		*info++ = (uint8_t)((KOS_SIO0B_BAUD >> 16) & 0xFFu);
+		*info = (uint8_t)((KOS_SIO0B_BAUD >> 24) & 0xFFu);
+		return 0;
+	}
+	if (op == KOS_OP_ACQUIRE) {
+		/* One port, one holder. */
+		if (sio0b_state.exclusive != 0u) {
+			return (int16_t)-KOS_EBUSY;
+		}
+		sio0b_state.exclusive = 1u;
+		sio0b_state.dropped = 0u;
+		return 0;
+	}
+	if (op == KOS_OP_RELEASE) {
+		/* Only the hold's end restores the channel; an ordinary
+		 * handle going away changes nothing the driver owns. */
+		if (frame->arg1 != 0u) {
+			sio0b_state.exclusive = 0u;
+			sio0b_restore();
+		}
+		return 0;
+	}
+	return (int16_t)-KOS_EINVAL;
 }
 
 uint8_t sio_driver_init(const struct driver_boot *boot)

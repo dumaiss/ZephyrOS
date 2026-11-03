@@ -13,6 +13,8 @@
  *   gfxtest upload           four streaming uploads in chunks of 1, 7,
  *                            256 and 4,096 bytes, the short/overlong/
  *                            nested refusals, then the result codes
+ *   gfxtest reopen           a close during an upload, the reopen, an
+ *                            upload and a pointer show, then the codes
  *   gfxtest palette          G6 palette entries, a key, the G7 refusal,
  *                            a key, then the result code
  *   gfxtest prims            batch ordering, the auto-flush, the four
@@ -168,6 +170,51 @@ static int gfxtest_run(const char *name, enum gfx_mode mode,
 		printf("gfxtest: done\r\n");
 	}
 	return 0;
+}
+
+/* A close inside an upload must not leave the upload open: after the
+ * reopen an upload runs and the pointer's first show writes its SAT. */
+static int gfxtest_reopen(void)
+{
+	int begin1;
+	int begin2 = -1;
+	int write2 = -1;
+	int end2 = -1;
+	int show = -1;
+
+	if (gfx_open() < 0 || gfx_set_mode(GFX_MODE_512x212_16) < 0) {
+		gfx_close();
+		printf("gfxtest: FAIL open\r\n");
+		return 1;
+	}
+	begin1 = gfx_upload_begin(0u, 256u, 512u, 4u);
+	gfx_close();
+	if (gfx_open() < 0 || gfx_set_mode(GFX_MODE_512x212_16) < 0) {
+		gfx_close();
+		printf("gfxtest: FAIL reopen\r\n");
+		return 1;
+	}
+	begin2 = gfx_upload_begin(0u, 256u, 512u, 4u);
+	if (begin2 == 0) {
+		unsigned int i;
+
+		for (i = 0u; i < 1024u; ++i) {
+			gfxtest_upload_buffer[i] = gfxtest_upload_byte(i);
+		}
+		write2 = gfx_upload_write(gfxtest_upload_buffer, 1024u);
+		end2 = gfx_upload_end();
+	}
+	show = gfx_pointer_show(100, 50);
+	gfx_close();
+	printf("gfxtest: reopen %d %d %d %d %d\r\n", begin1, begin2, write2,
+	       end2, show);
+	if (begin1 == 0 && begin2 == 0 && write2 == 1024 && end2 == 0 &&
+	    show == 0) {
+		printf("gfxtest: reopen PASS\r\n");
+		return 0;
+	}
+	printf("gfxtest: reopen FAIL\r\n");
+	return 1;
 }
 
 /* One upload of `bytes` in chunks of `chunk`, then the short/overlong/
@@ -1373,6 +1420,9 @@ int main(int argc, char **argv)
 	}
 	if (strcmp(argv[0], "upload") == 0) {
 		return gfxtest_upload();
+	}
+	if (strcmp(argv[0], "reopen") == 0) {
+		return gfxtest_reopen();
 	}
 	if (strcmp(argv[0], "palette") == 0) {
 		return gfxtest_palette();

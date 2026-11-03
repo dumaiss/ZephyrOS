@@ -7,6 +7,10 @@ gfxtest.exe and its map):
     python3 tests/gfxprof.py          # the timing mode's figures
     python3 tests/gfxprof.py atlas    # the atlas mode's text figures
 
+Each figure's total leaves out the interrupt services inside its window
+(GfxReplay.step, irq_time), as the tests' figures do, and the profile
+leaves out the services' instructions.
+
 The twelve timing figures run exactly as TestGfxTiming measures them -
 the legacy five with the duration model off, the package-96 workloads
 with the frame clock and the duration model on from the 12th marker -
@@ -131,7 +135,13 @@ def main():
         before = z.tstates
         p.skip_delay(z)
         p.feed(z)
-        z.step()
+        # GfxReplay.step times every interrupt service; the steps inside
+        # one (or that take or leave it) are not the figure's code.
+        serviced = p.__dict__.get("irq_open") is not None
+        spans = len(p.__dict__.get("irq_spans", ()))
+        p.step(z)
+        serviced = (serviced or p.__dict__.get("irq_open") is not None or
+                    len(p.__dict__.get("irq_spans", ())) != spans)
         if steps % 0x1FF == 0:
             p.pump(z)
         steps += 1
@@ -151,7 +161,8 @@ def main():
             else:
                 figure = (len(marks) - 3) // 2
                 start, end = marks[-1], T.EXEC_BUDGET << 30
-            if 0 <= figure < len(figures) and start <= before < end:
+            if (0 <= figure < len(figures) and start <= before < end and
+                    not serviced):
                 hist[figure][name(pc)] += z.tstates - before
                 if pc in entries and bank_of(pc) == app_bank:
                     calls[figure][name(pc)] += 1
@@ -164,10 +175,11 @@ def main():
     if len(marks) < 2 * len(figures):
         p.fail("only %u markers" % len(marks))
     for figure, (start, end) in enumerate(zip(marks[::2], marks[1::2])):
-        total = end - start
         if figure >= len(figures):
             break
-        print("== %s: %d T-states" % (figures[figure], total))
+        total = (end - start) - p.irq_time(start, end)
+        print("== %s: %d T-states (interrupt services left out)"
+              % (figures[figure], total))
         covered = 0
         shown = 0
         for fn, ts in hist[figure].most_common():

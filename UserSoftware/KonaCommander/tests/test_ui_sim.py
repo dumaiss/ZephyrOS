@@ -18,7 +18,7 @@ sys.path.insert(0, str(OS_ROOT / "tools"))
 import pack_image  # noqa: E402
 import romfspack  # noqa: E402
 from replay import ConsoleReplay, v9958_screen  # noqa: E402
-from z80sim import read_symbols  # noqa: E402
+from z80sim import Ctc, SerialLink, read_symbols  # noqa: E402
 
 
 BUILD = OS_ROOT / "build"
@@ -79,11 +79,15 @@ class Pointer:
 
 class HostBridge:
     """The PC end of the SIO0/B link: the program's KCP1 records go to the
-    host tool's protocol engine, its answers to the receive queue."""
+    host tool's protocol engine, its answers onto the timed wire
+    (z80sim.SerialLink: 115,200 baud, the SIO's 3-byte FIFO, the PC on
+    RTS/CTS), unpaced, as the host tool sends them by default."""
 
     def __init__(self, root, z):
         self.service = host.FileService(Path(root), "TESTPC",
                                         allow_write=True)
+        self.link = SerialLink()
+        z.serial_link = self.link
         self.seen = len(z.sio_tx)
         self.record = bytearray()
 
@@ -99,7 +103,7 @@ class HostBridge:
                 answer = self.service.process(host.cobs_decode(record))
             except ValueError:
                 continue
-            z.sio_rx.extend(host.cobs_encode(answer) + b"\0")
+            self.link.send(host.cobs_encode(answer) + b"\0", z.tstates)
 
 
 def splice_store(image, stream):
@@ -140,7 +144,7 @@ class CommanderTuiSmoke(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def make_replay(self):
+    def make_replay(self, clock=False):
         manifest = json.loads(STORE.read_text())
         manifest["files"] = [
             item for item in manifest["files"]
@@ -156,10 +160,19 @@ class CommanderTuiSmoke(unittest.TestCase):
             objdir=str(MODULES))
         replay = CommanderReplay(splice_store(IMAGE.read_bytes(), stream))
         z = replay.make_cpu()
+        if clock:
+            Ctc().attach(z)
         z.hid.fs2_add("ALPHA.TXT", b"alpha\n")
         z.hid.fs2_add("BETA.TXT", b"beta\n")
         replay.boot_to_shell(z)
+        # The program's addresses are fixed, so a stop on one also checks
+        # the bank: the nucleus (7), the drivers (6), bank 0 and the
+        # shell's bank run other code at the same addresses.
+        self.shell_bank = z.bank_of(0x0100)
         return replay, z
+
+    def in_program(self, z):
+        return z.bank_of(z.pc) not in (0, 6, 7, self.shell_bank)
 
     @staticmethod
     def console_dispatch():
@@ -201,7 +214,7 @@ class CommanderTuiSmoke(unittest.TestCase):
             length = self.render_length(z, dispatch)
             if length is not None:
                 renders.append(length)
-            if z.pc == getkey and step >= 1:
+            if z.pc == getkey and step >= 1 and self.in_program(z):
                 if step - 1 > hits["n"]:
                     return True
                 hits["n"] += 1
@@ -250,6 +263,8 @@ class CommanderTuiSmoke(unittest.TestCase):
         entered = {"yes": False}
 
         def hook(_step):
+            if not self.in_program(z):
+                return None
             if z.pc == ui_run:
                 entered["yes"] = True
             return (entered["yes"] and z.pc == getkey) or None
@@ -257,7 +272,9 @@ class CommanderTuiSmoke(unittest.TestCase):
         tick = None
         if bridge is not None:
             tick = lambda _step: bridge.pump(z)  # noqa: E731
-        if replay.drive(z, 8_000_000, {ui_run, getkey}, hook, tick=tick,
+        # Without a PC the program first spends its HELLO's three
+        # one-second receive timeouts polling the port.
+        if replay.drive(z, 16_000_000, {ui_run, getkey}, hook, tick=tick,
                         every=0x3FF) is not None:
             return
         self.fail("Commander did not enter its input loop")
@@ -315,13 +332,15 @@ class CommanderTuiSmoke(unittest.TestCase):
 
     # -- the mouse -------------------------------------------------------
 
-    def start_with_host(self, pc_files=None):
+    def start_with_host(self, pc_files=None, local_files=(), clock=False):
         """The shell, the PC end attached to the link, kc running with
         its panes loaded: the local card holds ALPHA.TXT, BETA.TXT,
         GAMMA.TXT, PAGE.TXT (40 lines) and the directory ZDIR, the PC
-        root NOTES.TXT and the directory SUB."""
-        replay, z = self.make_replay()
-        for name, content in (("ALPHA.TXT", b"alpha\n"),
+        root NOTES.TXT and the directory SUB, plus `local_files` and
+        `pc_files` ((name, content) pairs).  `clock` attaches the CTC, so
+        the timer's interrupts run as on the board."""
+        replay, z = self.make_replay(clock)
+        for name, content in tuple(local_files) + (("ALPHA.TXT", b"alpha\n"),
                               ("BETA.TXT", b"beta\n"),
                               ("GAMMA.TXT", b"gamma\n"),
                               ("PAGE.TXT", b"".join(
@@ -333,6 +352,8 @@ class CommanderTuiSmoke(unittest.TestCase):
         (root / "SUB").mkdir(parents=True)
         (root / "NOTES.TXT").write_bytes(b"notes\n")
         (root / "SUB" / "DEEP.TXT").write_bytes(b"deep\n")
+        for name, content in pc_files or ():
+            (root / name).write_bytes(content)
         self.root = root
         bridge = HostBridge(root, z)
         z.hid.hid_queue.extend(b"/system/kc.exe\r")
@@ -510,6 +531,65 @@ class CommanderTuiSmoke(unittest.TestCase):
         self.assertIn("Copy to PC complete", text[23])
         self.assertEqual((self.root / "ALPHA.TXT").read_bytes(), b"alpha\n")
         self.assertIn("ALPHA.TXT", "\n".join(row[43:] for row in text[2:22]))
+
+    # -- the held link ---------------------------------------------------
+
+    def test_copies_both_ways_over_the_held_link_without_pacing(self):
+        """30 KiB each way at the wire's own rate: no byte is lost, and
+        RTS is up only while a response is awaited - no card or display
+        access happens meanwhile."""
+        down = bytes((index * 7 + (index >> 8)) & 0xFF
+                     for index in range(30 * 1024))
+        up = bytes((index * 13 + 5) & 0xFF for index in range(30 * 1024))
+        replay, z = self.start_with_host(pc_files=(("DOWN.BIN", down),),
+                                         local_files=(("UP.BIN", up),),
+                                         clock=True)
+        link, ptr = self.bridge.link, self.pointer
+        busy = []
+        io_in, io_out = z.io_in, z.io_out
+
+        def watched(port):
+            # IOC lanes 30h-33h, the V9958 A0h-A4h.
+            if link.rts and (0x30 <= port <= 0x33 or 0xA0 <= port <= 0xA4):
+                busy.append(port)
+
+        def logged_in(port):
+            watched(port & 0xFF)
+            return io_in(port)
+
+        def logged_out(port, value):
+            watched(port & 0xFF)
+            return io_out(port, value)
+
+        z.io_in, z.io_out = logged_in, logged_out
+        raises = link.rts_raises
+
+        down_row = self.row_of(z, "DOWN.BIN", 43)
+        self.mouse(replay, z, ptr.click(50, down_row) + ptr.click(31, 24))
+        self.assertIn("Copy file", self.screen_text(z)[5])
+        start = z.tstates
+        self.mouse(replay, z, ptr.click(36, 19))
+        down_tstates = z.tstates - start
+        self.assertIn("Copy to KonaOS complete", self.screen_text(z)[23])
+        self.assertEqual(bytes(z.hid.fs2_files[("DOWN.BIN",)]), down)
+
+        up_row = self.row_of(z, "UP.BIN", 0)
+        self.mouse(replay, z, ptr.click(5, up_row) + ptr.click(31, 24))
+        self.assertIn("Copy file", self.screen_text(z)[5])
+        start = z.tstates
+        self.mouse(replay, z, ptr.click(36, 19))
+        up_tstates = z.tstates - start
+        self.assertIn("Copy to PC complete", self.screen_text(z)[23])
+        self.assertEqual((self.root / "UP.BIN").read_bytes(), up)
+
+        self.assertEqual(link.overruns, 0)
+        self.assertEqual(link.tx_overwrites, 0)
+        self.assertGreater(link.rts_raises - raises, 80)
+        self.assertEqual(busy, [], "card or display access with RTS up")
+        self.assertFalse(link.rts, "RTS stays down between requests")
+        if os.environ.get("KC_REPORT_TRAFFIC"):
+            print("30 KiB PC to KonaOS: %d T-states; KonaOS to PC: %d"
+                  % (down_tstates, up_tstates))
 
 
 if __name__ == "__main__":

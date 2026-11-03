@@ -31,7 +31,8 @@ abi/kos/                  the public ABI (one copy for every build)
 user/sdk/
   include/kos.h           the umbrella header a program includes
   include/kos/            console.h fs.h ipc.h process.h diag.h seg.h
-                          xmem.h timer.h mouse.h sound.h gfx.h
+                          xmem.h timer.h mouse.h sound.h joy.h serial.h
+                          gfx.h
   include/klibc/          string.h fmt.h stdarg.h
   src/crt0.asm            startup: the startup block, argv, main, exit
   src/runtime.asm         the fixed low-data area, the shared scratch, the error mapper
@@ -58,6 +59,13 @@ user/sdk/
                           mouse_read, mouse_init, mouse_track; the
                           pointer: pointer_open, pointer_move,
                           pointer_hide
+  src/joy.c               the JOY protocol client: joy_open, joy_close,
+                          joy_read_call
+  src/joy_read.asm        joy_read, the direct latch read
+  src/joy_decode.c        joy_dirs, joy_key: the two readings of a byte
+  src/serial.c            the SERIAL hold: serial_hold, serial_release
+  src/serial_io.asm       serial_rts, serial_getc_wait, serial_putc,
+                          serial_write: the held port, directly
   src/klibc/              one archive member per function
   src/kos_internal.h      SDK-private glue (not for programs)
   exe.mk                  the in-tree wrapper: sets the in-tree roots, builds
@@ -960,6 +968,107 @@ A libtui program gets the mouse and the pointer with one call,
 `tui_mouse_enable()`, and reads clicks and the wheel through its key loop
 in cell coordinates (`docs/tui.md`, Mouse).
 
+### 6.13 The game controllers (`kos/joy.h`)
+
+```c
+int     joy_open(uint8_t pad);                 /* bind /dev/input/joy/<pad> */
+int     joy_close(int joy);
+uint8_t joy_read(int joy);                     /* the latch byte, direct    */
+int     joy_read_call(int joy, uint8_t *raw);  /* the same, via the driver  */
+uint8_t joy_dirs(uint8_t raw);                 /* the joystick reading      */
+int     joy_key(uint8_t raw);                  /* the keypad reading        */
+```
+
+`/dev/input/joy/0` and `/1` are the board's two controller latches
+(`docs/devices.md` section 11). The IO controller decodes each USB pad (a
+Logitech F310 in DirectInput mode) into a ColecoVision controller byte;
+pad 0 is the first pad mounted. A read is that byte exactly as the
+controller set it, active low: D0 up, D1 right, D2 down, D3 left, D6 fire
+(A or B), D5:D4 high, D7 low (`JOY_UP`, `JOY_RIGHT`, `JOY_DOWN`,
+`JOY_LEFT`, `JOY_FIRE`). An idle pad and an absent pad both read
+`JOY_IDLE` (`7Fh`).
+
+- `joy_open` binds the pad's name, checks the type (`-KOS_EINVAL` for
+  another type, `-KOS_ENOENT` for a pad the board does not have) and asks
+  the driver once for the pad's port. A build without the joy driver
+  answers `-KOS_ENOENT` or `-KOS_ENODEV`.
+- `joy_read` is one `IN` from that port, in assembly, with no call into
+  the driver: the every-frame path (about 90 T-states against about
+  9,300 for `joy_read_call`). A handle `joy_open` did not return reads
+  `JOY_IDLE`.
+- `joy_read_call` reads the same byte through the driver
+  (`KJOY_OP_READ`).
+
+**Two readings.** X, Y, Back and Start put a ColecoVision keypad code in
+D3:D0 (`JOY_KEY_1`, `JOY_KEY_2`, `JOY_KEY_STAR`, `JOY_KEY_POUND`), and a
+USB keyboard's digits, `Shift+8` (or keypad `*`) and `Shift+3` put their
+code on pad 0; while a code is held it replaces the directions. The board
+ignores the ColecoVision mode select (`OUT 80h` keypad, `OUT C0h`
+joystick), so the program chooses the reading, as a ColecoVision game
+does:
+
+- `joy_dirs(raw)`: the joystick reading, the `JOY_*` bits set for what is
+  pressed (active high);
+- `joy_key(raw)`: the keypad reading, `'0'-'9'`, `'*'` or `'#'`, or -1
+  for `JOY_KEY_NONE` (`0Fh`) and the codes no key has (`00h`, `04h`,
+  `08h`); `JOY_KEY_FIRE` (D6, low when pressed) is the keypad's second
+  fire.
+
+| key | code | as directions | key | code | as directions |
+|---|---|---|---|---|---|
+| 0 | `0Ah` | up + down | 6 | `0Eh` | up |
+| 1 | `0Dh` | right | 7 | `05h` | right + left |
+| 2 | `07h` | left | 8 | `01h` | right + down + left |
+| 3 | `0Ch` | up + right | 9 | `0Bh` | down |
+| 4 | `02h` | up + down + left | `*` | `09h` | right + down |
+| 5 | `03h` | down + left | `#` | `06h` | up + left |
+
+1, 2, 3, 5, 6, 9, `*` and `#` share their nibble with a direction a pad
+can report, so a program that takes both readings tells them apart by
+context; 0, 4, 7 and 8 are impossible direction combinations. Both
+decoders are pure functions of the byte.
+
+### 6.14 The serial port held for direct I/O (`kos/serial.h`)
+
+```c
+int  serial_hold(void);                     /* bind /dev/serial/0 exclusively */
+int  serial_release(void);
+void serial_rts(unsigned char on);          /* WR5: RTS raised or dropped     */
+int  serial_getc_wait(unsigned int ticks);  /* a byte, or -1 after `ticks`    */
+int  serial_putc(unsigned char ch);         /* 0, or -1                       */
+int  serial_write(const void *buffer, unsigned int length);
+```
+
+`/dev/serial/0` is SIO0/B at 115,200 baud 8N1 (`docs/devices.md`
+section 3). A byte arrives every 868 T-states and the SIO's receive FIFO
+holds three, while a call into the driver costs more than a byte: a
+program that moves a stream holds the port and moves the bytes itself.
+
+- `serial_hold` binds the name exclusively (a second hold anywhere is
+  `-KOS_EBUSY`), checks the type and asks `KSIO_OP_INFO` once for the
+  data and control ports. From then on the driver touches neither port,
+  and the console's serial rescue scan and tee pause. A build without
+  the serial driver answers `-KOS_ENOENT` or `-KOS_ENODEV`.
+- `serial_getc_wait(ticks)` polls RR0 and reads the data port: the byte
+  (0-255), or -1 after `ticks` ticks without one (`SERIAL_TICKS_PER_SECOND`,
+  100: a tick is 10 ms of polling at 10 MHz, longer while interrupts are
+  served). 0 ticks checks once. The waiting byte is the first test, so a
+  stream costs about 120 T-states per byte here, the call included.
+- `serial_putc` and `serial_write` wait for the transmit buffer to empty
+  before each byte (a bounded wait); `serial_write` returns the bytes
+  sent.
+- `serial_rts(on)` writes WR5 with RTS raised or dropped. On this board
+  RTS is the USB-serial bridge's CTS, so a PC on RTS/CTS flow control
+  sends only while it is raised: raise it while the program waits for
+  data, drop it around anything slow - a file call, drawing - and the PC
+  holds its output instead of overrunning the FIFO.
+- `serial_release`, or the program's exit, ends the hold: the driver
+  rewrites the channel's setup, RTS asserted, and drains the receiver.
+
+The byte functions are in assembly and make no OS call; before
+`serial_hold` (or after `serial_release`) they send nothing and receive
+nothing.
+
 ## 7. Memory layout
 
 ```text
@@ -1041,25 +1150,25 @@ needed.
 | `fmeasure`, `fstats` | `stream`, plus the `stdio` group |
 | `stream_plan` | `stream` alone |
 
-`libgfx` follows the same member rule; its members call into `ipc` and
-the gates the same way any client does:
+`libgfx` follows the same member rule. Every graphics program links the
+`hello.exe` set below (`ipc`, `ipcgate`, `nsgate`, `gate`, `console_proto`,
+`args`, `runtime`, `crt0`); the table lists the members beyond it, as the
+link maps of one-call probe programs show them (the archive members are
+the files of `user/sdk/gfx/src/` and `backends/v9958/`):
 
-| a program calls | gfx members linked |
+| a program calls | members linked beyond the hello set |
 |---|---|
-| `gfx_open`, `gfx_close`, `gfx_get_info` | `gfx`, `gfx_font`, `ipc`, `kos_ipcgate`, `nsgate`, `gfx_v9958_io` |
-| `gfx_set_mode`, `gfx_display_enable`, `gfx_show_page`, `gfx_wait_vblank` | `gfx_mode`, `v9958_gfx`, `gfx_v9958_io` |
-| `gfx_clear`, `gfx_fill_rect`, `gfx_copy_rect` | `gfx_draw`, `gfx_batch`, `v9958_gfx`, `gfx_v9958_io` |
-| `gfx_rect`, `gfx_line`, `gfx_point`, `gfx_ellipse`, `gfx_fill_ellipse` | `gfx_shapes`, `gfx_batch`, `v9958_gfx`, `gfx_v9958_io` |
-| `gfx_begin`, `gfx_end`, `gfx_flush`, `gfx_wait` | `gfx_batch`, `v9958_gfx`, `gfx_v9958_io` |
-| `gfx_set_palette` | `gfx_palette`, `v9958_gfx`, `gfx_v9958_io` |
-| `gfx_upload_begin`, `gfx_upload_write`, `gfx_upload_end` | `gfx_upload`, `gfx_v9958_io` |
-| `gfx_font_set_glyph`, `gfx_font_reset_glyph`, `gfx_font_reset` | `gfx_font` |
-| `gfx_text`, `gfx_text_n`, `gfx_text_width` | `gfx_text`, `gfx_batch`, `gfx_v9958_io`, `strlen` |
-| `gfx_pointer_show`, `gfx_pointer_hide`, `gfx_pointer_shape` | `gfx_pointer` (both members), `gfx_v9958_io`, `memcpy`, `memset` |
-
-The backend's assembly member is pulled only through the backend C
-member, so a program that calls none of the drawing entry points links
-no V9958 port code.
+| `gfx_open`, `gfx_close`, `gfx_get_info` | `gfx`, `gfx_font`, `gfx_cmd`, `v9958_gfx`, `v9958_io`, `memcpy`, `strlen`, `mul` |
+| `gfx_set_mode`, `gfx_display_enable`, `gfx_show_page`, `gfx_wait_vblank`, `gfx_wait`, `gfx_timing_mark` | `gfx_mode`, plus the `gfx_open` row |
+| `gfx_clear`, `gfx_fill_rect`, `gfx_copy_rect`, `gfx_rect`, `gfx_line`, `gfx_point`, `gfx_begin`, `gfx_end`, `gfx_flush` | `gfx_cmd`, `v9958_io` |
+| `gfx_ellipse`, `gfx_fill_ellipse` | `gfx_ellipse`, `gfx_cmd`, `v9958_io` |
+| `gfx_set_palette` | `gfx_palette`, plus the `gfx_open` row |
+| `gfx_upload_begin`, `gfx_upload_write`, `gfx_upload_end` | `gfx_upload`, `gfx_cmd`, `v9958_io` |
+| `gfx_font_set_glyph`, `gfx_font_reset_glyph`, `gfx_font_reset` | `gfx_font4`, plus the `gfx_open` row |
+| `gfx_text_atlas` | `gfx_atlas`, `sdcc_arith16`, plus the `gfx_open` row |
+| `gfx_text`, `gfx_text_n` | `gfx_text`, `gfx_atlas_draw`, `gfx_atlas`, `gfx_font4`, `sdcc_arith16`, plus the `gfx_open` row |
+| `gfx_text_width` | `gfx_font`, `v9958_io`, `strlen`, `mul` |
+| `gfx_pointer_show`, `gfx_pointer_hide`, `gfx_pointer_shape` | `gfx_pointer` (both members), `gfx_cmd`, `v9958_io`, `memcpy`, `memset` |
 
 `hello.exe` links exactly crt0, the runtime, `args`, the console client
 with its gates, `printf` with its formatters and the arithmetic helpers,
@@ -1102,6 +1211,15 @@ every outcome.
 image with the emulated controller scripted: `mouse_track`'s deltas, its
 clamp at both edges, the wheel and the press latch, and the pointer's
 sprite table through moves, scrolls, renders, holds and resets.
+`tests/test_joy.py` compiles `joy_decode.c` for the host and checks
+both readings of every latch byte against the IO controller's tables,
+then runs `/system/joy.exe stage` in the production image with the
+latches scripted: `joy_read` and `joy_read_call` deliver the same raw
+bytes, a keypad code and idle `7Fh` among them.
+`tests/test_serial.py` runs the card program `tests/serial/serial.c` in
+the production image with the console's serial rescue armed: the hold,
+direct I/O through `kos/serial.h` with no driver access to the port
+meanwhile, and the release's restore.
 `tests/test_sdk_package.py` checks the standalone SDK (section 11).
 
 ## 10. The demo image and the examples

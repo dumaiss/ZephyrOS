@@ -34,12 +34,15 @@ Install pyserial on the PC, choose a directory to expose, and start:
 python3 host/kcommander_host.py --port /dev/ttyUSB0 --root "$HOME/Documents" --write
 ```
 
-The default 4 ms target-bound byte pacing is required by KonaOS's polled SIO
-application interface; sending a response as one full-speed 115200-baud burst
-can overrun the hardware FIFO while the application re-enters the driver.
-Use `--trace` when diagnosing a link.  A successful connection prints `KCP1
-RX HELLO` followed by `KCP1 TX HELLO`.  `--pace-ms` is tunable, but lowering it
-should be validated on hardware.
+The host opens the port with RTS/CTS flow control and sends each response
+at full speed.  `kc` holds SIO0/B for its whole session and moves the bytes
+itself (`kos/serial.h`): it raises RTS only from the end of a request until
+its response's last byte and drops it around every file, display or other
+slow operation, so the PC holds its output while the Z80 is busy and the
+SIO's three-byte receive FIFO never overruns.  For an adapter without
+RTS/CTS, `--pace-ms N` turns flow control off and sends one byte every N ms
+instead (4 ms is safe).  Use `--trace` when diagnosing a link.  A successful
+connection prints `KCP1 RX HELLO` followed by `KCP1 TX HELLO`.
 
 Omit `--write` for a read-only PC export.  PC-to-KonaOS copy still works in
 that mode; KonaOS-to-PC copy reports that the host must be restarted with
@@ -48,6 +51,8 @@ directory and atomically replace the final name only after COMMIT.
 
 Then run `kc` on a KonaOS image built with the V9958/HID console.  Do not
 use the serial-console build: its console and `/dev/serial/0` share SIO0/B.
+While `kc` runs, the console's serial rescue gesture (three ESCs) is not
+seen; it works again once `kc` exits and releases the port.
 KonaCommander starts even when the PC server or cable is absent.  The local
 pane remains usable while the PC pane is empty; start the server/connect the
 cable and press `r` to connect.  A failed reconnect leaves the UI
@@ -114,7 +119,8 @@ may change the whole screen; ordinary selection and focus traversal do not.
 6. View the text and binary files, toggle modes, and page beyond offset 65535.
 7. Copy a PC file to KonaOS with F5, compare it byte-for-byte, then copy a
    different local file to the PC and compare it.  Repeat over an existing
-   filename and verify the confirmation and replacement behavior.
+   filename and verify the confirmation and replacement behavior.  Time a
+   30 KiB copy each way.
 8. Stop the host, press `r`, and confirm a bounded timeout with the UI still
    running and the local pane usable; restart the host, press `r` again, and
    confirm the PC pane recovers.
@@ -123,6 +129,7 @@ may change the whole screen; ordinary selection and focus traversal do not.
    button, page the viewer with the wheel and return with a right click, and
    answer the copy confirmation by clicking YES and NO.  The pointer must
    follow the mouse throughout and disappear when the program ends.
-10. Quit and confirm KonaOS restores its ordinary terminal state.
+10. Quit and confirm KonaOS restores its ordinary terminal state, and that
+    three ESCs on the serial line still hand the console to it.
 
 The automated tests do not substitute for this on-board serial test.

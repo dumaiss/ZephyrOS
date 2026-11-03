@@ -36,7 +36,8 @@
       "instance": 0,
       "version": 1,
       "dispatch": "sio_driver_dispatch",
-      "flags": 0
+      "flags": 0,
+      "release": true
     }
   ],
   "publishes": [

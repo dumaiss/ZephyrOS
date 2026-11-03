@@ -58,13 +58,15 @@ same physical SIO0/B byte stream in that configuration.
 ## Non-negotiable invariants
 
 - Use only the public SDK from `../../build/kos-sdk-0.2.0.tar.gz`; never call kernel entry
-  points or hardware ports directly.
-- Bind `/dev/serial/0`, verify `KOS_TYPE_SERIAL`, and use batched
-  `KSIO_OP_WRITE`/`KSIO_OP_READ` calls.  No byte-at-a-time serial IPC.
-- Pace PC-to-Kona bytes (4 ms by default).  The polled SIO driver drains a
-  burst but does not wait for its next byte, and application IPC/timer
-  re-entry is slower than an unpaced 115200-baud stream.  Client receive uses
-  a one-second inactivity timeout plus a six-second absolute frame bound.
+  points, and touch hardware ports only through the SDK's held serial port.
+- Hold `/dev/serial/0` for the session (`serial_hold`, `kos/serial.h`) and
+  move its bytes with the SDK's direct I/O: no serial IPC per byte, and none
+  while a response is arriving.  Release it at exit.
+- The PC is on RTS/CTS flow control and sends unpaced.  RTS is raised only
+  from the end of a request until its response's delimiter and dropped
+  around every file, display or other slow operation.  Client receive uses
+  a one-second inactivity timeout per byte and a bound of twice the largest
+  encoded record per response.
 - All wire messages are COBS-delimited and CRC-16-CCITT protected.  A parser
   must reject malformed length, version, CRC, type, command, and sequence.
 - There is at most one request in flight.  Retries reuse the same sequence.

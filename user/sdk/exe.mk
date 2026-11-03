@@ -60,14 +60,14 @@ $(EXE_RUNTIME): $(KOS_SDK_SRC)/runtime.asm
 
 KOS_SDK_C_SRC := args.c fs.c truncate.c ipc.c exec.c console_io.c console_line.c \
     xmem.c seg.c xload.c event.c \
-    console_proto.c console_render.c console_info.c timer.c mouse.c sound.c idle.c idle_input.c stream.c \
+    console_proto.c console_render.c console_info.c timer.c mouse.c sound.c serial.c joy.c joy_decode.c idle.c idle_input.c stream.c \
     stdio.c fread.c fwrite.c fseek.c feof.c \
     reader.c reader_full.c reader_handle.c reader_stdio.c \
     klibc/strrchr.c klibc/strlcpy.c klibc/strlcat.c \
     klibc/utoa.c klibc/ultoa.c klibc/itoa.c klibc/ltoa.c \
     klibc/printf.c klibc/sdcc_arith.c klibc/sdcc_arith_signed.c
 KOS_SDK_ASM_SRC := gate.asm ipcgate.asm diaggate.asm nsgate.asm \
-    xmemgate.asm bcall.asm vcall.asm sdcc_calls.asm event_entry.asm sound_out.asm idle_halt.asm \
+    xmemgate.asm bcall.asm vcall.asm sdcc_calls.asm event_entry.asm sound_out.asm serial_io.asm joy_read.asm idle_halt.asm \
     klibc/strlen.asm klibc/strcmp.asm klibc/strncmp.asm klibc/strchr.asm \
     klibc/memcpy.asm klibc/memmove.asm klibc/memset.asm klibc/memcmp.asm \
     klibc/divmod.asm klibc/sdcc_arith16.asm klibc/mul.asm \

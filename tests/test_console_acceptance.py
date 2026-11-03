@@ -77,7 +77,7 @@ PRODUCTION_IMAGE = "konaos.bin"
 DRIVER_SET = (("sio.mod", (1,)), ("ioc.mod", (5,)), ("hid.mod", (4, 11)),
                ("v9958.mod", (2,)), ("console-v9958-hid.mod", (6,)),
                ("timer.mod", (10,)), ("sound.mod", (9,)),
-               ("iocfat.mod", (7,)))
+               ("joy.mod", (12,)), ("iocfat.mod", (7,)))
 
 # The console image's required dependencies (class, instance), in
 # manifest order: HID input, VIDEO output, SERIAL as the rescue path.
@@ -221,15 +221,15 @@ class TestProductionImage(ConsoleReplayBase):
                 info = modpack.parse_container(handle.read(), name)
             # The flat plan: one endpoint per protocol the image serves
             # (HID serves the keyboard and the mouse), and every
-            # endpoint carries its publication.
+            # endpoint carries its publications (the joy endpoint two,
+            # one per pad).
             self.assertEqual([(ep["class"], ep["instance"], ep["version"])
                               for ep in info["endpoints"]],
                              [(klass, 0, 1) for klass in classes], name)
-            self.assertEqual(len(info["publications"]), len(classes), name)
-            self.assertEqual([pub["number"]
-                              for pub in info["publications"]],
-                             [ep["number"] for ep in info["endpoints"]],
-                             name)
+            self.assertEqual(sorted({pub["number"]
+                                     for pub in info["publications"]}),
+                             sorted(ep["number"]
+                                    for ep in info["endpoints"]), name)
             # The console image's required dependencies (no optional
             # dependency and no runtime fallback).  The
             # other images' dependencies are pinned by their own tests.

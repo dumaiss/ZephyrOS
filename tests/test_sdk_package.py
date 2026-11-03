@@ -94,6 +94,8 @@ SDK_FILES = {
     "include/kos/kres_konaos.h",
     "include/kos/timer.h",
     "include/kos/mouse.h",
+    "include/kos/joy.h",
+    "include/kos/serial.h",
     "include/kos/xmem.h",
     "include/klibc/fmt.h",
     "include/klibc/stdarg.h",

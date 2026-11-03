@@ -852,6 +852,18 @@ class TestTimerReplay(TimerSession):
         ctc = z.ctc
         probe = IrqCostProbe(self.syms,
                              self.driver_address("_timer_irq_handler"))
+        # The window opens just after the driver counts a tick: no
+        # delivery is then between the model's acceptance and the
+        # handler's count (one tick period is about 8,000 steps).
+        ticks_before = self.live_ticks(z)
+        for _ in range(100000):
+            if self.live_ticks(z) != ticks_before:
+                break
+            self.skip_delay(z)
+            self.feed(z)
+            z.step()
+        else:
+            self.fail("the timer driver counted no tick")
         delivered_before = ctc.delivered[2]
         ticks_before = self.live_ticks(z)
         since = len(z.glyphs)

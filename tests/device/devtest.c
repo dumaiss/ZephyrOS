@@ -15,8 +15,8 @@
  *            console line that must be drawn again;
  *   busy     the exclusive-handle rules: a second exclusive bind is
  *            refused with -KOS_EBUSY, release then acquire works, and a
- *            device whose driver declares no release answers
- *            -KOS_ENOTSUP;
+ *            device whose driver declares no release (the console)
+ *            answers -KOS_ENOTSUP;
  *   poke     write VDP registers and VRAM with no handle at all, then
  *            exit: the launcher's console reset must restore the display
  *            before the next start of the boot program;
@@ -239,7 +239,6 @@ static int dev_busy(void)
 	int second;
 	int third;
 	int console;
-	int lane;
 	int status = 0;
 
 	first = bind(VIDEO_NAME, KOS_BIND_EXCLUSIVE, &type);
@@ -269,9 +268,6 @@ static int dev_busy(void)
 	console = bind(CONSOLE_NAME, KOS_BIND_EXCLUSIVE, &type);
 	(void)snprintf(dev_line, sizeof(dev_line), "dev: console %d\r\n",
 		       console);
-	dev_send(dev_line);
-	lane = bind(LANE_NAME, KOS_BIND_EXCLUSIVE, &type);
-	(void)snprintf(dev_line, sizeof(dev_line), "dev: lane %d\r\n", lane);
 	dev_send(dev_line);
 	if (unbind((unsigned char)third) != 0) {
 		dev_send("dev: unbind\r\n");

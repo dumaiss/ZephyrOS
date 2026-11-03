@@ -467,10 +467,19 @@ class TuiSimBase(unittest.TestCase):
             import shutil
             shutil.rmtree(cls.tmp, ignore_errors=True)
 
+    # What the replays keep of the image's own store: the driver images,
+    # their boot manifest, the shell and the monitor.  The outcome
+    # programs the store also carries are never run here, and the TUI
+    # programs added on top must fit the store's capacity with them.
+    BASE_STORE = ("drivers.man", "shell.exe", "monitor.exe")
+
     @classmethod
     def _pack_store(cls):
         manifest_path = os.path.join(ROOT, cls.SUBDIR, "store.json")
         manifest = json.loads(Path(manifest_path).read_text())
+        manifest["files"] = [entry for entry in manifest["files"]
+                             if entry["type"] == "MOD" or
+                             entry["name"].lower() in cls.BASE_STORE]
         for name, path in cls.STORE_FILES:
             manifest["files"] = [entry for entry in manifest["files"]
                                  if entry["name"].lower() != name.lower()]

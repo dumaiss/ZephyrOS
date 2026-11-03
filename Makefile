@@ -663,7 +663,8 @@ $(MODULES)/sio_io.rel: drivers/sio/sio_io.asm \
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(MODULES)/sio_driver.rel: drivers/sio/sio_proto.c drivers/sio/sio.h \
-		drivers/include/driver.h $(DRV_PROTOCOL_H) | $(MODULES)
+		drivers/include/driver.h $(DRV_PROTOCOL_H) \
+		platform/zephyr80/public/hardware.h | $(MODULES)
 	$(SDCC) $(DRV_HOT) $< -o $@
 
 $(MODULES)/sio_boot.rel: drivers/sio/sio_boot.c drivers/sio/sio.h \
@@ -734,6 +735,12 @@ $(MODULES)/sound_driver.rel: drivers/sound/sound_proto.c \
 		abi/kos/ipc.h abi/kos/errno.h \
 		platform/zephyr80/public/hardware.h | $(MODULES)
 	$(SDCC) $(DRV_HOT) $< -o $@
+
+# The controller latches' image: the dispatch and its two latch reads,
+# all in one assembly file and all hot.
+$(MODULES)/joy_io.rel: drivers/joy/joy_io.asm \
+		platform/zephyr80/public/hardware.inc | $(MODULES)
+	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(MODULES)/hid.rel: drivers/hid/hid.c drivers/hid/hid_driver.h \
 		drivers/include/ioc_protocol.h \
@@ -1121,6 +1128,13 @@ $(eval $(call exe_program,sound,tests/sound,\
 
 all: $(EXE_USER_ROOT)/sound.exe
 
+# The serial-hold outcome program: a card program the production replay
+# runs from the shell (tests/test_serial.py), in no store.
+$(eval $(call exe_program,serial,tests/serial,\
+	serial.c,STACK=384,STAGE=1))
+
+all: $(EXE_USER_ROOT)/serial.exe
+
 # The sound-series harness self-test (tests/snd): writes marker ticks
 # through sound_out that tests/snd_harness.py splits and times.
 $(eval $(call exe_program,sndprobe,tests/snd,\
@@ -1282,6 +1296,13 @@ $(eval $(call exe_program,timer,tests/timer,\
 # reads and pointer checks.
 $(eval $(call exe_program,mouse,tests/mouse,\
 	mouse.c,STACK=256,STAGE=1))
+
+# The game-controller outcome program: the production store's
+# `/system/joy.exe`.  Run bare it is the owner's check with the pads (each
+# pad's latch byte and its bits whenever it changes, until a key); the
+# `stage` tail runs the acceptance replay's checks.
+$(eval $(call exe_program,joy,tests/joy,\
+	joy.c,STACK=256,STAGE=1))
 
 # The device-event board check: the production store's
 # `/system/beat.exe`.  Run bare it subscribes to the timer's event source

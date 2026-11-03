@@ -848,6 +848,18 @@ static void draw_popup_row(const struct tui_rect *box,
 			   label, width, tui_get_attr());
 }
 
+/* The column of a menu's title in the bar, as ke_menubar lays the
+ * titles out (a blank between): a pop-up opens under it. */
+static uint8_t menu_column(uint8_t menu)
+{
+	uint8_t x = 0u;
+	uint8_t i;
+
+	for (i = 0u; i < menu; ++i)
+		x = (uint8_t)(x + strlen(menu_bar[i].label) + 1u);
+	return x;
+}
+
 static uint8_t run_popup(uint8_t menu)
 {
 	const struct ke_action_item *items;
@@ -857,7 +869,7 @@ static uint8_t run_popup(uint8_t menu)
 	uint16_t need;
 
 	popup_items(menu, &items, &count);
-	box.x = (uint8_t)(menu * 8u);
+	box.x = menu_column(menu);
 	box.y = 1u;
 	box.w = KE_POPUP_WIDTH;
 	box.h = (uint8_t)(count + 2u);

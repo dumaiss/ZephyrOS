@@ -1,7 +1,9 @@
 # KonaCommander Protocol 1 (KCP1)
 
 KCP1 is a stop-and-wait file browsing and transfer protocol for a 115200 8N1
-serial link.  Multi-byte integers are little-endian.  Strings are UTF-8 on the
+serial link with RTS/CTS flow control: the target raises RTS only while it
+awaits a response, and the host sends only while its CTS is asserted.
+Multi-byte integers are little-endian.  Strings are UTF-8 on the
 host; the target renders bytes directly through the KonaOS CP850 terminal, so
 ASCII names are the portable subset.
 

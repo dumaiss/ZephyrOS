@@ -13,9 +13,16 @@
 #include "driver.h"
 #include "kos/types.h"
 
-/* Boot segment: re-establish the documented 115200 8N1 programming
- * sequence; called once, through the mode-10 boot gate. */
+/* Boot segment: the channel reset and the documented 115200 8N1
+ * programming sequence; called once, through the mode-10 boot gate. */
 void sio0b_hw_init(void);
+
+/* Hot segment (sio_io.asm): the channel's setup after its reset - WR4,
+ * WR3, WR5 with RTS asserted, WR1 - which the boot runs and the end of
+ * an exclusive hold rewrites; and that restore, the setup followed by a
+ * bounded drain of the receiver. */
+void sio0b_setup(void);
+void sio0b_restore(void);
 
 /* Hot segment: the endpoint dispatch and the init entry the loader calls
  * with the driver bootstrap table. */
@@ -27,10 +34,13 @@ int sio0b_write(void *state, const char *buf, uint16_t len);
 int sio0b_poll(void *state);
 int sio0b_getc(void *state);
 
-/* Driver-private state (DRIVER_IO data of the image). */
+/* Driver-private state (DRIVER_IO data of the image).  `exclusive` is
+ * 1 while a program holds the port; `dropped` counts the bytes PUTC and
+ * WRITE answered without sending during the latest hold, the hold's
+ * evidence rather than a protocol answer. */
 struct sio0b_state {
-	uint16_t tx_timeouts;
-	uint16_t rx_reads;
+	uint16_t dropped;
+	uint8_t exclusive;
 };
 
 extern struct sio0b_state sio0b_state;

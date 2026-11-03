@@ -18,6 +18,7 @@ images by `tests/test_hid.py`, `tests/test_ioc.py` and
 
 import json
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -439,6 +440,19 @@ class TestContainerValidation(unittest.TestCase):
         self.reject(self.patch(self.valid(), 7,
                                modpack.MAX_PUBLICATIONS + 1),
                     "bad publication count")
+
+    def test_the_image_bound_is_the_loaders_and_fits_the_endpoints(self):
+        sys.path.insert(0, os.path.join(ROOT, "tests"))
+        from maptools import evaluate, parse_c_header
+        mod_h = parse_c_header(os.path.join(ROOT, "formats", "include",
+                                            "mod.h"))
+        bound = evaluate(mod_h["MOD_MAX_IMAGES"], mod_h)
+        self.assertEqual(modpack.MAX_IMAGES, bound)
+        with open(os.path.join(ROOT, "kernel", "ipc", "ipc.c"),
+                  encoding="utf-8") as handle:
+            endpoints = int(re.search(r"#define IPC_ENDPOINT_MAX (\d+)u",
+                                      handle.read()).group(1))
+        self.assertLessEqual(modpack.MAX_IMAGES, endpoints)
 
     def test_total_size_mismatch(self):
         self.reject(self.patch(self.valid(), 0x0C, 0x4000, 2),

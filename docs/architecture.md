@@ -293,7 +293,7 @@ on a machine whose RAM is still whatever the program left in it. Nothing
 is inherited across the jump: no driver keeps a handle, no process keeps
 a bank, and no peripheral receives a hardware reset. A driver's bring-up
 must therefore program its device fully from any state
-(`docs/devices.md` section 14).
+(`docs/devices.md` section 15).
 
 ### 3.2 Boot sequence
 
@@ -347,7 +347,7 @@ at the monitor after one run instead of looping. The boot path reaches the
 kernel through a generated header, never a compiler `-D` flag.
 
 Every start of the boot program begins on a console reset
-(`KCONSOLE_OP_RESET`, `docs/devices.md` section 14): the terminal goes
+(`KCONSOLE_OP_RESET`, `docs/devices.md` section 15): the terminal goes
 back to its defaults on a clean screen and input the program that went
 away never read is dropped. The ordinary console path is used; the
 launcher has no second mechanism for display or input state.
@@ -753,10 +753,11 @@ component to one of three static nucleus providers:
   driver does (section 5.6).
 - **Device names** describe roles, never products: `/dev/console`,
   `/dev/video`, `/dev/input/keyboard`, `/dev/input/mouse`,
-  `/dev/serial/0`, `/dev/ioc`, `/dev/timer` and `/dev/sound`. One driver
-  may publish several names and types (the HID driver publishes the
-  keyboard and the mouse). The nucleus table holds 16 rows for the whole
-  set, grouping rows included.
+  `/dev/input/joy/0`, `/dev/input/joy/1`, `/dev/serial/0`, `/dev/ioc`,
+  `/dev/timer` and `/dev/sound`. One driver may publish several names and
+  types (the HID driver publishes the keyboard and the mouse), and one
+  endpoint several objects (the joy driver's two pads). The nucleus table
+  holds 16 rows for the whole set, grouping rows included.
 - **Handles:** one global table of 12 entries, each tagged with its owner
   process, its 8-bit protocol type, its endpoint and the provider's object
   identity. A handle is small and opaque: not a bank, pointer or endpoint
@@ -783,7 +784,7 @@ component to one of three static nucleus providers:
   notification answers `-KOS_ENOTSUP` before any call is made. A program
   writes a device's ports, or reprograms it beyond its protocol, only while
   it holds that device's exclusive handle; the contract and what each
-  driver restores are `docs/devices.md` section 14.
+  driver restores are `docs/devices.md` section 15.
 - **Standard handles:** every process starts with handles 1 (output) and 2
   (input) bound to `/dev/console`, bound fresh for that process, never
   inherited. `bind` never returns them. A build with no console driver
@@ -897,7 +898,7 @@ manifests declare and resolve dependencies. The 8-bit **protocol type** a
 `bind` returns (`KOS_TYPE_*` in `abi/kos/object.h`) is a separate
 numbering: class HID serves type `INPUT`, and the FILE class serves both
 `FILE` and `FS`. Device families share the number otherwise (class and
-type `MOUSE` are both 11).
+type `MOUSE` are both 11, `JOY` both 12).
 
 ### 5.4 The bootstrap API
 
@@ -939,7 +940,7 @@ console it selected. Programs cannot tell which implementation answers.
 
 | driver | protocols | notes |
 |---|---|---|
-| `sio` | `SERIAL` | SIO channels; publishes `/dev/serial/0` |
+| `sio` | `SERIAL` | SIO0/B, polled, with an exclusive hold for direct I/O; publishes `/dev/serial/0` |
 | `ioc` | `IOC` | the Z80-to-MCU transport (below) |
 | `hid` | `INPUT`, `MOUSE` | keyboard input and the mouse over IOC; `/dev/input/keyboard`, `/dev/input/mouse` |
 | `v9958` | `VIDEO` | 85×26 terminal renderer (6×8 font); `/dev/video` |
@@ -947,6 +948,7 @@ console it selected. Programs cannot tell which implementation answers.
 | `iocfat` | `FILE`, `FS` | the filesystem behind `/fs` |
 | `timer` | `TIMER` | the monotonic clock: CTC physical channel 2 (port 41h), 156.25 Hz, `/dev/timer` |
 | `sound` | `SOUND` | the Afternoon Blend card (four SN76489 PSGs and a DAC); `/dev/sound` |
+| `joy` | `JOY` | the two controller latches; `/dev/input/joy/0`, `/dev/input/joy/1` |
 
 - **IOC is transport only.** It owns SIO1 framing, the command and bulk
   lanes, the READY/DONE lifecycle, sequencing, timeouts, recovery and the
@@ -961,6 +963,22 @@ console it selected. Programs cannot tell which implementation answers.
   never reach programs. The deployed firmware limits card names to **8.3**.
 - Caching is the provider's policy. The VFS has no cache, and ROMFS needs
   none.
+- **The serial port is polled, or held.** The `sio` driver serves
+  SIO0/B (115,200 8N1) with bounded polled operations and owns no IRQ.
+  At that rate a byte arrives every 868 T-states, the SIO's receive FIFO
+  holds three, and a driver call or an interrupt delivery costs more than
+  a byte, so a stream cannot go through the driver. A program takes the
+  port with an exclusive hold instead (`KOS_OP_ACQUIRE`; the endpoint
+  declares the release notification) and polls RR0 and the data port
+  itself (`kos/serial.h`), learning the ports from `KSIO_OP_INFO` (each
+  listed, with the baud rate and the direct-I/O flag). While the port is
+  held the driver touches none of its registers for any caller: GETC
+  answers `-KOS_EAGAIN`, POLL and READ 0, PUTC and WRITE are dropped and
+  counted, so the console's rescue scan and tee pause. The hold's end
+  rewrites WR4, WR3, WR5 (RTS asserted) and WR1 and drains the receiver.
+  A holder paces its peer with RTS, which drives the USB-serial bridge's
+  CTS: raised only while it waits for data, dropped around anything slow,
+  so a PC on RTS/CTS flow control holds its output.
 - **The console's serial rescue path.** The production console owns
   three bytes of driver state - the input owner, the tee flag and the
   ESC count - written only by its dispatch.  Three 1Bh bytes from the
@@ -1047,6 +1065,21 @@ console it selected. Programs cannot tell which implementation answers.
     lifecycle, not each call.
 
   Sound programs use this driver, not diagnostic I/O (`SYS_DIAG_IO_OUT`).
+- **The controllers are two read ports.** The `E0h-FFh` block is split by
+  direction: its writes are the sound card's (`E0h-E4h`), its reads the
+  controller latches, A1 selecting one (`FCh` pad 0, `FFh` pad 1, the
+  ColecoVision decode). The IO controller loads each latch with its USB
+  pad's ColecoVision byte, active low; the `joy` driver (`KOS_CLASS_JOY`,
+  type `JOY`, `kos/protocol.h`) owns the two read ports and nothing else:
+  - `KJOY_OP_READ` is one `IN` from the pad's port (`arg0` = the pad,
+    because a dispatch does not see the handle's object), the byte
+    delivered undecoded;
+  - `KJOY_OP_INFO` lists the pad count and each pad's port, so a game
+    reads its pads every frame with `IN` and no call (`joy_read` in the
+    SDK); a read changes nothing, so it needs no exclusive hold, and the
+    endpoint declares no release;
+  - the two readings of the byte, joystick and keypad (the board ignores
+    the ColecoVision mode select), are the SDK's.
 
 ---
 
@@ -1059,8 +1092,9 @@ console it selected. Programs cannot tell which implementation answers.
 2. **The IPC envelope:** handle, operation, 32-byte frame, status, one
    optional descriptor.
 3. **Protocol types:** `FILE`, `FS` (filesystem namespace), `CONSOLE`,
-   `VIDEO`, `INPUT`, `MOUSE`, `SERIAL`, `IOC`, `TIMER` and `SOUND`. Each
-   defines its operations and frame meanings in `abi/kos/protocol.h`.
+   `VIDEO`, `INPUT`, `MOUSE`, `JOY`, `SERIAL`, `IOC`, `TIMER` and
+   `SOUND`. Each defines its operations and frame meanings in
+   `abi/kos/protocol.h`.
 4. **The SDK:** typed client functions that bind names, check types and
    fill and decode frames (`docs/sdk.md`).
 
@@ -1435,7 +1469,7 @@ ledgers (`docs/memory.md` has the current values):
 |---|---|---:|---|
 | `nucleus fixed:` | bank 7 `2000h-5FFFh` (code, data, ISR and driver stacks) | 16,384 | keep ≥ 2,048 free |
 | `nucleus cold:` | bank 7 `6000h-DFFFh` | 32,768 | keep ≥ 4,096 free |
-| `driver hot:` | bank 6 `6000h-DFFFh` | 32,768 | keep ≥ 832 free |
+| `driver hot:` | bank 6 `6000h-DFFFh` | 32,768 | keep ≥ 640 free |
 | `driver boot/bulk:` | bank 6 `0000h-5FFFh` | 24,576 | — |
 | `driver mapped:` | bank 6 `0100h-1FFFh`, inside boot/bulk | 7,936 | — |
 | `common:` | packed `_COMMON` + `_COMMON_DATA` | ceiling 3,072 | never raised |
@@ -1609,10 +1643,7 @@ aperture page otherwise.
 Planned work, in order. None of it changes the contracts above unless it
 says so.
 
-1. **Game controllers.** The controllers join the HID driver as
-   `/dev/input/joy/0` and `/1`; they grow the driver tier inside its
-   reserve, and the `/dev` table already has their rows.
-2. **After that:** compatibility personalities, starting with CP/M.
+1. **Compatibility personalities**, starting with CP/M.
 
 Diagnostics and benchmarks are user programs; the nucleus gains a
 diagnostic interface only where a program cannot measure without it.

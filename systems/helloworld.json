@@ -6,7 +6,8 @@
     "ioc",
     "hid",
     "v9958",
-    "console-v9958-hid"
+    "console-v9958-hid",
+    "joy"
   ],
   "boot": "/system/hello.exe",
   "after_exit": "monitor",

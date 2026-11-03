@@ -17,6 +17,7 @@
  *   timer     class 10, instance 0: the monotonic clock
  *   sound     class 9, instance 0: the sound card's lifecycle, its
  *                                  description and batched writes
+ *   joy       class 12, instance 0: the game controllers' latch bytes
  *
  * The FILE protocol (type KOS_TYPE_FILE) and the filesystem-namespace
  * protocol (type KOS_TYPE_FS) are the file language: the ROMFS
@@ -83,6 +84,8 @@
                                * KOS_TYPE_TIMER) */
 #define KOS_CLASS_MOUSE   11u /* the mouse, served by the HID driver
                                * (type KOS_TYPE_MOUSE) */
+#define KOS_CLASS_JOY     12u /* the game controllers (type
+                               * KOS_TYPE_JOY) */
 
 /* The instance every device-facing driver registers (one instance). */
 #define KOS_CLASS_INSTANCE 0u
@@ -231,6 +234,35 @@
 #define KMOUSE_BUTTON_RIGHT  0x02u
 #define KMOUSE_BUTTON_MIDDLE 0x04u
 
+/* --- game controllers (class KOS_CLASS_JOY, type KOS_TYPE_JOY) ----------
+ *
+ * The board's two controller latches: the IO controller decodes each USB
+ * pad into a ColecoVision controller byte and keeps it in a latch the Z80
+ * reads with IN.  The driver delivers the byte as the latch holds it,
+ * active low, with no decoding (kos/joy.h in the SDK names the bits and
+ * the keypad codes).  `/dev/input/joy/0` and `/1` are objects 0 and 1 of
+ * the one endpoint; a call names its pad in arg0, because a dispatch
+ * does not see the handle's object.
+ *
+ *   KJOY_OP_READ (0)  descriptor-less.  arg0 = the pad (0 or 1, else
+ *                     -KOS_EINVAL).  Returns 0 with the raw latch byte in
+ *                     payload[0]: one IN from the pad's port.
+ *   KJOY_OP_INFO (1)  descriptor-less.  Returns 0 with payload[0] = the
+ *                     pad count and payload[1 + n] = pad n's port, each
+ *                     listed (FCh and FFh on this board; the ABI does
+ *                     not assume a pattern).  A program that reads every
+ *                     frame reads the port itself (`joy_read`): a read
+ *                     changes nothing, so no hold is needed.
+ *
+ * Both write only the payload bytes they define.  The endpoint declares
+ * no release notification, so an exclusive bind is -KOS_ENOTSUP.
+ */
+#define KJOY_OP_READ    0u
+#define KJOY_OP_INFO    1u
+#define KJOY_PAD_MAX    2u /* the pads the driver serves             */
+#define KJOY_INFO_COUNT 0u /* INFO payload offset: the pad count      */
+#define KJOY_INFO_PORTS 1u /* INFO payload offset: pad 0's port       */
+
 /* --- video driver (class KOS_CLASS_VIDEO) -------------------------------
  *
  * The V9958 driver: the seven native VIDEO operations (KVIDEO_CTRL_WRITE
@@ -316,12 +348,33 @@
  *   KSIO_OP_GETC  (3)  returns one byte (0..255) or -KOS_EAGAIN.
  *   KSIO_OP_READ  (4)  desc OUT: arg0 = offset, arg1 = length; drains up
  *                      to `length` bytes and returns the count.
+ *   KSIO_OP_INFO  (5)  descriptor-less, on any handle.  Returns 0 with
+ *                      the KSIO_INFO_* payload bytes: the capability
+ *                      flags, the data port and the control port (each
+ *                      listed: 22h and 23h on this board, the ABI does
+ *                      not assume them contiguous) and the baud rate,
+ *                      little-endian.  The other payload bytes are left
+ *                      as they were.
+ *
+ * The endpoint serves KOS_OP_ACQUIRE (the one exclusive hold; a second
+ * is -KOS_EBUSY) and KOS_OP_RELEASE.  While the port is held its ports
+ * are the holder's (KSIO_CAP_DIRECT_IO) and the driver touches none of
+ * them for any caller: GETC answers -KOS_EAGAIN, POLL and READ 0, and
+ * PUTC and WRITE are counted and dropped, answering as if sent.  The
+ * hold's end rewrites the channel's setup (WR4, WR3, WR5 with RTS
+ * asserted, WR1) and drains the receiver.
  */
 #define KSIO_OP_PUTC  0u
 #define KSIO_OP_WRITE 1u
 #define KSIO_OP_POLL  2u
 #define KSIO_OP_GETC  3u
 #define KSIO_OP_READ  4u
+#define KSIO_OP_INFO  5u
+#define KSIO_INFO_FLAGS 0u /* INFO payload offset: KSIO_CAP_* flags      */
+#define KSIO_INFO_DATA  1u /* INFO payload offset: the data port         */
+#define KSIO_INFO_CTRL  2u /* INFO payload offset: the control port      */
+#define KSIO_INFO_BAUD  3u /* INFO payload offset: the baud rate, u32 LE */
+#define KSIO_CAP_DIRECT_IO 0x01u /* the exclusive holder may IN and OUT */
 
 /* --- IOC transport driver (class KOS_CLASS_IOC) -------------------------
  *

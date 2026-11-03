@@ -100,6 +100,7 @@
 #define KOS_TYPE_SOUND   9u
 #define KOS_TYPE_TIMER   10u
 #define KOS_TYPE_MOUSE   11u
+#define KOS_TYPE_JOY     12u
 
 /* --- standard handle numbers -------------------------------------------- */
 

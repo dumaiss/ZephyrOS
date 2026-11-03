@@ -1,0 +1,45 @@
+{
+  "schema": "kos-driver-1",
+  "name": "joy",
+  "objects": [
+    "joy_io.rel"
+  ],
+  "segments": [
+    {
+      "role": "hot",
+      "image_areas": [
+        "_CODE"
+      ]
+    }
+  ],
+  "endpoints": [
+    {
+      "class": 12,
+      "instance": 0,
+      "version": 1,
+      "dispatch": "joy_driver_dispatch",
+      "flags": 0
+    }
+  ],
+  "publishes": [
+    {
+      "path": "/dev/input/joy/0",
+      "type": "JOY",
+      "endpoint": {
+        "class": 12,
+        "instance": 0
+      },
+      "object": 0
+    },
+    {
+      "path": "/dev/input/joy/1",
+      "type": "JOY",
+      "endpoint": {
+        "class": 12,
+        "instance": 0
+      },
+      "object": 1
+    }
+  ],
+  "depends": []
+}

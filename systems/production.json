@@ -9,6 +9,7 @@
     "console-v9958-hid",
     "timer",
     "sound",
+    "joy",
     "iocfat"
   ],
   "boot": "/system/shell.exe",
@@ -20,6 +21,7 @@
     "timer.exe",
     "beat.exe",
     "mouse.exe",
+    "joy.exe",
     "xmem_selftest.exe",
     "xmem_child.exe",
     "xmem_far.exe",

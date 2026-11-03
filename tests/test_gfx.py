@@ -779,6 +779,33 @@ class TestGfxUpload(GfxReplay):
                          "the exclusive flag survived the run")
 
 
+class TestGfxReopen(GfxReplay):
+    """`gfxtest reopen`: a close inside an upload leaves nothing open.
+    After the reopen the upload runs to its end and the pointer's first
+    show writes its SAT entry."""
+
+    def test_close_during_upload_then_reopen(self):
+        z = self.start()
+        before = self.snapshot(z)
+        ops = []
+        since = len(z.glyphs)
+        z.hid.hid_queue.extend(b"/fs/gfxtest.exe reopen\r")
+        self.run_recording(z, ops,
+                           lambda z: ops.count(OPS_RELEASE) == 2)
+        peer = z.vdp
+        self.assertIn((PTR_SAT, 49), peer.vram_writes,
+                      "the pointer's SAT write reached the peer")
+        self.run_recording(z, ops, lambda z:
+                           SHELL_PROMPT in "".join(z.glyphs[since:]))
+        self.settle(z, lambda z: z.vdp.regs[8] == 0x08)
+        fresh = self.trace(z, since)
+        self.assertIn("gfxtest: reopen 0 0 1024 0 0", fresh)
+        self.assertIn("gfxtest: reopen PASS", fresh)
+        self.assert_restored(z, before)
+        self.assertEqual(self.exclusive(z), 0,
+                         "the exclusive flag survived the run")
+
+
 class TestGfxPalette(GfxReplay):
     """`gfxtest palette`: the G6 entries while the display is held, a
     key, then the G7 refusal without a single palette port write."""

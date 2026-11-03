@@ -146,7 +146,7 @@ def file_session():
         ("ls /system", store_listing() + "/> ", "/> ", False),
         ("ls /dev", "serial/\nioc\ninput/\nvideo\nconsole\ntimer\nsound\n/> ",
          "/> ", False),
-        ("ls /dev/input", "keyboard\nmouse\n/> ", "/> ", False),
+        ("ls /dev/input", "keyboard\nmouse\njoy/\n/> ", "/> ", False),
         ("ls /SUB/ORIG.TXT", "ORIG.TXT  4\n/> ", "/> ", False),
         ("ls /SUB /system", "/SUB:\nORIG.TXT  4\n/system:\n"
          + store_listing() + "/> ", "/> ", False),

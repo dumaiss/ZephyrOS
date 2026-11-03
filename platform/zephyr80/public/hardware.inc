@@ -16,6 +16,7 @@ KOS_SIO0A_DATA          = 0x20
 KOS_SIO0A_CTRL          = 0x21
 KOS_SIO0B_DATA          = 0x22
 KOS_SIO0B_CTRL          = 0x23
+KOS_SIO0B_BAUD          = 115200
 KOS_SIO1A_DATA          = 0x30
 KOS_SIO1A_CTRL          = 0x31
 KOS_SIO1B_DATA          = 0x32
@@ -35,6 +36,10 @@ KOS_SOUND_PSG3_PORT     = 0xE3
 KOS_SOUND_DAC_PORT      = 0xE4
 KOS_SOUND_PSG_COUNT     = 4
 KOS_SOUND_PSG_CLOCK_HZ  = 3579545
+; --- the controller latches: reads in E0h-FFh, A1 selects (FCh pad 0,
+;     FFh pad 1) ---
+KOS_JOY0_PORT           = 0xFC
+KOS_JOY1_PORT           = 0xFF
 
 ; --- Memory/banking latch fields ---
 

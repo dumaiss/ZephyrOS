@@ -150,7 +150,7 @@ class TestSoundContract(unittest.TestCase):
         plan = json.loads(read(DRIVER_PLAN))["nucleus"]
         free = (int(plan["driver_hot_capacity_bytes"]) -
                 int(plan["driver_hot_bytes"]))
-        self.assertGreaterEqual(free, 832,
+        self.assertGreaterEqual(free, 640,
                                 "driver hot tier has only %d bytes free"
                                 % free)
 

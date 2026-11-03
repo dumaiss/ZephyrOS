@@ -81,8 +81,11 @@
  * refuses a set that overflows it. */
 #define MOD_MAX_PUBLICATIONS 12u
 
-/* Boot manifest bound: the loader's per-image loop. */
-#define MOD_MAX_IMAGES       8u
+/* Boot manifest bound: the loader's per-image loop.  It is the nucleus
+ * endpoint table's size (12): a larger set could not give every image an
+ * endpoint.  It sizes no buffer; the loader reads the manifest one
+ * record at a time. */
+#define MOD_MAX_IMAGES       12u
 
 /* Segment roles.  At most one segment per role; `hot` is required. */
 #define MOD_SEGMENT_HOT  1u

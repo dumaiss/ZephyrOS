@@ -433,10 +433,12 @@ class FileService:
 
 
 def write_paced(writer: BinaryIO, data: bytes, pace_seconds: float) -> None:
-    """Write target-bound bytes slowly enough for KonaOS's polled SIO API.
+    """Write target-bound bytes, optionally one at a time with a pause.
 
-    The application must leave and re-enter the SERIAL driver between reads;
-    an unpaced 115200-baud burst overruns the Z80 SIO's small receive FIFO.
+    With RTS/CTS flow control the target holds the line itself (it raises
+    RTS only while it waits for a response), so no pacing is needed.  An
+    adapter without flow control needs a pause after each byte: the Z80
+    SIO's receive FIFO holds three bytes.
     """
     if pace_seconds <= 0:
         writer.write(data)
@@ -490,8 +492,10 @@ def main() -> int:
     parser.add_argument("--name", help="short name shown in KonaCommander")
     parser.add_argument("--port", help="serial device, for example /dev/ttyUSB0")
     parser.add_argument("--baud", type=int, default=115200)
-    parser.add_argument("--pace-ms", type=float, default=4.0,
-                        help="delay between target-bound bytes (default: 4.0)")
+    parser.add_argument("--pace-ms", type=float, default=0.0,
+                        help="for an adapter without RTS/CTS: no flow "
+                             "control, and this delay between target-bound "
+                             "bytes instead (default: 0, RTS/CTS)")
     parser.add_argument("--trace", action="store_true",
                         help="log every valid KCP1 request and response")
     parser.add_argument("--write", action="store_true",
@@ -513,17 +517,26 @@ def main() -> int:
                 import serial
             except ImportError as error:
                 raise SystemExit("pyserial is required for --port mode") from error
+            # On RTS/CTS a write waits while the target holds RTS low,
+            # which it does between requests: a response it gave up on
+            # goes out when it raises RTS for its next request (it
+            # discards the stale record), and that request is answered
+            # next.  So the write has no timeout.
+            flow = args.pace_ms == 0
             with serial.Serial(port=args.port, baudrate=args.baud,
                                bytesize=serial.EIGHTBITS,
                                parity=serial.PARITY_NONE,
                                stopbits=serial.STOPBITS_ONE,
-                               timeout=None, write_timeout=2,
-                               xonxoff=False, rtscts=False, dsrdtr=False) as device:
+                               timeout=None,
+                               write_timeout=None if flow else 2,
+                               xonxoff=False, rtscts=flow,
+                               dsrdtr=False) as device:
                 device.reset_input_buffer()
                 access = "read/write" if args.write else "read-only"
+                link = ("RTS/CTS" if flow else
+                        f"no flow control, TX pace {args.pace_ms:g} ms")
                 print(f"KonaCommander: {service.root} ({access}) on {args.port} "
-                      f"at {args.baud} 8N1, TX pace {args.pace_ms:g} ms",
-                      file=sys.stderr)
+                      f"at {args.baud} 8N1, {link}", file=sys.stderr)
                 serve_stream(device, device, service,
                              args.pace_ms / 1000.0, args.trace)
     except KeyboardInterrupt:

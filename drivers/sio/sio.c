@@ -46,7 +46,6 @@ int sio0b_putc(void *state, char ch)
 {
 	(void)state;
 	if (!sio0b_wait_tx_ready()) {
-		++sio0b_state.tx_timeouts;
 		return (-KOS_ETIMEDOUT);
 	}
 	sio0b_write_data((uint8_t)ch);
@@ -77,6 +76,5 @@ int sio0b_getc(void *state)
 	if ((sio0b_status() & KOS_SIO_RR0_RX_AVAILABLE) == 0) {
 		return (-KOS_EAGAIN);
 	}
-	++sio0b_state.rx_reads;
 	return (int)sio0b_read_data();
 }

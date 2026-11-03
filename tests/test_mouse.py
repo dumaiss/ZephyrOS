@@ -218,12 +218,13 @@ class TestMouseArtifacts(unittest.TestCase):
                 rows.add(name)
                 if "/" in name[1:]:
                     rows.add(name.rsplit("/", 1)[0])
-        # Eight drivers' endpoints, the mouse's among them, plus the
+        # Nine drivers' endpoints, the mouse's among them, plus the
         # nucleus FILE provider in a 12-entry table.
-        self.assertEqual(endpoints, 9)
+        self.assertEqual(endpoints, 10)
         self.assertLessEqual(endpoints + 1, 12)
         self.assertEqual(sorted(rows),
-                         ["/console", "/input", "/input/keyboard",
+                         ["/console", "/input", "/input/joy", "/input/joy/0",
+                          "/input/joy/1", "/input/keyboard",
                           "/input/mouse", "/ioc", "/serial", "/serial/0",
                           "/sound", "/timer", "/video"])
         self.assertLessEqual(len(rows), value(VFS_H, "VFS_NS_PUB_MAX"))

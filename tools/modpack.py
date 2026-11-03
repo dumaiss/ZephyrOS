@@ -117,7 +117,9 @@ MAX_PUBLICATIONS = 12
 # The nucleus `/dev` table's rows for the whole driver set, publications
 # and grouping rows together (kernel/vfs/vfs.h VFS_NS_PUB_MAX).
 NS_TABLE_ROWS = 16
-MAX_IMAGES = 8
+# Images per set (formats/include/mod.h MOD_MAX_IMAGES): the nucleus
+# endpoint table's size.
+MAX_IMAGES = 12
 # Endpoint flags: bit 0 is the re-entrancy declaration (KOS_IPC_EP_REENTRANT),
 # bit 1 the release declaration (MOD_EP_RELEASE): the manifest's
 # `"release": true` asks the nucleus to tell the endpoint when a handle on
@@ -174,7 +176,7 @@ FS_ROOT = "/fs"
 TYPES = {
     "SERIAL": 1, "VIDEO": 2, "BLOCK": 3, "INPUT": 4, "IOC": 5,
     "CONSOLE": 6, "FILE": 7, "FS": 8, "SOUND": 9, "TIMER": 10,
-    "MOUSE": 11,
+    "MOUSE": 11, "JOY": 12,
 }
 # The boot manifest entry is the ROMFS name field exactly (romfs-format.md,
 # formats/include/mod.h).

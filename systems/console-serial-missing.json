@@ -8,6 +8,7 @@
     "v9958",
     "console-serial",
     "timer",
+    "joy",
     "iocfat"
   ],
   "boot": "/system/monitor.exe",

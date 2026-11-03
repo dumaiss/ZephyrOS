@@ -127,7 +127,7 @@ int vfs_ns_install_publication(const char *name, uint8_t type, uint8_t number,
 	if (length == 1u) { /* "/" alone is the provider root, not an object */
 		return -KOS_EINVAL;
 	}
-	if (type < KOS_TYPE_SERIAL || type > KOS_TYPE_MOUSE || number == 0u) {
+	if (type < KOS_TYPE_SERIAL || type > KOS_TYPE_JOY || number == 0u) {
 		return -KOS_EINVAL;
 	}
 	/* The `/fs` root is the filesystem-namespace publication: it names

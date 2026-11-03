@@ -31,8 +31,10 @@ The production store carries the drivers below, loaded in this order:
 | `hid` | `HID` (4), type `INPUT`; `MOUSE` (11) | keyboard text and the mouse over IOC | `/dev/input/keyboard`, `/dev/input/mouse` |
 | `v9958` | `VIDEO` (2) | the V9958, its terminal renderer | `/dev/video` |
 | `console-v9958-hid` | `CONSOLE` (6) | the console, over HID and V9958, with the serial rescue path | `/dev/console` |
-| `iocfat` | `FILE` (7), types `FILE` and `FS` | the filesystem over IOC | `/fs` |
 | `timer` | `TIMER` (10) | the monotonic clock, CTC physical channel 2 (port 41h) | `/dev/timer` |
+| `sound` | `SOUND` (9) | the Afternoon Blend card (writes at E0h-E4h) | `/dev/sound` |
+| `joy` | `JOY` (12) | the two controller latches (reads at FCh, FFh) | `/dev/input/joy/0`, `/dev/input/joy/1` |
+| `iocfat` | `FILE` (7), types `FILE` and `FS` | the filesystem over IOC | `/fs` |
 
 The serial build swaps `console-v9958-hid` for `console-serial`.
 
@@ -60,6 +62,7 @@ happens. A driver that has bytes to hand on can also name its own
 
 SIO channel B, the same channel as the early console, as a polled driver:
 it owns no IRQ, so the early console keeps working before and without it.
+A program can hold the port exclusively and drive it directly (below).
 
 - Ports: data `22h`, control `23h`; 115,200 8N1; `WR1 = 00h`.
 - Init repeats the early console's programming
@@ -75,6 +78,31 @@ it owns no IRQ, so the early console keeps working before and without it.
 | `KSIO_OP_POLL` | 2 | — | 1 when a byte is pending, else 0 |
 | `KSIO_OP_GETC` | 3 | — | byte 0-255, or `-KOS_EAGAIN` |
 | `KSIO_OP_READ` | 4 | desc out, offset, length | bytes drained |
+| `KSIO_OP_INFO` | 5 | — | 0; `payload[0]` the flags (`KSIO_CAP_DIRECT_IO`), `[1]` the data port, `[2]` the control port, `[3..6]` the baud rate little-endian |
+
+INFO is served on any handle; it lists the two ports one by one (`22h`,
+`23h`; the ABI does not assume them contiguous) and 115,200 baud.
+
+**The exclusive hold.** The endpoint declares `"release": true`.
+`KOS_OP_ACQUIRE` takes the one hold (a second is `-KOS_EBUSY`) and
+clears the drop counter; the holder then reads and writes the ports INFO
+lists itself (`kos/serial.h` in the SDK, `docs/sdk.md` 6.14), because
+at 115,200 baud a byte arrives every 868 T-states and a driver call
+costs more. While the port is held the driver touches no SIO0/B register
+or port, for any caller - the console's rescue scan and tee included:
+
+- `GETC` answers `-KOS_EAGAIN`, `POLL` and `READ` 0;
+- `PUTC` and `WRITE` count their bytes in the driver's `dropped` counter
+  (saturating) and answer as if sent, as the V9958 driver does while
+  held; the count is the hold's evidence, not a protocol answer.
+
+The hold's end (`KOS_OP_RELEASE`, `arg1` != 0: `unbind` or the holder's
+exit) rewrites the channel's setup - `WR4 = 44h`, `WR3 = C1h`,
+`WR5 = EAh` (RTS asserted), `WR1 = 00h`, the boot's sequence after its
+channel reset - and drains the receive FIFO (at most 256 reads). An
+ordinary handle's release changes nothing. On the serial-console build
+the console's own line is the held port, so the console is silent and
+deaf until the hold ends.
 
 ## 4. IOC (`drivers/ioc/`)
 
@@ -260,7 +288,7 @@ Print runs batch up to 64 glyphs and flush before control operations. The
 renderer runs on a private 256-byte stack, because its call chain is deeper
 than the gate stack.
 
-**Glyph drawing.** A run is drawn inside one bulk-map span (section 13):
+**Glyph drawing.** A run is drawn inside one bulk-map span (section 14):
 for each of its eight scanlines one VRAM address, then three bytes per
 glyph through the data port. A GRAPHIC 6 cell is three whole bytes, so
 nothing is read back and VRAM holds no font. Each byte comes from two
@@ -316,7 +344,7 @@ operations need a non-empty payload and stream the full 16-bit length;
 `PRESENT` and `RESET` need length 0; unknown operations are unsupported.
 
 The endpoint declares `"release": true`, so it also serves the common
-`KOS_OP_ACQUIRE` and `KOS_OP_RELEASE` (section 14). While an exclusive
+`KOS_OP_ACQUIRE` and `KOS_OP_RELEASE` (section 15). While an exclusive
 handle is held the console's output is dropped and counted instead of
 rendered (the caller still gets its whole length back), and the release
 re-runs the whole bring-up below. `KVIDEO_OP_RESET` (3) runs that same
@@ -429,7 +457,7 @@ The V9958 build also drains the serial queue on reset (the gesture is
 still detected on the way); while the serial line owns input the HID
 queue is left alone, so keyboard bytes typed meanwhile are delivered once
 ownership returns. The boot launcher runs the reset before every start of
-the boot program (section 14).
+the boot program (section 15).
 
 **The serial rescue path** (the V9958/HID build only): three 1Bh bytes
 from the serial line toggle input ownership between the HID and the
@@ -456,6 +484,10 @@ written only by the console dispatch, which names them.
   carries to both screens; unarmed, RENDER is forwarded unchanged.
 - The limit of polled detection: a program that never calls the
   console's input ops does not see the gesture.
+- While a program holds the serial port (section 3) the scan reads
+  nothing and the tee's copies are dropped by the serial driver, so the
+  line is the holder's alone; the gesture works again once the hold
+  ends.
 
 The V9958/HID composition forwards RENDER unchanged to VIDEO, preserving one
 application call as one driver-visible transaction. The serial composition
@@ -672,7 +704,45 @@ it is sent, and the timer's events pace a music program.  The SDK
 (`kos/sound.h`, `docs/sdk.md` section 6.11) splits a sequence longer than
 one descriptor and checks the name's protocol type.
 
-## 11. The `/dev` publication table
+## 11. JOY (`drivers/joy/`)
+
+The board's two controller latches, published as `/dev/input/joy/0`
+(object 0) and `/dev/input/joy/1` (object 1), both on one endpoint
+(class 12, protocol type `JOY`).  The IO controller decodes each USB pad
+(a Logitech F310 in DirectInput mode) into a ColecoVision controller
+byte and shifts it into a pair of 74AHC595 latches; pad 0 is the first
+pad mounted.  The Z80 reads them with `IN` in `E0h-FFh`, where A1
+selects the latch: `FCh` is pad 0 and `FFh` pad 1, the ColecoVision
+decode.  The block's writes are the sound card's (section 10), so the
+two drivers share the block by direction.
+
+- The byte is delivered exactly as the controller set it, active low: D0
+  up, D1 right, D2 down, D3 left, D6 fire (A or B), D5:D4 high, D7 low.
+  An idle pad and an absent pad both read `7Fh`.  X, Y, Back and Start,
+  and a USB keyboard's digits on pad 0, put a ColecoVision keypad code in
+  D3:D0 that replaces the directions while held.  The driver does no
+  decoding; the readings are the SDK's (`kos/joy.h`, `docs/sdk.md`
+  section 6.13).
+- `KJOY_OP_READ` (0), descriptor-less: `arg0` = the pad, 0 or 1 (else
+  `-KOS_EINVAL`).  One `IN` from the pad's port into `payload[0]`;
+  returns 0.  A dispatch does not see the handle's object, so the call
+  names the pad.
+- `KJOY_OP_INFO` (1), descriptor-less: `payload[0]` is the pad count (2)
+  and `payload[1 + n]` pad n's port, listed one by one (`FCh`, `FFh`).
+  A program that reads every frame reads the port itself (`joy_read`):
+  a latch read changes nothing, so no hold is needed.
+- Both operations write only the payload bytes they define.
+
+The driver owns the two latch read ports and nothing else.  It has no
+init, no state, no release notification (so an exclusive bind is
+`-KOS_ENOTSUP`) and no event source.  `joy_io.asm` is the whole driver,
+hot: the dispatch and its one `IN`.  The board ignores the ColecoVision
+keypad/joystick mode select (`OUT 80h`, `OUT C0h`); the controller
+merges both readings into D3:D0, and a program chooses the reading.
+The board check is the production store's `/system/joy.exe`: each pad's
+byte and its bits whenever it changes, until a key.
+
+## 12. The `/dev` publication table
 
 A driver manifest lists its publications: the name below `/dev`
 (`"/serial/0"`), the protocol type, the serving endpoint and the object
@@ -680,9 +750,9 @@ identity. The packer resolves the endpoint and refuses a name that is the
 root itself, a name too long for the 16-byte record, a duplicate, an
 unknown class, more than 12 publications in one manifest, or a set whose
 publications and grouping rows exceed the nucleus table's 16 rows. The
-production set fills ten: eight publications and the `/dev/input` and
-`/dev/serial` grouping rows. Grouping
-names (`/dev/input`, `/dev/serial`) are never published: the DEVICE
+production set fills thirteen: ten publications and the `/dev/input`,
+`/dev/input/joy` and `/dev/serial` grouping rows. Grouping
+names (`/dev/input`, `/dev/input/joy`, `/dev/serial`) are never published: the DEVICE
 provider derives them from the names it installs. The loader checks each
 row (name shape, type in range, a non-zero endpoint) and installs it.
 
@@ -698,7 +768,7 @@ unbind(handle);
 A grouping name enumerates but refuses to bind (`-KOS_EISDIR`). Names are
 matched case-insensitively.
 
-## 12. Interrupts
+## 13. Interrupts
 
 A driver claims a logical source through `irq_claim` in its boot bundle
 and supplies a handler; the executive opens the driver's window around it
@@ -711,7 +781,7 @@ path against CTC channel 0. The production CTC code
 (`kernel/irq/ctc.c`) is `platform_irq_quiesce()`, which also stops
 channel 2, plus `platform_ctc_quiesce_all()` for the reboot path.
 
-## 13. Placement
+## 14. Placement
 
 A driver's hot segment and `DRIVER_IO` data live in bank 6 `6000h-DFFFh`
 (the `DRIVER_IO` part in `8000h-BFFFh`), its boot code, bulk data and
@@ -739,7 +809,7 @@ that the IPC acceptance replay pins at its one deliberate case.
 `tools/mapcheck.py` fails the build if a driver symbol links into the
 nucleus image, and `--production` rejects every acceptance-only symbol.
 
-## 14. Device takeovers and state restoration
+## 15. Device takeovers and state restoration
 
 The Z80 cannot stop a program from writing to ports, so a driver's protocol
 is not a fence: a program that wants to reprogram a device directly has to
@@ -760,7 +830,9 @@ layers, in the order they catch a program:
    only while it holds that device's exclusive handle — an ordinary bind
    is not permission to touch the hardware behind the driver. A device
    whose driver declares no release notification answers `-KOS_ENOTSUP`,
-   because such a driver has nothing to restore.
+   because such a driver has nothing to restore. Reading the controller
+   latches is not a takeover: a read changes nothing, so `joy_read` reads
+   them on an ordinary handle (section 11).
 3. **The console reset.** A program that wrote the ports with no handle at
    all left the driver no way to know. The kernel's boot launcher runs
    `KCONSOLE_OP_RESET` before every start of the boot program, so a
@@ -773,6 +845,7 @@ What each driver does with a release:
 | device | held | released |
 |---|---|---|
 | `/dev/video` (`v9958`) | the console's output is dropped and counted; the driver touches no VDP register | the full display init runs again: mode registers, wait, palette, clear, cursor home |
+| `/dev/serial/0` (`sio`) | GETC is `-KOS_EAGAIN`, POLL and READ 0, PUTC and WRITE are dropped and counted; the driver touches no SIO0/B port | the channel's setup is rewritten (WR4, WR3, WR5 with RTS, WR1) and the receiver drained |
 | `/dev/console` (composition) | — (no exclusive form) | `KCONSOLE_OP_RESET`: terminal defaults, the display init, clear, cursor home, input queue drained |
 
 `KVIDEO_OP_RESET` (3) runs the same display init at any time, and
@@ -785,7 +858,7 @@ boot init programs its device from any state rather than from power-on
 defaults, and a device a program reconfigured is rebuilt from the driver's
 own constants.
 
-## 15. Tests
+## 16. Tests
 
 | test | covers |
 |---|---|
@@ -797,7 +870,9 @@ own constants.
 | `tests/test_console_acceptance.py` | the production image: load order, the IOC-FAT lane, and a scripted monitor session over the HID and V9958 lanes |
 | `tests/test_console_serial.py` | the serial console build, and the missing-image boot failure |
 | `tests/test_timer.py` | the TIMER contract and the production replay: the tick stream with the emulated CTC, interrupt cost, and IOC transfers under the timer |
+| `tests/test_joy.py` | the JOY contract and manifest, the SDK's two readings compiled for the host over every latch byte against the IO controller's tables, and the production replay of `/system/joy.exe stage`: both pads through `joy_read` and `joy_read_call` with the latches scripted, INFO, the refusals and the ports read |
 | `tests/test_sound.py` | the SOUND contract and the production replay: INFO, batched writes, validation before any OUT, a sequence longer than one descriptor, the exclusive lifecycle, direct I/O and the resets |
+| `tests/test_serial.py` | the serial hold on the production image, with the rescue path armed and every SIO0/B access logged: INFO, the one hold, the held answers on the program's handle and the console's scan and tee with no driver port access, the drop count, direct I/O, and the restore and drain at `serial_release` and at exit |
 
 The simulator covers control flow and register-level behaviour. Serial
 timing, IOC lane timing, interrupt acknowledgement and real USB keyboards

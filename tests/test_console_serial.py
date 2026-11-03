@@ -55,7 +55,7 @@ SHELL_EXIT = b"boot: /system/shell.exe exit 0\r\n"
 # mouse, class 11).
 DRIVER_SET = (("sio.mod", 1), ("ioc.mod", 5), ("hid.mod", 4),
                ("v9958.mod", 2), ("console-serial.mod", 6),
-               ("timer.mod", 10), ("iocfat.mod", 7))
+               ("timer.mod", 10), ("joy.mod", 12), ("iocfat.mod", 7))
 
 CONSOLE_DRIVER_OK = b"console: driver OK\r\n"
 SERIAL_SYSINFO = \
@@ -171,9 +171,10 @@ class TestSerialVariant(SerialBase):
         # console, in manifest order, and the ledger matches the packer's
         # plan.  The evidence rows are linked for the variant image.
         for name in ("sio.mod", "ioc.mod", "hid.mod", "v9958.mod",
-                     "console-serial.mod", "timer.mod", "iocfat.mod"):
+                     "console-serial.mod", "timer.mod", "joy.mod",
+                     "iocfat.mod"):
             self.assertIn(("driver %s: hot " % name).encode("ascii"), sio)
-        self.assertIn(b"driver loader: 7 images in bank 6\r\n", sio)
+        self.assertIn(b"driver loader: 8 images in bank 6\r\n", sio)
         plan = self.driver_plan()
         self.assertIn(b"driver hot: %d bytes of 32768\r\n"
                       % plan["driver_hot_bytes"], sio)

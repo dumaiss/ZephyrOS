@@ -215,7 +215,9 @@ of 24-byte records - the ROMFS name field exactly, NUL-terminated and
 zero-padded - naming the packed containers in load order.  The loader
 reads it with the ROMFS reader (`kernel/romfs`, in the fixed core) and
 requires the file size to be a multiple of the
-record size.  At most `MOD_MAX_IMAGES` (8) images are placed.
+record size.  At most `MOD_MAX_IMAGES` (12, the nucleus endpoint
+table's size) images are placed; the bound sizes no buffer, because the
+loader reads one record at a time.
 
 Per image, in manifest order (`kernel/driver/driver_loader.c`):
 

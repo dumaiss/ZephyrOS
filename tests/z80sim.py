@@ -1483,6 +1483,142 @@ class SoundPeer:
         return sequence
 
 
+class SerialLink:
+    """SIO0/B with its wire, for replays that need its timing (opt-in:
+    install one as `Z80.serial_link`; without it the ports keep the
+    untimed `sio_rx`/`sio_tx` model).
+
+    Mirrors the Z80 SIO channel B as the board wires it (Zilog Z80 SIO
+    product specification; `platform/zephyr80/public/hardware.h`): a
+    3-byte receive FIFO filled from the receive shift register, a 1-byte
+    transmit buffer in front of the transmit shift register, RR0 D0 "a
+    byte is received" and D2 "the transmit buffer is empty", and WR5 D1
+    driving /RTSB, which is the FT230X's /CTS.  The PC end is a port
+    opened with RTS/CTS flow control (the KonaCommander host tool,
+    `UserSoftware/KonaCommander/host/kcommander_host.py`): it starts a
+    byte only while RTS is asserted, and a byte it started completes.
+    At 115,200 baud 8N1 a byte is ten bits, 868 T-states at 10 MHz.  A
+    byte that completes with the FIFO full overwrites the FIFO's newest
+    byte and counts in `overruns`; a byte written while the transmit
+    buffer is still full counts in `tx_overwrites`.
+
+    `send(data, now)` queues the PC's bytes.  The board's bytes go to the
+    CPU's `sio_tx` and its control writes to `sio_ctrl_writes`, as in
+    the untimed model.
+
+    Not modelled: the FT230X's own CTS reaction beyond the byte in
+    flight, USB scheduling and buffer limits, RR1 and its error bits,
+    CTS and DCD (RR0 reports both asserted), WR3 auto enables, breaks.
+    """
+
+    BYTE_TSTATES = 868
+    FIFO_DEPTH = 3
+
+    def __init__(self):
+        self.pending = collections.deque()
+        self.fifo = collections.deque()
+        self.rts = True          # the driver's boot leaves WR5 = EAh
+        self.pointer = 0         # the register the next control write sets
+        self.wire_free = 0       # the PC may start a byte from this T-state
+        self.flight = None       # (byte, the T-state it completes)
+        self.overruns = 0
+        self.tx_empty_at = 0     # the transmit buffer is empty from here
+        self.tx_shift_end = 0
+        self.tx_overwrites = 0
+        self.rts_raises = 0
+        self.rts_drops = 0
+
+    def advance(self, now):
+        """Move the wire to T-state `now` (RTS was constant since the
+        last access: every RTS change goes through `control`)."""
+        while True:
+            if self.flight is not None:
+                byte, end = self.flight
+                if end > now:
+                    return
+                self.flight = None
+                self.wire_free = end
+                if len(self.fifo) < self.FIFO_DEPTH:
+                    self.fifo.append(byte)
+                else:
+                    self.fifo[-1] = byte
+                    self.overruns += 1
+            if not self.pending or not self.rts:
+                return
+            self.flight = (self.pending.popleft(),
+                           self.wire_free + self.BYTE_TSTATES)
+
+    def send(self, data, now):
+        """The PC writes `data` at T-state `now`."""
+        self.advance(now)
+        if self.flight is None:
+            self.wire_free = max(self.wire_free, now)
+        self.pending.extend(data)
+        self.advance(now)
+
+    def status(self, now):
+        self.advance(now)
+        return (0x28 | (0x04 if now >= self.tx_empty_at else 0x00) |
+                (0x01 if self.fifo else 0x00))
+
+    def read_data(self, now):
+        self.advance(now)
+        return self.fifo.popleft() if self.fifo else 0xFF
+
+    def write_data(self, now):
+        if now < self.tx_empty_at:
+            self.tx_overwrites += 1
+        start = max(now, self.tx_shift_end)
+        self.tx_empty_at = start
+        self.tx_shift_end = start + self.BYTE_TSTATES
+
+    def control(self, value, now):
+        if self.pointer == 0:
+            self.pointer = value & 0x07
+            return
+        if self.pointer == 5:
+            rts = (value & 0x02) != 0
+            self.advance(now)
+            if rts and not self.rts:
+                self.rts_raises += 1
+                if self.flight is None:
+                    self.wire_free = max(self.wire_free, now)
+            elif self.rts and not rts:
+                self.rts_drops += 1
+            self.rts = rts
+            self.advance(now)
+        self.pointer = 0
+
+
+class ControllerLatch:
+    """The board's two controller latches, as the Z80 reads them.
+
+    Mirrors Zephyr-80 `Code/MCU/IOController/src/controller_latch.c`:
+    the IO controller shifts one ColecoVision byte per pad into a
+    cascaded 74AHC595 pair (`controller_latch_set`), each starting at
+    `CONTROLLER_LATCH_IDLE` (7Fh, `controller_latch_init`).  Every IN in
+    E0h-FFh reads `latch[A1]`: FCh is pad 0, FFh pad 1 (writes there are
+    the sound card's, SoundPeer).  A test sets `latch[pad]` to the byte
+    the controller would present.
+
+    Not modelled: USB and the pads themselves, the F310 and keyboard
+    decode (`controller_latch_f310_report`, `coleco_keypad_for_report`),
+    the shift timing, and the ColecoVision mode select (the board ignores
+    it too).
+    """
+
+    FIRST_PORT = 0xE0
+    IDLE = 0x7F
+
+    def __init__(self):
+        self.latch = [self.IDLE, self.IDLE]
+        self.reads = []        # ports, in read order
+
+    def read(self, port):
+        self.reads.append(port & 0xFF)
+        return self.latch[(port >> 1) & 1]
+
+
 class V9958Peer:
     """Register/VRAM-level model of the LunchCrema V9958 (ports A0h-A4h).
 
@@ -2874,6 +3010,9 @@ class Z80:
         self.sio_tx = bytearray()
         self.sio_rx = bytearray()
         self.sio_ctrl_writes = bytearray()
+        # Optional timed SIO0/B wire (SerialLink); None keeps the model
+        # above.
+        self.serial_link = None
         # Optional IOC command-lane peer on SIO1/B (ports 32h/33h).
         # Tests that boot an IOC image install one before running.
         self.ioc_peer = None
@@ -2884,6 +3023,8 @@ class Z80:
         self.vdp_peer = None
         # Optional sound-card peer on E0h-E4h; it records every write.
         self.sound_peer = None
+        # The controller latches: every read in E0h-FFh (io_in).
+        self.controller_latch = ControllerLatch()
         # run(): the port whose write ends a run after its step.
         self._stop_out_port = None
         self._out_hit = False
@@ -2919,12 +3060,18 @@ class Z80:
             if port == V9958Peer.PORT_INDIRECT:
                 return 0xFF
             return self.vdp_peer.latch
+        if self.serial_link is not None and port in (0x22, 0x23):
+            if port == 0x22:
+                return self.serial_link.read_data(self.tstates)
+            return self.serial_link.status(self.tstates)
         if port == 0x22:
             return self.sio_rx.pop(0) if self.sio_rx else 0xFF
         if port == 0x23:
             # RR0: TX-empty + CTS set; RX-available only when a byte
             # is queued.
             return 0xFE | (0x01 if self.sio_rx else 0x00)
+        if port >= ControllerLatch.FIRST_PORT:
+            return self.controller_latch.read(port)
         if self.ioc_peer is not None:
             if port == 0x32:
                 return self.ioc_peer.data_read()
@@ -2962,8 +3109,12 @@ class Z80:
             self.sound_peer.write(port, value)
         elif port == 0x22:
             self.sio_tx.append(value)
+            if self.serial_link is not None:
+                self.serial_link.write_data(self.tstates)
         elif port == 0x23:
             self.sio_ctrl_writes.append(value)
+            if self.serial_link is not None:
+                self.serial_link.control(value, self.tstates)
         elif self.ioc_peer is not None:
             if port == 0x32:
                 self.ioc_peer.data_write(value)

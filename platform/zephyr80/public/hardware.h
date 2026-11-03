@@ -23,6 +23,8 @@
 /* Z80 SIO channel 0, port B: early console */
 #define KOS_SIO0B_DATA              0x22u
 #define KOS_SIO0B_CTRL              0x23u
+/* Its line rate: 115,200 baud 8N1 (1.8432 MHz clock, x16). */
+#define KOS_SIO0B_BAUD              115200u
 /* SIO channel 1: the IOC two-lane transport.  Lane A is the bulk
  * lane; lane B is the command lane. */
 #define KOS_SIO1A_DATA              0x30u
@@ -53,6 +55,13 @@
 #define KOS_SOUND_DAC_PORT          0xE4u
 #define KOS_SOUND_PSG_COUNT         4u
 #define KOS_SOUND_PSG_CLOCK_HZ      3579545u
+/* The controller latches: two 74AHC595s the IO controller loads with
+ * each pad's ColecoVision byte (active low, idle 7Fh).  Reads in E0h-FFh
+ * are the latches and A1 selects one, the ColecoVision decode: FCh is
+ * pad 0 (the first-mounted pad), FFh pad 1.  Writes in the block are the
+ * sound card's. */
+#define KOS_JOY0_PORT               0xFCu
+#define KOS_JOY1_PORT               0xFFu
 
 /* --- Memory/banking latch fields --- */
 

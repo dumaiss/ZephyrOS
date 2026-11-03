@@ -464,11 +464,11 @@ class TestExclusiveTakeover(DeviceReplay):
         self.run_lane(z, "dev: busy end\r\n", lane)
         transcript = self.lane(z, lane)
         # A second exclusive bind is refused with -KOS_EBUSY, release then
-        # acquire succeeds, and devices whose driver declares no release
-        # answer -KOS_ENOTSUP (the console and the serial lane).
+        # acquire succeeds, and a device whose driver declares no release
+        # answers -KOS_ENOTSUP (the console).
         for line in ("dev: first ok\r\n", "dev: second -4\r\n",
                      "dev: third ok\r\n", "dev: console -7\r\n",
-                     "dev: lane -7\r\n", "dev: busy end\r\n"):
+                     "dev: busy end\r\n"):
             self.assertIn(line, transcript)
         self.assertNotIn("dev: first -", transcript)
         self.run_to(z, SHELL_PROMPT, since=trace, limit=EXEC_BUDGET)
