@@ -102,6 +102,27 @@
 #                       archive built for that grid (KOS_TUI_GRIDS);
 #                       without it, 85x26 (libtui.lib)
 #
+# `make run` builds one program and runs it in the Zephyr-80 emulator
+# (tools/exerun.py): it stages the program and its assets into a card
+# folder under 8.3 names, starts MAME on a KonaOS image with that folder as
+# the card, waits for the shell prompt and types `/fs/<NAME>.EXE`.  Nothing
+# else needs the emulator: `all`, the program targets and the packing never
+# look for it, and a missing emulator is an error of `make run` alone.
+# Settings (defaults in parentheses; paths may hold spaces):
+#   KOS_RUN=NAME        the program (the Makefile's only one)
+#   KOS_RUN_ARGS=TEXT   its command-line arguments
+#   KOS_ASSETS=F[=N] .. files staged beside it, as their 8.3 name or as N
+#   KOS_MAME=PATH       the zephyr80 MAME binary (mamepbitz on PATH)
+#   KOS_FLASH=PATH      the KonaOS flash image (required)
+#   KOS_OSMAP=PATH      its konaos.map (beside the image), for symbols
+#   KOS_CARD=DIR        the card folder ($(KOS_BUILD)/card)
+#   KOS_MAME_PLUGINS=DIR  the directory holding the konaos plugin (plugins/
+#                       beside the MAME binary)
+#   KOS_MAME_ARGS=TEXT  extra MAME options (-debug, -window, ...)
+#   KOS_BREAK=SYM ..    symbols to break at (with KOS_MAME_ARGS=-debug)
+#   KOS_RUN_EXIT=1      end MAME when the program returns, and fail unless
+#                       it did
+#
 # The roots below are the only place the rule file touches a path; both
 # users set them to their own tree before including it, so nothing here
 # names a source tree.
@@ -250,6 +271,7 @@ $(1)_LIBFILES := $$(foreach name,$$(subst :, ,$$($(1)_LIBS)),$$(EXE_LIB_DIR)/lib
 $(1)_DECLARED := $$(foreach name,$$(subst :, ,$$($(1)_LIBS)),$$(foreach m,$$(KOS_POINTER_MEMBERS_$$(name)),--declared=lib$$(if $$(and $$(filter tui,$$(name)),$$(filter-out 85x26,$$($(1)_GRID))),tui_$$($(1)_GRID),$$(name)).lib($$(m))))
 $(1)_LINKOBJS := $$($(1)_ORDERREL) $$(if $$($(1)_NOCRT0),,$$(EXE_CRT0)) $$(EXE_RUNTIME) $$($(1)_OBJS) $$($(1)_FAROBJS) $$($(1)_DATAOBJS)
 $(1)_EXE    := $$(EXE_USER_ROOT)/$(1).exe
+KOS_PROGRAMS += $(1)
 
 # The program itself is a target of its own name (`make NAME`), so a
 # program Makefile lists its programs in its `all` target and `make`
@@ -418,3 +440,35 @@ $$(KOS_MODULES)/$(1).exe: $$($(1)_EXE)
 	cp $$< $$@
 endif
 endef
+
+# --- make run ------------------------------------------------------------
+KOS_MAME         ?= mamepbitz
+KOS_FLASH        ?=
+KOS_OSMAP        ?=
+KOS_CARD         ?= $(KOS_BUILD)/card
+KOS_MAME_PLUGINS ?=
+KOS_MAME_ARGS    ?=
+KOS_RUN          ?=
+KOS_RUN_ARGS     ?=
+KOS_ASSETS       ?=
+KOS_BREAK        ?=
+KOS_RUN_EXIT     ?=
+# The program `make run` runs, chosen when the recipe runs (every
+# exe_program line has been read by then).
+KOS_RUN_NAME = $(or $(KOS_RUN),$(if $(filter 1,$(words $(KOS_PROGRAMS))),$(KOS_PROGRAMS)))
+
+# Defined here, the rule must not become a Makefile's default goal.
+kos_default_goal := $(.DEFAULT_GOAL)
+.PHONY: run
+run:
+	$(if $(KOS_RUN_NAME),,$(error make run: choose the program with KOS_RUN=<name> (this Makefile declares: $(KOS_PROGRAMS))))
+	$(if $(filter $(KOS_RUN_NAME),$(KOS_PROGRAMS)),,$(error make run: $(KOS_RUN_NAME) is not a program of this Makefile ($(KOS_PROGRAMS))))
+	@$(MAKE) --no-print-directory $(KOS_RUN_NAME)
+	$(KOS_PYTHON) $(KOS_TOOLS)/exerun.py --exe $(EXE_USER_ROOT)/$(KOS_RUN_NAME).exe \
+	    --map $(EXE_USER_ROOT)/$(KOS_RUN_NAME)/$(KOS_RUN_NAME).map \
+	    --card "$(KOS_CARD)" --rundir $(KOS_BUILD)/run \
+	    --mame "$(KOS_MAME)" --flash "$(KOS_FLASH)" --osmap "$(KOS_OSMAP)" \
+	    --plugins "$(KOS_MAME_PLUGINS)" --mame-args "$(KOS_MAME_ARGS)" \
+	    --args "$(KOS_RUN_ARGS)" $(foreach a,$(KOS_ASSETS),--asset '$(a)') \
+	    $(foreach b,$(KOS_BREAK),--break '$(b)') $(if $(KOS_RUN_EXIT),--exit,)
+.DEFAULT_GOAL := $(kos_default_goal)

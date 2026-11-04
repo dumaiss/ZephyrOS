@@ -1221,6 +1221,9 @@ the production image with the console's serial rescue armed: the hold,
 direct I/O through `kos/serial.h` with no driver access to the port
 meanwhile, and the release's restore.
 `tests/test_sdk_package.py` checks the standalone SDK (section 11).
+`tests/test_exerun.py` checks `make run`'s helper without an emulator:
+the 8.3 card names, the refused names and collisions, and that a missing
+image, binary or plugin is named before anything is staged.
 
 ## 10. The demo image and the examples
 
@@ -1303,8 +1306,9 @@ kos-sdk-<version>/
   lib/             libkos.lib (the runtime object included), libtui.lib,
                    libtui_128x35.lib, libtui_widgets.lib, libgfx.lib,
                    crt0.rel
-  tools/           exepack.py, exemanifest.py, ihx.py (Python standard
-                   library only), kimg.py (Pillow: the KIMG converter)
+  tools/           exepack.py, exemanifest.py, exeplace.py, ihx.py,
+                   exerun.py (Python standard library only), kimg.py
+                   (Pillow: the KIMG converter)
   mk/kos.mk        the program rule
   template/        Makefile and hello.c
   examples/        hello, fardemo, fardata, files, tui_demo, tui_keys,
@@ -1327,12 +1331,67 @@ From unpacking to running:
 A new program is a copy of `template/` with its name in the `exe_program`
 line. A program built for another ABI version is refused by the loader.
 
+### 11.1 Running in the emulator: `make run`
+
+```sh
+make run KOS_FLASH=/path/to/konaos.bin
+make run KOS_RUN=player KOS_RUN_ARGS=/fs/NIGHT.ZTR \
+    KOS_ASSETS="songs/night-market.ztr=NIGHT.ZTR" KOS_FLASH=/path/to/konaos.bin
+make run KOS_FLASH=/path/to/konaos.bin KOS_MAME_ARGS=-debug KOS_BREAK=main
+```
+
+`make run` builds one program and runs it on the Zephyr-80 emulator (the
+`zephyr80` machine of the Zephyr-80 checkout's MAME,
+`Code/MODERN/Emulator`). `tools/exerun.py` stages the program and its
+assets into the card folder under 8.3 names (the program as
+`<NAME>.EXE`: upper case, characters a FAT short name cannot hold
+dropped, the base cut to eight and the extension to three; `F=N` stages
+`F` as `N`, which must already be a valid 8.3 name; two files under one
+name are refused), starts MAME on the image with that folder as the card
+and the `konaos` plugin loaded, waits for the shell prompt on the screen,
+types `/fs/<NAME>.EXE` and its arguments, and prints the screen lines the
+program left once the prompt returns. The window stays open for use until
+it is closed, unless `KOS_RUN_EXIT=1`.
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `KOS_RUN` | the program | the Makefile's only program |
+| `KOS_RUN_ARGS` | its arguments | none |
+| `KOS_ASSETS` | files staged beside it, `F` or `F=NAME.EXT` | none |
+| `KOS_FLASH` | the KonaOS flash image | required |
+| `KOS_OSMAP` | its link map, for symbols | `konaos.map` beside the image |
+| `KOS_MAME` | the MAME binary | `mamepbitz` on `PATH` |
+| `KOS_MAME_PLUGINS` | the directory holding `konaos/` | `plugins/` beside the binary |
+| `KOS_CARD` | the card folder | `build/card` |
+| `KOS_MAME_ARGS` | extra MAME options | none |
+| `KOS_BREAK` | symbols to break at (with `-debug`) | none |
+| `KOS_RUN_EXIT` | `1`: end MAME when the program returns; fail unless it did | unset |
+
+Paths may contain spaces. The card folder is created when missing; staged
+files replace files of the same name and nothing else in it is touched.
+`build/run/` holds the session, `console.txt` (every changed screen with
+its emulated time) and `result.txt`.
+
+The emulator is a tool of its own and nothing else needs it: `make`, the
+program targets and the packing never look for it, and a missing binary,
+image or plugin is an error of `make run` only, naming the variable to
+set. The `konaos` plugin ships with the emulator, in the `plugins/`
+directory beside its binary; it reads the program's map,
+`place/placement.json`, the EXE manifest and the EXE, so `KOS_BREAK`
+names one of the program's symbols (`main`) or another image's as
+`image:name` (`konaos:<symbol>` for the OS), and the stop happens only in
+the bank the loader put that code in, a far segment and the home zone at
+8000h included. The emulator's documentation (`docs/zephyr80-debugging.md` in
+`Code/MODERN/Emulator`) describes the plugin's debugger use.
+
 `tests/test_sdk_package.py` builds the tarball, unpacks it outside the
 repository, checks the file list, the header closure, the version and the
 archive's metadata, builds `template/`, `examples/` and the TUI fixture
 with the tree's paths absent, runs the result through the production
-image's monitor in the simulator, and checks that a copy with a changed
-ABI byte is refused.
+image's monitor in the simulator, checks that a copy with a changed
+ABI byte is refused, and that `make run` alone looks for the emulator.
+The emulator runs of `make run` itself are the Zephyr-80 checkout's
+acceptance cases (`Code/MODERN/Emulator/tests`, `sdk-run`).
 
 ## 12. Far data
 

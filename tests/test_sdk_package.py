@@ -127,6 +127,7 @@ SDK_FILES = {
     "tools/exeplace.py",
     "tools/ihx.py",
     "tools/kimg.py",
+    "tools/exerun.py",
     "mk/kos.mk",
     "template/Makefile",
     "template/hello.c",
@@ -479,10 +480,10 @@ class TestSdkPackage(unittest.TestCase):
                                if dest.startswith("include/abi/")})
 
     def test_the_standalone_tools_use_the_standard_library_only(self):
-        """exepack, exemanifest, exeplace and ihx ship inside the SDK:
-        they must import nothing but the Python 3 standard library (and
-        each other)."""
-        local = {"exepack", "exemanifest", "exeplace", "ihx"}
+        """exepack, exemanifest, exeplace, ihx and exerun ship inside the
+        SDK: they must import nothing but the Python 3 standard library
+        (and each other)."""
+        local = {"exepack", "exemanifest", "exeplace", "ihx", "exerun"}
         violations = []
         for name in sorted(local):
             source = _read(os.path.join(self.tree, "tools", "%s.py" % name))
@@ -527,6 +528,27 @@ class TestSdkPackage(unittest.TestCase):
                          ["fardata", "fardemo", "files", "gfx_mouse",
                           "hello", "tui_demo", "tui_dialog", "tui_keys",
                           "tui_mouse", "tui_sdkprobe", "widget_sdkprobe"])
+
+    def test_the_run_target_alone_needs_the_emulator(self):
+        """`make run` is the one target that looks for the emulator: in the
+        out-of-tree copy, with no emulator on PATH, it names the program
+        choice, the flash image and the emulator it lacks, while `make`
+        built every program above without one."""
+        self._build()
+        env = {"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", "/tmp"),
+               "LANG": "C"}
+        for directory, args, want in (
+                ("examples", [], "choose the program with KOS_RUN="),
+                ("template", [], "set KOS_FLASH"),
+                ("template", ["KOS_FLASH=hello.c",
+                              "KOS_MAME=/nonexistent/mamepbitz"],
+                 "set KOS_MAME")):
+            result = subprocess.run(
+                ["make", "--no-print-directory", "run"] + args,
+                cwd=os.path.join(self.build_copy, directory), env=env,
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn(want, result.stdout)
 
     def test_the_packed_program_runs_in_the_simulator(self):
         """The store carries the SDK-built hello.exe as /system/hello.exe;

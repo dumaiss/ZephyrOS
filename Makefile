@@ -1393,8 +1393,8 @@ $(MODULES)/exe-fixtures.stamp: tests/subsys/gen_exe_fixtures.py \
 # --- standalone SDK package --------------------------------
 # `make sdk` assembles build/kos-sdk-<version>/ and its tarball: the SDK
 # headers (with the ABI closure they include), the prebuilt libkos.lib and
-# crt0.rel, the standalone tools (exepack, exemanifest, ihx), the program
-# rules, the template, the examples and the docs.  A developer unpacks the
+# crt0.rel, the standalone tools (exepack, exemanifest, ihx, exerun), the
+# program rules, the template, the examples and the docs.  A developer unpacks the
 # tarball and builds a program with no OS source (docs/sdk.md, "Using the
 # standalone SDK"); tests/test_sdk_package.py builds the tarball
 # out-of-tree and runs the result.
@@ -1413,7 +1413,7 @@ SDK_INPUTS := $(wildcard abi/kos/*.h) \
 	docs/sdk.md docs/tui.md docs/exe-format.md mk/kos.mk \
 	formats/include/exe.h \
 	tools/exepack.py tools/exemanifest.py tools/exeplace.py tools/ihx.py tools/kimg.py \
-	tools/sdkpack.py
+	tools/exerun.py tools/sdkpack.py
 
 sdk: $(KOS_SDK_TARBALL)
 	@echo "sdk: $(KOS_SDK_DIR)"
