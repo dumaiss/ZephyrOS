@@ -228,6 +228,23 @@ Manual check of a new ROM:
 ## 9. Emulators
 
 The physical board is the reference. The simulator (`tests/z80sim.py`)
-replays images for the host tests. The current Zephyr-80 MAME driver does
-not implement the mode-10/11 mapping KonaOS needs, so it cannot run the
-image yet; `zephyr80.bin` is produced for when it can.
+replays images for the host tests.
+
+The Zephyr-80 checkout's MAME machine, `zephyr80` (`Code/MODERN/Emulator`),
+runs this tree's images unchanged: `build/konaos.bin` (or its copy
+`zephyr80.bin`) with the V9958 screen, the USB keyboard, the sound card and an
+SD card image or host folder as the card, and the serial-console image on a
+pty. In that checkout:
+
+| Document | What |
+|---|---|
+| `Code/MODERN/Emulator/docs/build-and-run.md` | building MAME, preparing images and cards, the options, headless runs, save states, failure diagnostics |
+| `Code/MODERN/Emulator/docs/zephyr80-device-model.md` | what each device models and on what evidence |
+| `Code/MODERN/Emulator/docs/zephyr80-debugging.md` | the `konaos` plugin: symbols, bank-aware breakpoints, the console as text |
+| `Code/MODERN/Emulator/tests/README.md` | the scripted cases and the acceptance group |
+
+The emulator is a developer tool: nothing in this tree's build or
+`make check` uses it, and its results are not board results. Timing, real
+USB devices, the analogue outputs and the `LD A,I` IFF2 behaviour are checked
+on the board (section 8). The SDK's `make run` starts it for one program
+(`docs/sdk.md`, section 11.1).

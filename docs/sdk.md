@@ -1381,8 +1381,10 @@ directory beside its binary; it reads the program's map,
 names one of the program's symbols (`main`) or another image's as
 `image:name` (`konaos:<symbol>` for the OS), and the stop happens only in
 the bank the loader put that code in, a far segment and the home zone at
-8000h included. The emulator's documentation (`docs/zephyr80-debugging.md` in
-`Code/MODERN/Emulator`) describes the plugin's debugger use.
+8000h included. The emulator's documentation in `Code/MODERN/Emulator`
+describes building MAME, the card and the other options
+(`docs/build-and-run.md`) and the plugin's debugger use
+(`docs/zephyr80-debugging.md`).
 
 `tests/test_sdk_package.py` builds the tarball, unpacks it outside the
 repository, checks the file list, the header closure, the version and the
