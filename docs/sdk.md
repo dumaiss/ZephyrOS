@@ -1273,7 +1273,8 @@ The examples:
   4 KiB table and writes a zeroed 2 KiB array, unmaps, and only then makes
   a banked call with values copied out of the table: the one-window rule in
   one program.
-- **`files`**: opens, reads and lists files.
+- **`files`**: opens, reads and lists files: `files [FILE [DIRECTORY]]`
+  (the defaults are `/system/hello.exe` and `/system`).
 - **`tui_demo`**: core TUI panels, a nested window, styles, frames, a status
   row and a key loop.
 - **`tui_keys`**: prints the symbolic name of every decoded TUI key.
@@ -1335,6 +1336,7 @@ line. A program built for another ABI version is refused by the loader.
 
 ```sh
 make run KOS_FLASH=/path/to/konaos.bin
+make run KOS_MAME=/path/to/zephyr80-mame
 make run KOS_RUN=player KOS_RUN_ARGS=/fs/NIGHT.ZTR \
     KOS_ASSETS="songs/night-market.ztr=NIGHT.ZTR" KOS_FLASH=/path/to/konaos.bin
 make run KOS_FLASH=/path/to/konaos.bin KOS_MAME_ARGS=-debug KOS_BREAK=main
@@ -1358,14 +1360,20 @@ it is closed, unless `KOS_RUN_EXIT=1`.
 | `KOS_RUN` | the program | the Makefile's only program |
 | `KOS_RUN_ARGS` | its arguments | none |
 | `KOS_ASSETS` | files staged beside it, `F` or `F=NAME.EXT` | none |
-| `KOS_FLASH` | the KonaOS flash image | required |
+| `KOS_FLASH` | the KonaOS flash image | required, unless `KOS_MAME` names a bundle |
 | `KOS_OSMAP` | its link map, for symbols | `konaos.map` beside the image |
-| `KOS_MAME` | the MAME binary | `mamepbitz` on `PATH` |
+| `KOS_MAME` | the MAME binary, or the emulator bundle's directory | `mamepbitz` on `PATH` |
 | `KOS_MAME_PLUGINS` | the directory holding `konaos/` | `plugins/` beside the binary |
 | `KOS_CARD` | the card folder | `build/card` |
 | `KOS_MAME_ARGS` | extra MAME options | none |
 | `KOS_BREAK` | symbols to break at (with `-debug`) | none |
 | `KOS_RUN_EXIT` | `1`: end MAME when the program returns; fail unless it did | unset |
+
+The emulator bundle (`Code/MODERN/Emulator/docs/bundle.md`) is one archive
+with the binary, the plugin and a KonaOS image: when `KOS_MAME` names its
+extracted directory, that one setting supplies the binary (`mamepbitz`), the
+plugin (`plugins/`), the image (`konaos.bin`) and its map, and `KOS_FLASH`,
+`KOS_OSMAP` and `KOS_MAME_PLUGINS` still override each.
 
 Paths may contain spaces. The card folder is created when missing; staged
 files replace files of the same name and nothing else in it is touched.
@@ -1376,7 +1384,7 @@ The emulator is a tool of its own and nothing else needs it: `make`, the
 program targets and the packing never look for it, and a missing binary,
 image or plugin is an error of `make run` only, naming the variable to
 set. The `konaos` plugin ships with the emulator, in the `plugins/`
-directory beside its binary; it reads the program's map,
+directory beside its binary (or the bundle's); it reads the program's map,
 `place/placement.json`, the EXE manifest and the EXE, so `KOS_BREAK`
 names one of the program's symbols (`main`) or another image's as
 `image:name` (`konaos:<symbol>` for the OS), and the stop happens only in

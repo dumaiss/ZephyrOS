@@ -57,9 +57,10 @@
 #define KOS_SOUND_PSG_CLOCK_HZ      3579545u
 /* The controller latches: two 74AHC595s the IO controller loads with
  * each pad's ColecoVision byte (active low, idle 7Fh).  Reads in E0h-FFh
- * are the latches and A1 selects one, the ColecoVision decode: FCh is
- * pad 0 (the first-mounted pad), FFh pad 1.  Writes in the block are the
- * sound card's. */
+ * are the latches.  The IO board's U6 74HC138 has only A0 wired (A1 and
+ * A2 are tied low), so an even port reads pad 0 (the first-mounted pad)
+ * and an odd port pad 1: FCh is pad 0, FFh pad 1.  Writes in the block
+ * are the sound card's. */
 #define KOS_JOY0_PORT               0xFCu
 #define KOS_JOY1_PORT               0xFFu
 

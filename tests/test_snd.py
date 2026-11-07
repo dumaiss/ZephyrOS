@@ -83,6 +83,8 @@ CHORD = dict(peak=255, gate=200, attack=0, decay=0, sustain=255,
 PLUCK = dict(peak=200, gate=200, attack=4, decay=3, sustain=120,
              release=3)
 TONE12 = (0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14)
+# kos/snd.h: note n sounds 440 * 2 ** ((n - 48) / 12) Hz, so C4 is 39.
+SND_C4 = 39
 
 
 def a440_table():
@@ -391,7 +393,7 @@ class TestSndCompilerHost(unittest.TestCase):
     def test_the_note_program_matches_the_reference(self):
         inst = dict(peak=200, attack=2, decay=2, sustain=120,
                     release=2)
-        expected = compile_note(48, 8, inst)
+        expected = compile_note(SND_C4, 8, inst)
         programs = self._programs()
         # the host dump stops at the last non-zero byte (the final
         # ATTEN opcode); it must equal the reference's prefix
@@ -412,9 +414,9 @@ class TestSndCompilerHost(unittest.TestCase):
         # a 200-level peak; the level bytes are the reference ramp
         inst = dict(peak=200, attack=2, decay=2, sustain=120,
                     release=2)
-        program = compile_note(48, 8, inst)
+        program = compile_note(SND_C4, 8, inst)
         self.assertEqual(program[0:3],
-                         [P_PERIOD, A440[48] & 0xFF, A440[48] >> 8])
+                         [P_PERIOD, A440[SND_C4] & 0xFF, A440[SND_C4] >> 8])
         levels = [program[index] for index in range(4, len(program), 2)
                   if program[index - 1] == P_ATTEN]
         self.assertEqual(levels, [100, 200, 160, 120, 60, 0],
@@ -434,7 +436,8 @@ class TestSndCompilerHost(unittest.TestCase):
 @unittest.skipUnless(os.path.exists(SNTEST), "run make")
 class TestSndTones(SndCase):
     def test_each_latch_byte_and_divisor_equals_the_table(self):
-        notes = [48, 52, 55, 60, 64, 67, 72, 76, 79, 84, 88, 91]
+        notes = [SND_C4 + step for step in (0, 4, 7, 12, 16, 19,
+                                            24, 28, 31, 36, 40, 43)]
         voices = [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]
         model = SndModel()
         expected = marker_framed(note_ticks(model, notes, voices, 200,
@@ -449,7 +452,7 @@ class TestSndTones(SndCase):
 class TestSndAdsr(SndCase):
     def test_the_envelope_tick_by_tick(self):
         model = SndModel()
-        model.note_on(0, 48, 200, PLUCK)
+        model.note_on(0, SND_C4, 200, PLUCK)
         expected = [model.tick(1) for _ in range(10)]
         model.note_off(0, PLUCK["release"])
         expected += [model.tick(1) for _ in range(6)]
@@ -464,7 +467,7 @@ class TestSndAdsr(SndCase):
 
     def test_the_release_starts_from_the_current_level(self):
         model = SndModel()
-        model.note_on(0, 48, 200, PLUCK)
+        model.note_on(0, SND_C4, 200, PLUCK)
         for _ in range(10):
             model.tick(1)
         self.assertEqual(model.level[0], PLUCK["sustain"])
@@ -500,7 +503,7 @@ class TestSndNoise(SndCase):
 
 @unittest.skipUnless(os.path.exists(SNTEST), "run make")
 class TestSndModes(SndCase):
-    NOTES = [48, 49, 50]
+    NOTES = [SND_C4, SND_C4 + 1, SND_C4 + 2]
 
     def _expected(self):
         # one continuous model: the DIRECT chord, the silence, the
@@ -641,8 +644,8 @@ class TestSndVoiceEngine(SndCase):
         # Establish the same valid silent shadow that the target mode does.
         coalesced.flush()
         stepped.flush()
-        coalesced.note_on(0, 48, 20, inst)
-        stepped.note_on(0, 48, 20, inst)
+        coalesced.note_on(0, SND_C4, 20, inst)
+        stepped.note_on(0, SND_C4, 20, inst)
         want = coalesced.tick(5)
         for _ in range(5):
             stepped.tick(1)
@@ -659,7 +662,7 @@ class TestSndVoiceEngine(SndCase):
         for batch in (False, True):
             model = SndModel(pause_wait=True)
             for i in range(12, 0, -1):
-                model.note_on(TONE12[i - 1], 48 + i - 1,
+                model.note_on(TONE12[i - 1], SND_C4 + i - 1,
                               20 + i * 3, inst)
             expected = [model.tick(1) for _ in range(200)]
             z, since = self.run_mode("stagger batch" if batch else

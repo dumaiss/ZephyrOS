@@ -1597,7 +1597,7 @@ class ControllerLatch:
     the IO controller shifts one ColecoVision byte per pad into a
     cascaded 74AHC595 pair (`controller_latch_set`), each starting at
     `CONTROLLER_LATCH_IDLE` (7Fh, `controller_latch_init`).  Every IN in
-    E0h-FFh reads `latch[A1]`: FCh is pad 0, FFh pad 1 (writes there are
+    E0h-FFh reads `latch[A0]` (U6 wires only A0): FCh is pad 0, FFh pad 1 (writes there are
     the sound card's, SoundPeer).  A test sets `latch[pad]` to the byte
     the controller would present.
 
@@ -1616,7 +1616,7 @@ class ControllerLatch:
 
     def read(self, port):
         self.reads.append(port & 0xFF)
-        return self.latch[(port >> 1) & 1]
+        return self.latch[port & 1]
 
 
 class V9958Peer:

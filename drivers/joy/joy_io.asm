@@ -5,9 +5,10 @@
 ; abi/kos/protocol.h (class KOS_CLASS_JOY, instance 0, version
 ; KOS_PROTOCOL_VERSION), published as `/dev/input/joy/0` (object 0) and
 ; `/dev/input/joy/1` (object 1).  The IO controller loads each latch with
-; its pad's ColecoVision byte; reads in E0h-FFh are the latches, A1
-; selecting one: FCh is pad 0 and FFh pad 1 (the block's writes are the
-; sound card's, drivers/sound).
+; its pad's ColecoVision byte; reads in E0h-FFh are the latches.  The IO
+; board's U6 74HC138 wires only A0 (A1 and A2 are tied low), so an even
+; port is pad 0 and an odd port pad 1: FCh is pad 0 and FFh pad 1 (the
+; block's writes are the sound card's, drivers/sound).
 ;
 ;   KJOY_OP_READ  arg0 = the pad; one IN from its port into payload[0];
 ;   KJOY_OP_INFO  the pad count and each pad's port.

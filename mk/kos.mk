@@ -112,8 +112,10 @@
 #   KOS_RUN=NAME        the program (the Makefile's only one)
 #   KOS_RUN_ARGS=TEXT   its command-line arguments
 #   KOS_ASSETS=F[=N] .. files staged beside it, as their 8.3 name or as N
-#   KOS_MAME=PATH       the zephyr80 MAME binary (mamepbitz on PATH)
-#   KOS_FLASH=PATH      the KonaOS flash image (required)
+#   KOS_MAME=PATH       the zephyr80 MAME binary (mamepbitz on PATH), or the
+#                       emulator bundle's directory, which also supplies the
+#                       image, the map and the plugin
+#   KOS_FLASH=PATH      the KonaOS flash image (required without a bundle)
 #   KOS_OSMAP=PATH      its konaos.map (beside the image), for symbols
 #   KOS_CARD=DIR        the card folder ($(KOS_BUILD)/card)
 #   KOS_MAME_PLUGINS=DIR  the directory holding the konaos plugin (plugins/

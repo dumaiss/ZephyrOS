@@ -1067,8 +1067,9 @@ console it selected. Programs cannot tell which implementation answers.
   Sound programs use this driver, not diagnostic I/O (`SYS_DIAG_IO_OUT`).
 - **The controllers are two read ports.** The `E0h-FFh` block is split by
   direction: its writes are the sound card's (`E0h-E4h`), its reads the
-  controller latches, A1 selecting one (`FCh` pad 0, `FFh` pad 1, the
-  ColecoVision decode). The IO controller loads each latch with its USB
+  controller latches. The IO board's U6 74HC138 wires only A0 (A1 and A2
+  are tied low), so an even port reads pad 0 and an odd port pad 1
+  (`FCh` pad 0, `FFh` pad 1). The IO controller loads each latch with its USB
   pad's ColecoVision byte, active low; the `joy` driver (`KOS_CLASS_JOY`,
   type `JOY`, `kos/protocol.h`) owns the two read ports and nothing else:
   - `KJOY_OP_READ` is one `IN` from the pad's port (`arg0` = the pad,

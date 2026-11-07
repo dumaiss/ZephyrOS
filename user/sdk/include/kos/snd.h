@@ -39,104 +39,107 @@
  * resident: the caller repeats it (or snd_service) until 0. */
 #define SND_NEED_MORE 1u
 
-/* Notes C-0..B-7 as snd_note_t values (0 = C-0, 95 = B-7). */
-#define SND_C0 0u
-#define SND_C4 48u
-#define SND_C8 96u
-#define SND_CS0 1u
-#define SND_D0 2u
-#define SND_DS0 3u
-#define SND_E0 4u
-#define SND_F0 5u
-#define SND_FS0 6u
-#define SND_G0 7u
-#define SND_GS0 8u
-#define SND_A0 9u
-#define SND_AS0 10u
-#define SND_B0 11u
-#define SND_C1 12u
-#define SND_CS1 13u
-#define SND_D1 14u
-#define SND_DS1 15u
-#define SND_E1 16u
-#define SND_F1 17u
-#define SND_FS1 18u
-#define SND_G1 19u
-#define SND_GS1 20u
-#define SND_A1 21u
-#define SND_AS1 22u
-#define SND_B1 23u
-#define SND_C2 24u
-#define SND_CS2 25u
-#define SND_D2 26u
-#define SND_DS2 27u
-#define SND_E2 28u
-#define SND_F2 29u
-#define SND_FS2 30u
-#define SND_G2 31u
-#define SND_GS2 32u
-#define SND_A2 33u
-#define SND_AS2 34u
-#define SND_B2 35u
-#define SND_C3 36u
-#define SND_CS3 37u
-#define SND_D3 38u
-#define SND_DS3 39u
-#define SND_E3 40u
-#define SND_F3 41u
-#define SND_FS3 42u
-#define SND_G3 43u
-#define SND_GS3 44u
-#define SND_A3 45u
-#define SND_AS3 46u
-#define SND_B3 47u
-#define SND_CS4 49u
-#define SND_D4 50u
-#define SND_DS4 51u
-#define SND_E4 52u
-#define SND_F4 53u
-#define SND_FS4 54u
-#define SND_G4 55u
-#define SND_GS4 56u
-#define SND_A4 57u
-#define SND_AS4 58u
-#define SND_B4 59u
-#define SND_C5 60u
-#define SND_CS5 61u
-#define SND_D5 62u
-#define SND_DS5 63u
-#define SND_E5 64u
-#define SND_F5 65u
-#define SND_FS5 66u
-#define SND_G5 67u
-#define SND_GS5 68u
-#define SND_A5 69u
-#define SND_AS5 70u
-#define SND_B5 71u
-#define SND_C6 72u
-#define SND_CS6 73u
-#define SND_D6 74u
-#define SND_DS6 75u
-#define SND_E6 76u
-#define SND_F6 77u
-#define SND_FS6 78u
-#define SND_G6 79u
-#define SND_GS6 80u
-#define SND_A6 81u
-#define SND_AS6 82u
-#define SND_B6 83u
-#define SND_C7 84u
-#define SND_CS7 85u
-#define SND_D7 86u
-#define SND_DS7 87u
-#define SND_E7 88u
-#define SND_F7 89u
-#define SND_FS7 90u
-#define SND_G7 91u
-#define SND_GS7 92u
-#define SND_A7 93u
-#define SND_AS7 94u
-#define SND_B7 95u
+/* snd_note_t values: index n sounds 440 * 2^((n - 48) / 12) Hz, so
+ * 0 = A0, 39 = C4, 48 = A4 and 95 = GS8 (S is a sharp).  The 10-bit
+ * divisor cannot reach below 109 Hz: indices 0-23 (A0-GS2) all play
+ * divisor 1023.  A table passed to snd_set_note_table is indexed the
+ * same way. */
+#define SND_A0 0u
+#define SND_AS0 1u
+#define SND_B0 2u
+#define SND_C1 3u
+#define SND_CS1 4u
+#define SND_D1 5u
+#define SND_DS1 6u
+#define SND_E1 7u
+#define SND_F1 8u
+#define SND_FS1 9u
+#define SND_G1 10u
+#define SND_GS1 11u
+#define SND_A1 12u
+#define SND_AS1 13u
+#define SND_B1 14u
+#define SND_C2 15u
+#define SND_CS2 16u
+#define SND_D2 17u
+#define SND_DS2 18u
+#define SND_E2 19u
+#define SND_F2 20u
+#define SND_FS2 21u
+#define SND_G2 22u
+#define SND_GS2 23u
+#define SND_A2 24u
+#define SND_AS2 25u
+#define SND_B2 26u
+#define SND_C3 27u
+#define SND_CS3 28u
+#define SND_D3 29u
+#define SND_DS3 30u
+#define SND_E3 31u
+#define SND_F3 32u
+#define SND_FS3 33u
+#define SND_G3 34u
+#define SND_GS3 35u
+#define SND_A3 36u
+#define SND_AS3 37u
+#define SND_B3 38u
+#define SND_C4 39u
+#define SND_CS4 40u
+#define SND_D4 41u
+#define SND_DS4 42u
+#define SND_E4 43u
+#define SND_F4 44u
+#define SND_FS4 45u
+#define SND_G4 46u
+#define SND_GS4 47u
+#define SND_A4 48u
+#define SND_AS4 49u
+#define SND_B4 50u
+#define SND_C5 51u
+#define SND_CS5 52u
+#define SND_D5 53u
+#define SND_DS5 54u
+#define SND_E5 55u
+#define SND_F5 56u
+#define SND_FS5 57u
+#define SND_G5 58u
+#define SND_GS5 59u
+#define SND_A5 60u
+#define SND_AS5 61u
+#define SND_B5 62u
+#define SND_C6 63u
+#define SND_CS6 64u
+#define SND_D6 65u
+#define SND_DS6 66u
+#define SND_E6 67u
+#define SND_F6 68u
+#define SND_FS6 69u
+#define SND_G6 70u
+#define SND_GS6 71u
+#define SND_A6 72u
+#define SND_AS6 73u
+#define SND_B6 74u
+#define SND_C7 75u
+#define SND_CS7 76u
+#define SND_D7 77u
+#define SND_DS7 78u
+#define SND_E7 79u
+#define SND_F7 80u
+#define SND_FS7 81u
+#define SND_G7 82u
+#define SND_GS7 83u
+#define SND_A7 84u
+#define SND_AS7 85u
+#define SND_B7 86u
+#define SND_C8 87u
+#define SND_CS8 88u
+#define SND_D8 89u
+#define SND_DS8 90u
+#define SND_E8 91u
+#define SND_F8 92u
+#define SND_FS8 93u
+#define SND_G8 94u
+#define SND_GS8 95u
 
 /* Instrument kinds. */
 #define SND_INSTR_TONE  0u
@@ -220,7 +223,8 @@ int snd_tick_ztr(uint16_t elapsed_ticks);
 int snd_ztr_service(void);
 
 /* Supply a 96-entry divisor table for a card whose clock the built-in
- * A440 table does not match.  Pass 0 to go back to the built-in table. */
+ * A440 table does not match, indexed like the built-in table (SND_A4 is
+ * index 48).  Pass 0 to go back to the built-in table. */
 int snd_set_note_table(const uint16_t *divisors);
 
 /* --- manual music ------------------------------------------------------ */

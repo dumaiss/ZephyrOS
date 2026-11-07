@@ -14,6 +14,8 @@ The emulator is a separate tool: this helper looks for it only when it
 runs, and names what is missing (the binary, the image, the plugin).  The
 plugin ships with the emulator, in the `plugins/` directory beside the
 MAME binary; `--plugins` names another directory holding `konaos/`.
+`--mame` may name the emulator bundle's directory instead of a binary: its
+`mamepbitz`, `plugins/` and `konaos.bin` are then the defaults.
 
 Usage:
     exerun.py --exe build/user/NAME.exe --card DIR --rundir DIR
@@ -84,8 +86,15 @@ def staging(program, assets):
     return plan
 
 
+BUNDLE_MAME = "mamepbitz"
+BUNDLE_FLASH = "konaos.bin"
+
+
 def find_mame(mame):
-    """The emulator binary: a path, or a name looked up on PATH."""
+    """The emulator binary: a path, a name looked up on PATH, or an
+    emulator bundle's directory (its `mamepbitz`)."""
+    if os.path.isdir(mame):
+        mame = os.path.join(mame, BUNDLE_MAME)
     if os.sep in mame or (os.altsep and os.altsep in mame):
         path = Path(mame)
         if path.is_file() and os.access(path, os.X_OK):
@@ -97,7 +106,7 @@ def find_mame(mame):
     raise RunError(
         "the emulator %r is not found: set KOS_MAME to the zephyr80 MAME "
         "binary (built in the Zephyr-80 checkout's Code/MODERN/Emulator/mame "
-        "with `make SUBTARGET=pbitz`)" % mame)
+        "with `make SUBTARGET=pbitz`), or to the emulator bundle's directory" % mame)
 
 
 def find_plugins(mame, plugins):
@@ -139,9 +148,11 @@ def main(argv):
 
     try:
         plan = staging(args.exe, [a for a in args.asset if a])
-        if not args.flash:
+        bundle = Path(args.mame) if args.mame and os.path.isdir(args.mame) else None
+        flash_name = args.flash or (str(bundle / BUNDLE_FLASH) if bundle else "")
+        if not flash_name:
             raise RunError("set KOS_FLASH to the KonaOS flash image to run (konaos.bin)")
-        flash = Path(args.flash)
+        flash = Path(flash_name)
         if not flash.is_file():
             raise RunError("the flash image %s is missing" % flash)
         mame = find_mame(args.mame or "mamepbitz")

@@ -711,9 +711,10 @@ The board's two controller latches, published as `/dev/input/joy/0`
 (class 12, protocol type `JOY`).  The IO controller decodes each USB pad
 (a Logitech F310 in DirectInput mode) into a ColecoVision controller
 byte and shifts it into a pair of 74AHC595 latches; pad 0 is the first
-pad mounted.  The Z80 reads them with `IN` in `E0h-FFh`, where A1
-selects the latch: `FCh` is pad 0 and `FFh` pad 1, the ColecoVision
-decode.  The block's writes are the sound card's (section 10), so the
+pad mounted.  The Z80 reads them with `IN` in `E0h-FFh`.  The IO
+board's U6 74HC138 wires only A0 (A1 and A2 are tied low), so an even
+port selects pad 0 and an odd port pad 1: `FCh` is pad 0 and `FFh`
+pad 1.  The block's writes are the sound card's (section 10), so the
 two drivers share the block by direction.
 
 - The byte is delivered exactly as the controller set it, active low: D0

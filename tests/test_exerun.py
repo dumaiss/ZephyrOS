@@ -6,7 +6,9 @@
   name refused;
 * the inputs a run needs are reported by name and nothing is staged or
   started without them: the flash image, the MAME binary (a path, or a
-  name on PATH), the konaos plugin beside it or in KOS_MAME_PLUGINS.
+  name on PATH), the konaos plugin beside it or in KOS_MAME_PLUGINS;
+* an emulator bundle's directory as the emulator: its `mamepbitz`, `plugins/`
+  and `konaos.bin` need no other setting.
 """
 
 import os
@@ -91,6 +93,32 @@ class TestInputs(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertIn("konaos MAME plugin is not in", err)
             self.assertFalse(card.exists(), "a refused run staged files")
+
+    def test_a_bundle_directory_is_the_whole_emulator(self):
+        with tempfile.TemporaryDirectory(prefix="exe run ") as tmp:
+            tmp = Path(tmp)
+            exe = tmp / "hello.exe"
+            exe.write_bytes(b"x")
+            bundle = tmp / "emulator bundle"
+            (bundle / "plugins/konaos").mkdir(parents=True)
+            (bundle / "plugins/konaos/init.lua").write_text("")
+            (bundle / "konaos.bin").write_bytes(b"\xff")
+            common = ["--exe", str(exe), "--card", str(tmp / "the card"), "--rundir", str(tmp / "run"),
+                      "--mame", str(bundle)]
+            code, err = self.run_main(*common)
+            self.assertEqual(code, 2)
+            self.assertIn("is not found", err)
+            mame = bundle / "mamepbitz"
+            mame.write_text("#!/bin/sh\nexit 0\n")
+            mame.chmod(0o755)
+            code, err = self.run_main(*common)
+            self.assertEqual(code, 0, err)
+            self.assertTrue((tmp / "the card/HELLO.EXE").is_file())
+            self.assertTrue((tmp / "run/session").is_file())
+            (bundle / "konaos.bin").unlink()
+            code, err = self.run_main(*common)
+            self.assertEqual(code, 2)
+            self.assertIn("konaos.bin is missing", err)
 
 
 if __name__ == "__main__":

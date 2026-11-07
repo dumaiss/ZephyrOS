@@ -253,7 +253,7 @@ There is no public ZTR encoder/editor API in `libsnd` v1. The tracker may contin
  * 3,7,11,15 are the matching PSG noise voices. */
 
 typedef uint8_t snd_voice_t;
-typedef uint8_t snd_note_t;            /* 0=C-0 ... 95=B-7 */
+typedef uint8_t snd_note_t;            /* 0=A0 ... 95=G#8; 48=A4 */
 
 typedef struct snd_instrument_simple {
     uint8_t kind;                     /* TONE or NOISE */
@@ -280,7 +280,7 @@ int snd_set_noise(snd_voice_t noise_voice, uint8_t mode, uint8_t rate);
 - **Compiled, not interpreted.** `snd_note_on`/`snd_note_for`/`snd_note_off` compile, in C at the call, the note and its instrument's envelope into a **voice program**: a byte sequence of pre-computed register values and waits.  The opcodes are `PERIOD p` (3 bytes, the 10-bit divisor), `ATTEN level` (2 bytes, a linear 0-255 level the engine maps through the level table to the SN76489 attenuation), `NOISE control` (2 bytes, written with the forced-control rule), `WAIT8 n` / `WAIT16 n`, and `END`.  A **WAIT ends one logical voice tick**. A coalesced call consumes further waits, up to the 16-tick cap, but commits only the last state reached for each register. An envelope ramp becomes at most one `WAIT`/`ATTEN` pair per level change, so a program is bounded by the 16 hardware levels, not by its length in ticks; the worst program fits the documented 86-byte buffer. The assembly engine walks sixteen 16-byte descriptors in voice order, in one 256-byte-aligned page reached with `L` arithmetic (no IX/IY); the next page is a copy of the level table, so a level's attenuation is one indexed load. Each descriptor holds the flags (zero for a voice with nothing to do), cursor, wait, the current level, the attenuation desired/shadow/latch and port bytes in write order, and precomputed desired/shadow pointers for the period pair or noise byte, so no run/wait list or per-opcode voice-index arithmetic is needed. The walk records the earliest wait; ticks before it only accumulate. `snd_tick` advances each voice by at most `SND_TICK_CATCHUP_MAX` (16) ticks per call; excess counts in `snd_overruns` and is never replayed.
 - Manual instruments are **basic**: level, gate, optional ADSR or one-shot-like release, tone/noise selection. No arbitrary macro engine, scene system, or orchestrator in this path.
 - Limit the registry to a small fixed number of instruments (e.g. 8), controlled by compile-time configuration and documented RAM usage. `snd_define_instrument` copies one small description into local state.
-- For manual pitches, use a **precomputed A440/3,579,545-Hz 96-entry divider table** (no runtime floating point). Check the actual `sound_info` clock against supported tables; reject unknown clocks unless the application supplies a correct table. ZTR always uses its *embedded* divider table.
+- For manual pitches, use a **precomputed A440/3,579,545-Hz 96-entry divider table** (no runtime floating point), indexed so that note `n` sounds `440 * 2^((n-48)/12)` Hz: `SND_A0` is 0, `SND_C4` 39, `SND_A4` 48 and `SND_GS8` 95 (the `SND_*` names in `kos/snd.h`; `S` is a sharp). The 10-bit divisor cannot go below about 109 Hz, so notes 0-23 all play divisor 1023. Check the actual `sound_info` clock against supported tables; reject unknown clocks unless the application supplies a correct table (`snd_set_note_table`, indexed the same way). ZTR always uses its *embedded* divider table and numbers its own notes from C-0 (0 = C-0, 95 = B-7); the `SND_*` names do not apply to ZTR note numbers.
 - Distinguish user-facing linear level `0..255` from ZTR's macro volume `0..15` (0 silent, 15 loudest) and the SN76489 attenuation register (inverted). One output stage converts both paths to SN values, keeping ZTR's existing loudness mapping authoritative.
 - A noise channel is not a pitched voice: manual `snd_note_on` targets tone voices only. `snd_set_noise` configures the appropriate noise voice; the SDK may provide a separate `snd_noise_trigger` with duration and instrument in a later incremental step.
 - Noise rate 3 uses the corresponding tone2 period. Reject channel conflicts instead of silently altering an occupied tone2 voice.
@@ -294,7 +294,7 @@ A tiny optional phrase helper makes short melodies possible without becoming CSM
 /* Caller-owned event array; no heap. Names/signatures provisional. */
 typedef struct snd_phrase_event {
     uint8_t  kind;                   /* NOTE or REST */
-    uint8_t  note;                   /* C-0..B-7 index */
+    uint8_t  note;                   /* A0..G#8 index */
     uint16_t duration_ticks;
 } snd_phrase_event_t;
 
@@ -308,7 +308,7 @@ int snd_phrase_stop(snd_voice_t voice);
 
 `snd_phrase_parse` produces the event array once; `snd_phrase_start` compiles it with the instrument into the voice program in a caller-owned buffer (`snd_phrase_compile` reports the size needed), so the tick engine plays a phrase exactly as it plays one note.
 
-Accept only space-separated `pitch`, `pitch@ticks`, and `~` / `~@ticks`; optional `|` is a visually convenient separator with **no bar or meter semantics**. Pitch names are lowercase `c d e f g a b`, an optional `#` or `b`, and octave `0..7`, where `c4` indexes note 48. Example: `"| c4 d4 e4 ~ | g4@12 e4 c4 |"` (with explicit default ticks passed by caller). Strictly reject unknown tokens, duration overflow and out-of-range pitches. Parse **once** in the foreground into a caller-owned array; ticks consume only the prepared events.
+Accept only space-separated `pitch`, `pitch@ticks`, and `~` / `~@ticks`; optional `|` is a visually convenient separator with **no bar or meter semantics**. Pitch names are lowercase `c d e f g a b`, an optional `#` or `b`, and octave `0..8`, where `c4` indexes note 39 (`SND_C4`) and `a4` note 48 (`SND_A4`). Example: `"| c4 d4 e4 ~ | g4@12 e4 c4 |"` (with explicit default ticks passed by caller). Strictly reject unknown tokens, duration overflow and out-of-range pitches. Parse **once** in the foreground into a caller-owned array; ticks consume only the prepared events.
 
 Do **not** support CSM declarations, nested subdivisions, role slots, patterns, references, tie/legato syntax, modifiers (`^`, `<`, `>`, `=`), scenes, orchestras, forms, or arbitrary instrument macros here. If a song needs those, author it as CSM/ZTR.
 

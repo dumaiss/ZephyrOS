@@ -36,7 +36,8 @@ KOS_SOUND_PSG3_PORT     = 0xE3
 KOS_SOUND_DAC_PORT      = 0xE4
 KOS_SOUND_PSG_COUNT     = 4
 KOS_SOUND_PSG_CLOCK_HZ  = 3579545
-; --- the controller latches: reads in E0h-FFh, A1 selects (FCh pad 0,
+; --- the controller latches: reads in E0h-FFh; U6 (74HC138) wires only
+;     A0, so an even port is pad 0 and an odd port pad 1 (FCh pad 0,
 ;     FFh pad 1) ---
 KOS_JOY0_PORT           = 0xFC
 KOS_JOY1_PORT           = 0xFF

@@ -73,11 +73,11 @@ int main(int argc, char **argv)
 	const char *file = "/system/hello.exe";
 	const char *directory = "/system";
 
-	if (argc > 1 && argv[1] != (char *)0) {
-		file = argv[1];
+	if (argc > 0 && argv[0] != (char *)0) {
+		file = argv[0];
 	}
-	if (argc > 2 && argv[2] != (char *)0) {
-		directory = argv[2];
+	if (argc > 1 && argv[1] != (char *)0) {
+		directory = argv[1];
 	}
 	if (read_head(file) < 0) {
 		return 1;
