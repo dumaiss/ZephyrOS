@@ -322,8 +322,12 @@ the shown page right after `gfx_wait_vblank()` instead.
 Pictures come prepared: the
 KIMG v1 format (`kos/kimg.h`) carries a header, an optional palette and
 the payload in the mode's packing, `tools/kimg.py` converts
-PNG/JPEG to it on the host, and `pview.exe` (UserSoftware/PView)
+PNG/JPEG to it on the host (with Pillow), or wraps already encoded G6/G7/YJK
+bytes with `kimg.py pack` (no Pillow), and `pview.exe` (UserSoftware/PView)
 displays a picture file; the design is gfx-sdk.md sections 10-17.
+`convert` optionally selects nearest/box/Lanczos resampling, unsharp masking,
+and an optimized YJK chroma/luminance search. Defaults remain nearest, no
+sharpening and fast YJK; quality options do not change KIMG v1 or `pack`.
 `gfxdemo.exe` (UserSoftware/GfxDemo) is the whole surface in one
 picture - clear, bars, copied fills, text in two colour pairs and an
 application glyph drawn, restored and drawn again (gfx-sdk.md
@@ -1309,7 +1313,7 @@ kos-sdk-<version>/
                    crt0.rel
   tools/           exepack.py, exemanifest.py, exeplace.py, ihx.py,
                    exerun.py (Python standard library only), kimg.py
-                   (Pillow: the KIMG converter)
+                   (Pillow for convert; pack needs only the standard library)
   mk/kos.mk        the program rule
   template/        Makefile and hello.c
   examples/        hello, fardemo, fardata, files, tui_demo, tui_keys,

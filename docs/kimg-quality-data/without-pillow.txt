@@ -1,0 +1,28 @@
+test_bad_geometry_refuses (test_kimg.KimgConverterTests.test_bad_geometry_refuses) ... skipped 'Pillow is required (pip install Pillow)'
+test_conversion_is_deterministic (test_kimg.KimgConverterTests.test_conversion_is_deterministic) ... skipped 'Pillow is required (pip install Pillow)'
+test_g6_palette_and_packed_indices (test_kimg.KimgConverterTests.test_g6_palette_and_packed_indices) ... skipped 'Pillow is required (pip install Pillow)'
+test_g7_payload_is_the_chip_grb_byte (test_kimg.KimgConverterTests.test_g7_payload_is_the_chip_grb_byte) ... skipped 'Pillow is required (pip install Pillow)'
+test_info_subcommand (test_kimg.KimgConverterTests.test_info_subcommand) ... skipped 'Pillow is required (pip install Pillow)'
+test_yjk_picture_round_trip (test_kimg.KimgConverterTests.test_yjk_picture_round_trip)
+A picture whose colour changes inside the four-pixel runs: ... skipped 'Pillow is required (pip install Pillow)'
+test_yjk_solid_colours_show_their_colour (test_kimg.KimgConverterTests.test_yjk_solid_colours_show_their_colour)
+Each colour, encoded and decoded as the chip decodes it, ... skipped 'Pillow is required (pip install Pillow)'
+test_yjk_width_is_a_multiple_of_four (test_kimg.KimgConverterTests.test_yjk_width_is_a_multiple_of_four) ... skipped 'Pillow is required (pip install Pillow)'
+test_fixtures_match_the_format (test_kimg.KimgHostTests.test_fixtures_match_the_format) ... ok
+test_header_layout_and_constants (test_kimg.KimgHostTests.test_header_layout_and_constants) ... ok
+test_default_output_matches_prechange (test_kimg.KimgQualityTests.test_default_output_matches_prechange) ... skipped 'Pillow required for image conversion'
+test_optimized_rgb_rounding_and_cli (test_kimg.KimgQualityTests.test_optimized_rgb_rounding_and_cli) ... skipped 'Pillow required for image conversion'
+test_representative_fixture_comparison (test_kimg.KimgQualityTests.test_representative_fixture_comparison) ... skipped 'Pillow required for image conversion'
+test_resampling_every_mode_and_native_size_bypass (test_kimg.KimgQualityTests.test_resampling_every_mode_and_native_size_bypass) ... skipped 'Pillow required for image conversion'
+test_sharpen_after_resize_with_configured_values (test_kimg.KimgQualityTests.test_sharpen_after_resize_with_configured_values) ... skipped 'Pillow required for image conversion'
+test_pack_info_and_help_without_pillow (test_kimg.KimgRawTests.test_pack_info_and_help_without_pillow) ... ok
+test_pack_is_lossless_in_every_mode (test_kimg.KimgRawTests.test_pack_is_lossless_in_every_mode) ... ok
+test_palette_and_invalid_inputs (test_kimg.KimgRawTests.test_palette_and_invalid_inputs) ... ok
+test_decoder_preserves_blue_floor_and_clamping (test_kimg.KimgYjkSearchTests.test_decoder_preserves_blue_floor_and_clamping) ... ok
+test_exhaustive_oracle_and_ties (test_kimg.KimgYjkSearchTests.test_exhaustive_oracle_and_ties) ... ok
+test_signed_packing_and_no_regression_on_identical_rgb555 (test_kimg.KimgYjkSearchTests.test_signed_packing_and_no_regression_on_identical_rgb555) ... ok
+
+----------------------------------------------------------------------
+Ran 21 tests in 0.352s
+
+OK (skipped=13)

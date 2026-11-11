@@ -1,0 +1,71 @@
+{
+  "python": "3.14.4",
+  "platform": "Linux-7.0.0-42-generic-x86_64-with-glibc2.43",
+  "pillow": "12.1.1",
+  "size": [
+    256,
+    212
+  ],
+  "resample": "box",
+  "sharpen": false,
+  "timing": "One cold-cache wall-time sample per quality; includes source read, crop/resize, optional sharpen, encoding and output write. No previews/scoring.",
+  "error_reference": "Identical preprocessed RGB888 scaled to RGB555 by nearest (value*31+127)//255, also reporting legacy >>3 reference. Measured comparisons, not a general RGB888 non-regression guarantee.",
+  "fixtures": {
+    "parrot": {
+      "source_size": [
+        120,
+        160
+      ],
+      "source_rgb_sha256": "9924dd9c5888d3a4fc91cbdde60ce5f3a268b821d419dc54fb3f783a37bfcb41",
+      "results": {
+        "fast": {
+          "conversion_seconds": 0.19545352703426033,
+          "file_bytes": 54288,
+          "payload_bytes": 54272,
+          "rgb555_rounded_sse": 154559,
+          "rgb555_rounded_mse_per_component": 0.9492863109276729,
+          "rgb555_truncated_sse": 123238,
+          "output_sha256": "a857d9a404d787f4d3bf3a65dc9ed40b462ec56aa427dc3f1b0ef42525fc6f73"
+        },
+        "optimized": {
+          "conversion_seconds": 1.4918306010076776,
+          "file_bytes": 54288,
+          "payload_bytes": 54272,
+          "rgb555_rounded_sse": 109360,
+          "rgb555_rounded_mse_per_component": 0.6716784591194969,
+          "rgb555_truncated_sse": 143725,
+          "output_sha256": "82f2c882b07965f19446fcfdf98e6eb660e3543d03f1ca85cf39c3f0d05a7ff2"
+        },
+        "sse_reduction_percent": 29.243848627385017
+      }
+    },
+    "gradient-type": {
+      "source_size": [
+        1280,
+        1060
+      ],
+      "source_rgb_sha256": "bf00b3f6c13cbd04cc6c930108189af0417655be9b1f442e60dd39a0dfcc17d8",
+      "results": {
+        "fast": {
+          "conversion_seconds": 0.21238874993287027,
+          "file_bytes": 54288,
+          "payload_bytes": 54272,
+          "rgb555_rounded_sse": 873353,
+          "rgb555_rounded_mse_per_component": 5.364048987814465,
+          "rgb555_truncated_sse": 886713,
+          "output_sha256": "9557480aa0ad0554b66c054832f8b86287c11606384a1e205264ed69ead53f02"
+        },
+        "optimized": {
+          "conversion_seconds": 1.188680762075819,
+          "file_bytes": 54288,
+          "payload_bytes": 54272,
+          "rgb555_rounded_sse": 824042,
+          "rgb555_rounded_mse_per_component": 5.061185632861635,
+          "rgb555_truncated_sse": 863772,
+          "output_sha256": "7df34975c455aa896d42bca22c047ddda1a431c5133c1518edbc78d77ea61fd6"
+        },
+        "sse_reduction_percent": 5.646170563334641
+      }
+    }
+  }
+}

@@ -11,11 +11,14 @@ too, so a regeneration that drifts from the format fails the suite.
 """
 
 import os
+import hashlib
+import random
 import struct
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -249,6 +252,238 @@ class KimgConverterTests(unittest.TestCase):
                                  check=True)
             self.assertIn("KIMG v1 mode=g7 flags=0 palette=0 8x4 "
                           "payload=32", run.stdout)
+
+
+class KimgRawTests(unittest.TestCase):
+    def test_pack_is_lossless_in_every_mode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for mode, count in (("g6", 16), ("g7", 32), ("yjk", 32)):
+                source = os.path.join(directory, "raw." + mode)
+                output = os.path.join(directory, "out.img")
+                payload = bytes((i * 47) & 255 for i in range(count))
+                with open(source, "wb") as stream:
+                    stream.write(payload)
+                with mock.patch.object(kimg, "Image", None):
+                    kimg.pack(source, output, mode, (8, 4))
+                header = parse_header(output)
+                self.assertEqual(header['payload'], payload)
+                self.assertEqual(header['mode'], kimg.MODES[mode][0])
+                self.assertEqual(header['payload_size'], count)
+                self.assertEqual(header['palette_count'], 0)
+
+    def test_palette_and_invalid_inputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = os.path.join(directory, "raw")
+            palette = os.path.join(directory, "palette")
+            output = os.path.join(directory, "out.img")
+            with open(source, "wb") as stream:
+                stream.write(bytes(range(16)))
+            with open(palette, "wb") as stream:
+                stream.write(bytes(range(48)))
+            kimg.pack(source, output, 'g6', (8, 4), palette)
+            self.assertEqual(parse_header(output)['palette'], bytes(range(48)))
+            for mode, size, pal in [('g6', (7, 4), None), ('g6', (8, 5), None),
+                                    ('g7', (8, 4), palette), ('yjk', (6, 4), None),
+                                    ('g7', (256, 213), None)]:
+                with self.subTest(mode=mode, size=size), self.assertRaises(SystemExit):
+                    kimg.pack(source, output, mode, size, pal)
+            with open(palette, 'wb') as stream:
+                stream.write(bytes(32))  # VDP palette dump is not RGB888.
+            with self.assertRaises(SystemExit):
+                kimg.pack(source, output, 'g6', (8, 4), palette)
+
+    def test_pack_info_and_help_without_pillow(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = os.path.join(directory, "raw")
+            output = os.path.join(directory, "out.img")
+            with open(source, 'wb') as stream:
+                stream.write(bytes(range(32)))
+            # -S genuinely removes site-packages, including Pillow. The
+            # library Image=None check alone would not cover import/CLI use.
+            command = [sys.executable, '-S', os.path.join(ROOT, 'tools/kimg.py')]
+            subprocess.run(command + ['pack', source, output, '--mode', 'yjk',
+                                      '--size', '8x4'], check=True, capture_output=True)
+            run = subprocess.run(command + ['info', output], check=True,
+                                 capture_output=True, text=True)
+            self.assertIn('mode=yjk', run.stdout)
+            run = subprocess.run(command + ['convert', '--help'], check=True,
+                                 capture_output=True, text=True)
+            self.assertIn('--yjk-quality', run.stdout)
+            run = subprocess.run(command + ['pack', source, output, '--mode', 'yjk',
+                                  '--sharpen'], capture_output=True)
+            self.assertNotEqual(run.returncode, 0)
+
+
+class KimgYjkSearchTests(unittest.TestCase):
+    def test_decoder_preserves_blue_floor_and_clamping(self):
+        self.assertEqual(kimg.yjk_decode(1, 0, 0), (1, 1, 1))
+        self.assertEqual(kimg.yjk_decode(1, -1, 0), (0, 1, 1))  # 7 // 4
+        self.assertEqual(kimg.yjk_decode(0, 31, 31), (31, 31, 0))
+        self.assertEqual(kimg.yjk_decode(31, -32, -32), (0, 0, 31))
+        for j in range(-32, 32):
+            for k in range(-32, 32):
+                for y in range(32):
+                    clamp = lambda c: max(0, min(31, c))
+                    self.assertEqual(kimg.yjk_decode(y, j, k),
+                        (clamp(y+j), clamp(y+k), clamp((5*y-2*j-k)//4)))
+
+    def test_signed_packing_and_no_regression_on_identical_rgb555(self):
+        rng = random.Random(9958)
+        groups = [[colour] * 4 for colour in
+                  [(31, 0, 0), (0, 31, 0), (0, 0, 31), (0, 0, 0), (31, 31, 31)]]
+        groups += [[tuple(rng.randrange(32) for _ in range(3)) for _ in range(4)]
+                   for _ in range(80)]
+        signs = set()
+        for pixels in groups:
+            encoded = kimg._yjk_run_optimized(pixels)
+            self.assertEqual(len(encoded), 4)
+            self.assertEqual(encoded, kimg._yjk_run_optimized(pixels))
+            j = (encoded[2] & 7) | ((encoded[3] & 7) << 3)
+            k = (encoded[0] & 7) | ((encoded[1] & 7) << 3)
+            j = j - 64 if j >= 32 else j
+            k = k - 64 if k >= 32 else k
+            signs.add((j < 0, k < 0))
+            self.assertTrue(-32 <= j <= 31 and -32 <= k <= 31)
+            self.assertEqual(decode_yjk(encoded, 4),
+                [kimg.yjk_decode(byte >> 3, j, k) for byte in encoded])
+            def error(payload):
+                return sum((a-b)**2 for p, q in zip(pixels, decode_yjk(payload, 4))
+                           for a, b in zip(p, q))
+            self.assertLessEqual(error(encoded), error(kimg._yjk_run(pixels)))
+        self.assertEqual(signs, {(False, False), (False, True), (True, False), (True, True)})
+
+    def test_exhaustive_oracle_and_ties(self):
+        # Independent scalar oracle pins candidate bounds, global group
+        # minimum and lexicographic ties, not just a weaker SSE comparison.
+        for pixels in [[(0, 0, 0)] * 4, [(31, 0, 0)] * 4,
+                       [(2, 30, 5), (31, 1, 24), (0, 14, 31), (29, 20, 1)]]:
+            r, g, b = (sum(p[c] for p in pixels) / 4 for c in range(3))
+            y = b / 2 + r / 4 + g / 8
+            j0, k0 = max(-32, min(31, round(r-y))), max(-32, min(31, round(g-y)))
+            choices = []
+            for j in range(max(-32, j0-3), min(31, j0+3)+1):
+                for k in range(max(-32, k0-3), min(31, k0+3)+1):
+                    ys, errors = [], []
+                    for pixel in pixels:
+                        error, luminance = min((sum((a-b)**2 for a,b in
+                            zip(pixel, kimg.yjk_decode(y,j,k))), y) for y in range(32))
+                        ys.append(luminance); errors.append(error)
+                    choices.append((sum(errors), j, k, ys))
+            _, j, k, ys = min(choices)
+            lows = [k & 7, (k >> 3) & 7, j & 7, (j >> 3) & 7]
+            expected = bytes((y << 3) | low for y, low in zip(ys, lows))
+            self.assertEqual(kimg._yjk_run_optimized(pixels), expected)
+
+
+@unittest.skipUnless(HAVE_PILLOW, "Pillow required for image conversion")
+class KimgQualityTests(unittest.TestCase):
+    def pattern(self, size=(23, 17)):
+        image = Image.new('RGB', size)
+        image.putdata([((x*37+y*19)%256, (x*11+y*43)%256, (x*61+y*7)%256)
+                       for y in range(size[1]) for x in range(size[0])])
+        return image
+
+    def test_default_output_matches_prechange(self):
+        # Captured before quality-option changes, Pillow 12.1.1. G7/YJK
+        # use no adaptive palette; G6 uses the same quantizer across versions
+        # and its exact pinned hash is checked on the capture's Pillow version.
+        hashes = {'g6': '06d5f948fe1e648dcdd271276b512d916bbc1d370e2e63e1e3bbd49718ad4dd7',
+                  'g7': '4fed012945f2c9fdc301e4e7202aba64a229c70d813703b341bbb0ca40285428',
+                  'yjk': 'c4eb2c0045012ef59405c41e137ce56c4e9bb12bc933f8dcff10a9b65ee4c8ab'}
+        with tempfile.TemporaryDirectory() as directory:
+            source, output = os.path.join(directory, 'source.png'), os.path.join(directory, 'o.img')
+            self.pattern().save(source)
+            # Old 23x17 -> 16x8 crop, followed unconditionally by NEAREST.
+            fitted = self.pattern().crop((0, 3, 23, 14)).resize((16, 8), Image.Resampling.NEAREST)
+            for mode in kimg.MODES:
+                kimg.convert(source, output, mode, (16, 8))
+                with open(output, 'rb') as stream:
+                    data = stream.read()
+                if mode != 'g6' or Image.__version__ == '12.1.1':
+                    self.assertEqual(hashlib.sha256(data).hexdigest(), hashes[mode])
+                palette, payload = kimg.PACKERS[mode](fitted, (16, 8))
+                self.assertEqual(parse_header(output)['payload'], payload)
+                self.assertEqual(parse_header(output)['palette'], bytes(palette))
+                kimg.convert(source, output, mode, (16, 8), resample='nearest',
+                             sharpen=False, yjk_quality='fast')
+                with open(output, 'rb') as stream:
+                    self.assertEqual(stream.read(), data)
+
+    def test_resampling_every_mode_and_native_size_bypass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, output = os.path.join(directory,'source.png'), os.path.join(directory,'out.img')
+            self.pattern().save(source)
+            for mode in kimg.MODES:
+                for resample in ('nearest', 'box', 'lanczos'):
+                    kimg.convert(source, output, mode, (16, 8), resample=resample)
+                    header = parse_header(output)
+                    self.assertEqual((header['width'],header['height']), (16,8))
+                    self.assertEqual(len(header['payload']), 64 if mode == 'g6' else 128)
+            native = self.pattern((16, 8))
+            with mock.patch.object(Image.Image, 'resize', side_effect=AssertionError('resize called')):
+                for resample in ('nearest','box','lanczos'):
+                    self.assertIs(kimg._fit(native, (16,8), resample), native)
+                    self.assertEqual(kimg._fit(self.pattern((16,10)), (16,8), resample).size, (16,8))
+            actual = [kimg._fit(self.pattern(), (16,8), name).tobytes()
+                      for name in ('nearest','box','lanczos')]
+            self.assertEqual(len(set(actual)), 3)
+
+    def test_sharpen_after_resize_with_configured_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, output = os.path.join(directory,'source.png'), os.path.join(directory,'out.img')
+            image = self.pattern(); image.save(source)
+            expected = kimg._fit(image,(16,8),'lanczos').filter(
+                kimg.ImageFilter.UnsharpMask(radius=1.1, percent=150, threshold=3))
+            kimg.convert(source, output, 'g7', (16,8), resample='lanczos',
+                         sharpen=True, sharpen_radius=1.1, sharpen_percent=150, sharpen_threshold=3)
+            self.assertEqual(parse_header(output)['payload'], kimg._pack_g7(expected,(16,8))[1])
+            with mock.patch.object(kimg.ImageFilter, 'UnsharpMask', side_effect=AssertionError):
+                kimg.convert(source, output, 'g7', (16,8))
+            for options in [dict(sharpen_radius=-1), dict(sharpen_radius=float('nan')),
+                            dict(sharpen_percent=-1), dict(sharpen_threshold=256)]:
+                with self.assertRaises(SystemExit):
+                    kimg.convert(source, output, 'yjk', (16,8), **options)
+
+    def test_optimized_rgb_rounding_and_cli(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, output = os.path.join(directory,'source.png'), os.path.join(directory,'out.img')
+            image = self.pattern((8,4)); image.save(source)
+            groups = []
+            original = kimg._yjk_run_optimized
+            def capture(pixels):
+                groups.append(pixels)
+                return original(pixels)
+            with mock.patch.object(kimg, '_yjk_run_optimized', side_effect=capture):
+                kimg.convert(source, output, 'yjk', (8,4), yjk_quality='optimized')
+            raw = iter(image.tobytes())
+            expected = [tuple((c*31+127)//255 for c in p) for p in zip(raw,raw,raw)]
+            self.assertEqual([p for group in groups for p in group], expected)
+            run = subprocess.run([sys.executable, os.path.join(ROOT,'tools/kimg.py'),
+                'convert', source, output, '--mode','yjk','--size','8x4',
+                '--resample','lanczos','--sharpen','--sharpen-radius','0.8',
+                '--sharpen-percent','120','--sharpen-threshold','2',
+                '--yjk-quality','optimized'], capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            kimg.convert(source, output, 'yjk', (8,4), resample='lanczos', sharpen=True,
+                         yjk_quality='optimized')
+            first = parse_header(output)['payload']
+            kimg._yjk_optimized_group.cache_clear()
+            kimg._yjk_decoded_ramp.cache_clear()
+            kimg.convert(source, output, 'yjk', (8,4), resample='lanczos', sharpen=True,
+                         yjk_quality='optimized')
+            self.assertEqual(parse_header(output)['payload'], first)
+
+    def test_representative_fixture_comparison(self):
+        import kimg_compare
+        with tempfile.TemporaryDirectory() as directory:
+            for name, image in kimg_compare.comparison_sources().items():
+                result = kimg_compare.compare(image, os.path.join(directory,name), (64,32))
+                self.assertEqual(result['fast']['file_bytes'], 16+64*32)
+                self.assertEqual(result['optimized']['file_bytes'], 16+64*32)
+                # Empirical fixture assertion, distinct from the identical
+                # RGB555 guarantee tested above (quantizers differ here).
+                self.assertLessEqual(result['optimized']['rgb555_rounded_sse'],
+                                     result['fast']['rgb555_rounded_sse'])
 
 
 if __name__ == "__main__":

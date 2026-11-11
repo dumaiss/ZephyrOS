@@ -1,0 +1,83 @@
+test_bad_geometry_refuses (test_kimg.KimgConverterTests.test_bad_geometry_refuses) ... ok
+test_conversion_is_deterministic (test_kimg.KimgConverterTests.test_conversion_is_deterministic) ... ok
+test_g6_palette_and_packed_indices (test_kimg.KimgConverterTests.test_g6_palette_and_packed_indices) ... ok
+test_g7_payload_is_the_chip_grb_byte (test_kimg.KimgConverterTests.test_g7_payload_is_the_chip_grb_byte) ... ok
+test_info_subcommand (test_kimg.KimgConverterTests.test_info_subcommand) ... ok
+test_yjk_picture_round_trip (test_kimg.KimgConverterTests.test_yjk_picture_round_trip)
+A picture whose colour changes inside the four-pixel runs: ... ok
+test_yjk_solid_colours_show_their_colour (test_kimg.KimgConverterTests.test_yjk_solid_colours_show_their_colour)
+Each colour, encoded and decoded as the chip decodes it, ... ok
+test_yjk_width_is_a_multiple_of_four (test_kimg.KimgConverterTests.test_yjk_width_is_a_multiple_of_four) ... ok
+test_fixtures_match_the_format (test_kimg.KimgHostTests.test_fixtures_match_the_format) ... ok
+test_header_layout_and_constants (test_kimg.KimgHostTests.test_header_layout_and_constants) ... ok
+test_default_output_matches_prechange (test_kimg.KimgQualityTests.test_default_output_matches_prechange) ... ok
+test_optimized_rgb_rounding_and_cli (test_kimg.KimgQualityTests.test_optimized_rgb_rounding_and_cli) ... ok
+test_representative_fixture_comparison (test_kimg.KimgQualityTests.test_representative_fixture_comparison) ... ok
+test_resampling_every_mode_and_native_size_bypass (test_kimg.KimgQualityTests.test_resampling_every_mode_and_native_size_bypass) ... ok
+test_sharpen_after_resize_with_configured_values (test_kimg.KimgQualityTests.test_sharpen_after_resize_with_configured_values) ... ok
+test_pack_info_and_help_without_pillow (test_kimg.KimgRawTests.test_pack_info_and_help_without_pillow) ... ok
+test_pack_is_lossless_in_every_mode (test_kimg.KimgRawTests.test_pack_is_lossless_in_every_mode) ... ok
+test_palette_and_invalid_inputs (test_kimg.KimgRawTests.test_palette_and_invalid_inputs) ... ok
+test_decoder_preserves_blue_floor_and_clamping (test_kimg.KimgYjkSearchTests.test_decoder_preserves_blue_floor_and_clamping) ... ok
+test_exhaustive_oracle_and_ties (test_kimg.KimgYjkSearchTests.test_exhaustive_oracle_and_ties) ... ok
+test_signed_packing_and_no_regression_on_identical_rgb555 (test_kimg.KimgYjkSearchTests.test_signed_packing_and_no_regression_on_identical_rgb555) ... ok
+test_build_ignore_patterns_reach_only_build_output (test_source_layout.TestBuildOutputHygiene.test_build_ignore_patterns_reach_only_build_output) ... ok
+test_gitignore_covers_every_build_variant (test_source_layout.TestBuildOutputHygiene.test_gitignore_covers_every_build_variant) ... ok
+test_make_clean_removes_every_build_variant (test_source_layout.TestBuildOutputHygiene.test_make_clean_removes_every_build_variant) ... ok
+test_no_tracked_files_under_build_directories (test_source_layout.TestBuildOutputHygiene.test_no_tracked_files_under_build_directories) ... ok
+test_acceptance_constant_pairs_are_complete (test_source_layout.TestConstantParity.test_acceptance_constant_pairs_are_complete) ... ok
+test_errno_codes_match_the_assembly_view (test_source_layout.TestConstantParity.test_errno_codes_match_the_assembly_view) ... ok
+test_shared_constants_have_identical_values (test_source_layout.TestConstantParity.test_shared_constants_have_identical_values) ... ok
+test_global_module_flags_do_not_expose_ioc_private_dir (test_source_layout.TestCrossDriverIncludeBoundary.test_global_module_flags_do_not_expose_ioc_private_dir) ... ok
+test_only_test_rules_use_the_ioc_private_include_path (test_source_layout.TestCrossDriverIncludeBoundary.test_only_test_rules_use_the_ioc_private_include_path) ... ok
+test_production_sources_have_no_sibling_private_includes (test_source_layout.TestCrossDriverIncludeBoundary.test_production_sources_have_no_sibling_private_includes) ... ok
+test_sibling_private_include_checker_detects_a_leak (test_source_layout.TestCrossDriverIncludeBoundary.test_sibling_private_include_checker_detects_a_leak) ... ok
+test_driver_facing_closure_has_no_kernel_only_declarations (test_source_layout.TestDriverFacingHeaderBoundary.test_driver_facing_closure_has_no_kernel_only_declarations) ... ok
+test_driver_facing_closure_keeps_the_abi_surface (test_source_layout.TestDriverFacingHeaderBoundary.test_driver_facing_closure_keeps_the_abi_surface) ... ok
+test_driver_roots_cannot_reach_kernel_h (test_source_layout.TestDriverFacingHeaderBoundary.test_driver_roots_cannot_reach_kernel_h) ... ok
+test_representative_driver_compiles_against_driver_headers_only (test_source_layout.TestDriverFacingHeaderBoundary.test_representative_driver_compiles_against_driver_headers_only) ... ok
+test_driver_include_roots_are_exact (test_source_layout.TestIncludeRootAllowLists.test_driver_include_roots_are_exact) ... ok
+test_nucleus_include_roots_are_exact (test_source_layout.TestIncludeRootAllowLists.test_nucleus_include_roots_are_exact) ... ok
+test_sdk_include_roots_are_exact (test_source_layout.TestIncludeRootAllowLists.test_sdk_include_roots_are_exact) ... ok
+test_callers_keep_their_exact_semantics (test_source_layout.TestKernelNameComparison.test_callers_keep_their_exact_semantics) ... ok
+test_helper_is_linked_into_every_image (test_source_layout.TestKernelNameComparison.test_helper_is_linked_into_every_image) ... ok
+test_single_implementation (test_source_layout.TestKernelNameComparison.test_single_implementation) ... ok
+test_makefile_builds_no_block_driver (test_source_layout.TestNoResidentBlockDriver.test_makefile_builds_no_block_driver) ... ok
+test_no_kernel_block_directory (test_source_layout.TestNoResidentBlockDriver.test_no_kernel_block_directory) ... ok
+test_no_production_block_module_manifest (test_source_layout.TestNoResidentBlockDriver.test_no_production_block_module_manifest) ... ok
+test_no_sd_driver_directory (test_source_layout.TestNoResidentBlockDriver.test_no_sd_driver_directory) ... ok
+test_production_romfs_packs_no_block_driver (test_source_layout.TestNoResidentBlockDriver.test_production_romfs_packs_no_block_driver) ... ok
+test_makefile_includes_platform_config (test_source_layout.TestOwnerLayout.test_makefile_includes_platform_config) ... ok
+test_owner_directories_exist (test_source_layout.TestOwnerLayout.test_owner_directories_exist) ... ok
+test_owner_files_exist (test_source_layout.TestOwnerLayout.test_owner_files_exist) ... ok
+test_config_mk_lists_no_implementation_sources (test_source_layout.TestPlatformBoundary.test_config_mk_lists_no_implementation_sources) ... ok
+test_no_executable_content (test_source_layout.TestPlatformBoundary.test_no_executable_content) ... ok
+test_no_function_like_macros (test_source_layout.TestPlatformBoundary.test_no_function_like_macros) ... ok
+test_no_target_code_suffixes (test_source_layout.TestPlatformBoundary.test_no_target_code_suffixes) ... ok
+test_platform_contains_only_constant_configuration_files (test_source_layout.TestPlatformBoundary.test_platform_contains_only_constant_configuration_files) ... ok
+test_platform_h_includes_constant_headers (test_source_layout.TestPlatformBoundary.test_platform_h_includes_constant_headers) ... ok
+test_driver_directories_contain_device_implementation_only (test_source_layout.TestProductionTestSeparation.test_driver_directories_contain_device_implementation_only) ... ok
+test_driver_manifests_live_with_their_driver (test_source_layout.TestProductionTestSeparation.test_driver_manifests_live_with_their_driver) ... ok
+test_main_keeps_only_labeled_test_hooks (test_source_layout.TestProductionTestSeparation.test_main_keeps_only_labeled_test_hooks) ... ok
+test_makefile_has_single_test_seam (test_source_layout.TestProductionTestSeparation.test_makefile_has_single_test_seam) ... ok
+test_no_driver_private_sdcc_glue (test_source_layout.TestProductionTestSeparation.test_no_driver_private_sdcc_glue) ... ok
+test_production_headers_declare_no_test_runners (test_source_layout.TestProductionTestSeparation.test_production_headers_declare_no_test_runners) ... ok
+test_production_sources_have_no_ctc_acceptance_helpers (test_source_layout.TestProductionTestSeparation.test_production_sources_have_no_ctc_acceptance_helpers) ... ok
+test_production_sources_have_no_selftests (test_source_layout.TestProductionTestSeparation.test_production_sources_have_no_selftests) ... ok
+test_test_only_sio_macros_confined_to_tests (test_source_layout.TestProductionTestSeparation.test_test_only_sio_macros_confined_to_tests) ... ok
+test_every_selected_system_has_a_description (test_source_layout.TestSystemComposition.test_every_selected_system_has_a_description) ... ok
+test_every_system_file_is_selected_by_an_image_target (test_source_layout.TestSystemComposition.test_every_system_file_is_selected_by_an_image_target) ... ok
+test_the_store_is_built_from_the_system_file (test_source_layout.TestSystemComposition.test_the_store_is_built_from_the_system_file) ... ok
+test_the_suffix_table_precedes_the_immediate_assignment (test_source_layout.TestSystemComposition.test_the_suffix_table_precedes_the_immediate_assignment)
+The image-name suffix is read by an immediate assignment: it ... ok
+test_sdk_headers_do_not_include_kernel_paths (test_source_layout.TestUserSdkBoundary.test_sdk_headers_do_not_include_kernel_paths) ... ok
+test_shell_sources_reach_the_public_sdk_only (test_source_layout.TestUserSdkBoundary.test_shell_sources_reach_the_public_sdk_only) ... ok
+test_user_build_rule_offers_only_abi_and_sdk (test_source_layout.TestUserSdkBoundary.test_user_build_rule_offers_only_abi_and_sdk) ... ok
+test_user_sources_stay_on_the_public_boundary (test_source_layout.TestUserSdkBoundary.test_user_sources_stay_on_the_public_boundary) ... ok
+test_every_packed_document_is_a_sdk_prerequisite (test_sdk_package.TestSdkSourceInputs.test_every_packed_document_is_a_sdk_prerequisite)
+A guide sdkpack copies must be an SDK_INPUTS prerequisite. ... ok
+
+----------------------------------------------------------------------
+Ran 74 tests in 1.370s
+
+OK

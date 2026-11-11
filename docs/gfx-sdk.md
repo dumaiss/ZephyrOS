@@ -1045,9 +1045,9 @@ Initial payload formats are:
     one host-generated YJK byte per pixel
 ```
 
-The host converter is `tools/kimg.py`, shipped in the SDK's `tools/`. It
-requires Pillow and accepts the formats Pillow reads (PNG, JPEG, ...). It
-performs:
+The host converter is `tools/kimg.py`, shipped in the SDK's `tools/`. Its
+`convert` command requires Pillow and accepts the formats Pillow reads
+(PNG, JPEG, ...). It performs:
 
 - scaling;
 - cropping;
@@ -1058,8 +1058,83 @@ performs:
 
 The target does none of these.
 
-The target format does not depend on the source format. Test fixtures are
-committed pre-converted, so neither the build nor the tests need Pillow.
+Conversion options (all belong to `convert`, not `pack`):
+
+- `--resample nearest|box|lanczos`: `nearest` remains the default and preserves
+  hard pixel edges. `box` averages source pixels and is useful for exact
+  integer-ratio reduction. `lanczos` gives smoother high-quality reduction,
+  with possible ringing. Center-cropping and aspect-ratio handling are the
+  same for all three, in G6, G7 and YJK. Inputs already at the requested size
+  are not cropped or resized.
+- `--sharpen`: enable Pillow's unsharp mask **after resizing, before encoding**.
+  It is off by default. Tune it with `--sharpen-radius` (default `0.8`),
+  `--sharpen-percent` (`120`) and `--sharpen-threshold` (`2`). Radius must be
+  finite and nonnegative, percent nonnegative, threshold 0..255. It can improve
+  typography after downsampling, but can also create halos. Tuning flags alone
+  do not enable sharpening.
+- `--yjk-quality fast|optimized`: `fast` remains the default, including the
+  original RGB888-to-RGB555 truncation and average-colour J/K approximation.
+  `optimized` uses nearest-value RGB555 rounding (`(value*31+127)//255`),
+  searches J/K within +/-3 of the average estimates, clipped to -32..31,
+  and exhaustively searches all 32 Y values for each pixel. It minimizes
+  summed squared RGB555 reconstruction error for the four-pixel group within
+  that neighborhood. Ties prefer the smallest J, then K, then per-pixel Y.
+  This is a local chroma search, not a global search over every J/K pair.
+
+Both YJK paths use the existing decoder: R = clamp(Y+J), G = clamp(Y+K),
+B = clamp((5Y-2J-K)//4), all in 0..31. Blue rounding has not changed; it is
+pinned by independent decoder tests. On **identical RGB555 input**, optimized
+error cannot exceed fast error because its search includes the fast J/K and
+every possible Y. Actual RGB888 paths quantize differently, so complete-image
+comparisons are measured rather than asserted as a universal invariant.
+Bounded decoded-ramp and repeated-group caches reduce host processing time.
+These options change asset generation only; KIMG v1 and target rendering are
+unchanged, and no additional dependency beyond Pillow is needed.
+
+```sh
+# Original defaults:
+python3 tools/kimg.py convert title.png title.kimg --mode yjk
+# Illustration/typography, with optional sharpening:
+python3 tools/kimg.py convert title.png title.kimg --mode yjk \
+    --resample lanczos --sharpen --yjk-quality optimized
+# Exact integer-ratio reduction (e.g. 1280x1060 -> 256x212):
+python3 tools/kimg.py convert title.png title.kimg --mode yjk \
+    --resample box --yjk-quality optimized
+```
+
+Run `python3 tools/kimg_compare.py` for a full 256x212 comparison on the
+existing parrot image and a generated gradient/lettering fixture. It writes
+source/reference/decoded PNGs, IMG files and timing/SSE/size measurements under
+`build/kimg-quality/`; it never rewrites the committed golden fixtures. See
+[KIMG quality acceptance](kimg-quality.md) for the recorded run and limitations.
+
+For pixels already encoded in the native G6, G7 or YJK packing, use `pack`
+instead of `convert`. It adds only the KIMG header and optional palette;
+pixel bytes are copied unchanged, without Pillow or image conversion:
+
+```sh
+python3 tools/kimg.py pack scene.g7 scene.img --mode g7 --size 256x144
+python3 tools/kimg.py pack scene.g6 scene.img --mode g6 --size 512x212 --palette palette.rgb
+python3 tools/kimg.py pack scene.yjk scene.img --mode yjk --size 256x212
+```
+
+Without `--size`, dimensions default to the mode's screen size (512x212 for
+G6, 256x212 for G7/YJK). Dimensions must fit that screen; G6 width must be
+even and YJK width must be a multiple of four. The input must contain exactly
+the tightly packed pixels: G6 uses `width * height / 2` bytes and G7/YJK use
+`width * height` bytes. Headers (including MSX BSAVE), row padding and trailing
+palettes are not part of the pixel input and are rejected by the length check.
+
+`--palette` is optional and G6-only. Its binary file contains 1-16 RGB888
+triples in R/G/B order, with each component an 8-bit byte, matching KIMG's
+palette format. These bytes are copied unchanged; a native VDP register
+palette dump is not an RGB888 palette. Omitting it writes `palette_count=0`,
+so the picture does not override the mode's palette. G7/YJK reject `--palette`.
+The output extension may be `.img` or `.kimg`; both contain KIMG v1.
+
+The target format does not depend on the source format. Golden IMG fixtures
+are committed pre-converted, so the target build and format-only tests do not
+need Pillow. Host conversion/quality tests require Pillow and skip without it.
 
 ---
 
