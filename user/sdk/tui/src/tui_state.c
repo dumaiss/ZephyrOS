@@ -8,8 +8,6 @@
 
 #include "tui_internal.h"
 
-struct tui_state tui_state;
-const struct tui_mouse_hook *tui_mouse_hook;
 uint8_t tui_chars[TUI_CELL_COUNT];
 uint8_t tui_attrs[TUI_ATTR_BYTES];
 

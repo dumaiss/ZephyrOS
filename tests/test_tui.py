@@ -63,7 +63,7 @@ TUI_FUNCTIONS = {
     "tui_push_window", "tui_pop_window",
     "tui_set_style", "tui_get_style", "tui_set_attr", "tui_get_attr",
     "tui_fill", "tui_hline", "tui_vline", "tui_frame", "tui_frame_title",
-    "tui_key_pending", "tui_getkey", "tui_pollkey",
+    "tui_key_init", "tui_key_shutdown", "tui_key_pending", "tui_getkey", "tui_pollkey",
     "tui_saved_size", "tui_save", "tui_restore",
 }
 
@@ -122,7 +122,7 @@ TUI_KEYS = {
 
 # One archive member per coherent function group; later parts of the API
 # add their own members instead of growing these.
-TUI_MEMBERS = {"tui_state.rel", "tui_screen.rel", "tui_lifecycle.rel",
+TUI_MEMBERS = {"tui_core.rel", "tui_state.rel", "tui_screen.rel", "tui_lifecycle.rel",
                "tui_flush.rel", "tui_printf.rel", "tui_window.rel",
                "tui_style.rel", "tui_key.rel", "tui_region.rel",
                "tui_mouse.rel", "tui_scroll.rel", "tui_text.rel"}

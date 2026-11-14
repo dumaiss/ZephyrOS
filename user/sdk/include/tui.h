@@ -232,6 +232,12 @@ enum {
 	TUI_KEY_MOUSE     = 0x0140
 };
 
+/* Decoder-only lifecycle for graphics applications: no cell map, screen
+ * reset, rendition changes or cursor output. Do not combine with tui_init().
+ * The usual key functions below work until tui_key_shutdown(). */
+int tui_key_init(void);
+void tui_key_shutdown(void);
+
 /* Nonzero when enough input is pending to return a key without blocking. */
 int tui_key_pending(void);
 

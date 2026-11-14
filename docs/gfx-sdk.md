@@ -1132,6 +1132,32 @@ palette dump is not an RGB888 palette. Omitting it writes `palette_count=0`,
 so the picture does not override the mode's palette. G7/YJK reject `--palette`.
 The output extension may be `.img` or `.kimg`; both contain KIMG v1.
 
+To see a KIMG file as the hardware will show it, render it back to PNG
+with `preview` (Pillow required):
+
+```sh
+python3 tools/kimg.py preview title.kimg title.png             # one PNG pixel per screen pixel
+python3 tools/kimg.py preview title.kimg title.png --display   # screen proportions
+```
+
+It decodes the payload with the V9958's own rules:
+
+- **G6:** each nibble through the hardware palette. The file's RGB888
+  colours are cut to the V9958's 3 bits per channel (`>> 5`, as
+  `gfx_set_palette` writes them); entries the file does not set keep
+  the console's palette, which is also what a file without a palette
+  shows with.
+- **G7:** the fixed GRB 3-3-2 colours, the 2-bit blue at levels 0, 2, 4
+  and 7 of 7.
+- **YJK:** the YJK decoder above, at 5 bits per channel.
+
+Levels expand to 8 bits as the emulator's DAC model does (3-bit
+`v<<5 | v<<2 | v>>1`, 5-bit `v<<3 | v>>2`). `--display` scales the PNG to
+the screen's proportions: a G6 pixel is half as wide as a G7/YJK pixel and
+a line is about twice as tall as a G6 pixel is wide, so G6 pixels become
+1 x 2 and G7/YJK pixels 2 x 2, every mode 512 wide. The PNG holds the
+picture only; `pview` centres a smaller picture on a cleared screen.
+
 The target format does not depend on the source format. Golden IMG fixtures
 are committed pre-converted, so the target build and format-only tests do not
 need Pillow. Host conversion/quality tests require Pillow and skip without it.

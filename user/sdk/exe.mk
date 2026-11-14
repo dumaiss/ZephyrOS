@@ -107,7 +107,7 @@ $(EXE_SDK_RELEASE_LIB): $(KOS_SDK_C_OBJS) $(KOS_SDK_ASM_OBJS) $(EXE_RUNTIME) \
 # stay in this directory.
 KOS_TUI_SRC     := $(KOS_SDK_ROOT)/tui/src
 KOS_TUI_PRIVATE := $(KOS_TUI_SRC)/tui_internal.h
-KOS_TUI_C_SRC   := tui_state.c tui_screen.c tui_lifecycle.c tui_flush.c \
+KOS_TUI_C_SRC   := tui_core.c tui_state.c tui_screen.c tui_lifecycle.c tui_flush.c \
 	tui_printf.c tui_window.c tui_style.c tui_key.c tui_region.c \
 	tui_mouse.c
 KOS_TUI_ASM_SRC := tui_scroll.asm tui_text.asm
@@ -235,7 +235,7 @@ KOS_KRES_PRIVATE   := $(KOS_KRES_SRC)/kres_internal.h \
 KOS_KRES_PUBLIC    := $(KOS_INCLUDE)/kos/kres.h \
 	$(KOS_INCLUDE)/kos/kres_konaos.h \
 	$(KOS_INCLUDE)/kos/reader.h
-KOS_KRES_C_SRC     := kres_util.c kres_read.c kres_mut.c kres_build.c \
+KOS_KRES_C_SRC     := kres_state.c kres_util.c kres_stream.c kres_read.c kres_mut.c kres_build.c \
 	kres_compact.c kres_verify.c kres_extract.c kres_reader.c
 KOS_KRES_KONAOS_SRC := kres_adapter.c kres_adapter_mut.c kres_cache_xmem.c
 EXE_KRES_OBJS      := $(addprefix $(EXE_SDK_BUILD)/kres/,\

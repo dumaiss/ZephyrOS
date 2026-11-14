@@ -37,6 +37,7 @@
 /* tui_getkey() reads the mouse on one of this many wakes (about 52 Hz). */
 #define TUI_KEY_MOUSE_WAKES 3u
 
+static uint8_t tui_key_only;
 static uint8_t tui_key_state;
 static uint8_t tui_key_sequence[TUI_KEY_SEQUENCE_MAX];
 static uint8_t tui_key_length;
@@ -92,9 +93,25 @@ static void tui_key_reset(void)
 	}
 }
 
+/* A graphics program needs the decoder without a TUI cell model or terminal
+ * drawing. This lifecycle owns only parser state; console binding stays lazy. */
+int tui_key_init(void)
+{
+    if (tui_key_only || tui_state.initialized) return -KOS_EINVAL;
+    tui_key_reset();
+    tui_key_only = 1u;
+    return 0;
+}
+
+void tui_key_shutdown(void)
+{
+    tui_key_reset();
+    tui_key_only = 0u;
+}
+
 static void tui_key_sync(void)
 {
-	if (tui_key_generation != tui_state.key_generation) {
+	if (!tui_key_only && tui_key_generation != tui_state.key_generation) {
 		tui_key_generation = tui_state.key_generation;
 		tui_key_reset();
 	}
@@ -320,7 +337,7 @@ int tui_key_pending(void)
 {
 	int result;
 
-	if (tui_state.initialized == 0u) {
+	if (tui_state.initialized == 0u && !tui_key_only) {
 		return -KOS_EINVAL;
 	}
 	tui_key_sync();
@@ -335,7 +352,7 @@ tui_key_t tui_pollkey(void)
 {
 	tui_key_t key;
 
-	if (tui_state.initialized == 0u) {
+	if (tui_state.initialized == 0u && !tui_key_only) {
 		return TUI_KEY_NONE;
 	}
 	tui_key_sync();
@@ -358,7 +375,7 @@ tui_key_t tui_getkey(void)
 	tui_key_t key;
 	uint8_t wake = 0u;
 
-	if (tui_state.initialized == 0u) {
+	if (tui_state.initialized == 0u && !tui_key_only) {
 		return TUI_KEY_NONE;
 	}
 	for (;;) {

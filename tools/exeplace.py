@@ -448,6 +448,11 @@ def place(modules, stack, resident_sources, pins, declared=()):
         if unit[1] == "data":
             plan.zone.setdefault(unit, "resident")
             plan.why.setdefault(unit, "data")
+    # Data-only archive members still need a code-zone label when rewriting
+    # their empty code area; it consumes no resident space.
+    for unit, size in plan.size.items():
+        if unit[1] == "code" and size == 0:
+            plan.zone.setdefault(unit, "resident")
     # Pins.
     for unit in plan.size:
         if unit[1] == "code" and unit not in plan.zone and unit[0] in pins:

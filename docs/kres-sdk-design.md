@@ -542,3 +542,12 @@ A lookup reads at most `ceil(log2(N + 1))` records: 6 at 32 entries, 9 at 256, 1
 ---
 
 **Architectural rule:** KRES is a **flat, contiguous-record, mutable resource archive**, not a miniature filesystem. Its value is moving richer storage policy into reusable **userland** while KonaOS stays a small byte-stream provider.
+
+### Reader object residency
+
+The SDK keeps `kres_stream` (logical reads/seeks), `kres_state` (shared adapter
+and workspace) and `kres_read` (container/catalog operations) in separate
+archive members. `kres_reader` is declared as a function-pointer target in
+`mk/kos.mk`; its streaming call chain stays resident under the normal placer
+rules. Container/catalog helpers retain automatic placement. No API or format
+change is implied by these object boundaries.

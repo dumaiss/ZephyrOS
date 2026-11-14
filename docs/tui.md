@@ -428,3 +428,11 @@ may leave the terminal in the last SGR/wrapping state; always call
 See the standalone examples `tui_demo.c`, `tui_keys.c`, `tui_dialog.c` and
 `tui_mouse.c` for complete programs, and [sdk.md](sdk.md) for building and
 packaging.
+
+### Decoder-only use in graphics programs
+
+Call `tui_key_init()` and `tui_key_shutdown()` when only the VT100 key decoder
+is needed. `tui_key_pending()`, `tui_pollkey()` and `tui_getkey()` keep their
+normal meanings. This lifecycle does not initialize a TUI screen, send terminal
+escapes or allocate the cell map. Do not combine it with `tui_init()` in the
+same active lifecycle. The console transport still owns its ordinary binding.

@@ -187,6 +187,13 @@ class TestFunctionPointers(unittest.TestCase):
     def test_a_constant_table_naming_its_symbol_keeps_it_resident(self):
         self.assertEqual(self.zone(pointer_program("symbol")), "resident")
 
+    def test_data_only_module_has_an_empty_resident_code_zone(self):
+        data = module("state", [("_CODE", 0, []), ("_DATA", 32, [])], [])
+        data.origin = "state.rel"
+        plan, _ = exeplace.place([data], 256, set(), {})
+        self.assertEqual(plan.zone[("state.rel", "code")], "resident")
+        self.assertEqual(plan.size[("state.rel", "code")], 0)
+
     def test_a_data_word_keeps_it_resident(self):
         self.assertEqual(self.zone(pointer_program("data")), "resident")
 

@@ -28,6 +28,7 @@ Usage:
                     [--yjk-quality {fast,optimized}]
     kimg.py pack SOURCE OUTPUT --mode {g6,g7,yjk} [--size WxH]
                  [--palette RGB_FILE]
+    kimg.py preview FILE OUTPUT.png [--display]
     kimg.py info FILE
 
 The default size is the mode's screen; `--size` makes a rectangle
@@ -43,7 +44,19 @@ unchanged before the pixels. Without it, the file has no palette override.
 G7 and YJK do not accept a palette. BSAVE headers, row padding and
 embedded palettes must be removed from the input before packing.
 
-Only `convert` requires Pillow (it is not a build dependency).
+`preview` renders a KIMG file back to PNG the way the V9958 shows it:
+G6 through the hardware palette (the file's colours at the V9958's 3 bits
+per channel; entries the file does not set keep the console's palette,
+which is what a picture without a palette is shown with), G7 through the
+fixed GRB 3-3-2 colours (2-bit blue at levels 0, 2, 4 and 7 of 7), YJK
+through the V9958's YJK decoder at 5 bits per channel.  Channels expand
+to 8 bits as the emulator's DAC model does (3-bit v -> v<<5|v<<2|v>>1,
+5-bit v -> v<<3|v>>2).  The PNG has one pixel per screen pixel;
+`--display` scales it to the screen's proportions (each G6 pixel 1 x 2,
+each G7/YJK pixel 2 x 2), so every mode comes out 512 wide.
+
+Only `convert` and `preview` require Pillow (it is not a build
+dependency).
 
 Conversion defaults remain nearest resampling, no sharpening and fast YJK.
 Box averages source pixels (useful for integer-ratio reduction); Lanczos
@@ -324,6 +337,108 @@ def pack(source, output, mode, size=None, palette_source=None):
     _write_image(output, mode_value, width, height, palette, payload)
 
 
+# The console's palette (drivers/v9958/v9958.c), as the V9958 holds it:
+# per entry (R << 4) | B, then G, 3 bits each.  A G6 picture shows with
+# it wherever its file sets no colour.
+CONSOLE_PALETTE = bytes((
+    0x00, 0x00, 0x11, 0x01, 0x00, 0x06, 0x00, 0x07,
+    0x05, 0x00, 0x07, 0x03, 0x50, 0x00, 0x06, 0x06,
+    0x70, 0x00, 0x73, 0x03, 0x70, 0x07, 0x74, 0x07,
+    0x00, 0x05, 0x67, 0x00, 0x55, 0x05, 0x77, 0x07))
+
+
+def _dac3(value):
+    """A 3-bit V9958 level as 8-bit RGB."""
+    return (value << 5) | (value << 2) | (value >> 1)
+
+
+def _dac5(value):
+    """A 5-bit YJK level as 8-bit RGB."""
+    return (value << 3) | (value >> 2)
+
+
+def read_kimg(path):
+    """Parse and validate a KIMG v1 file: (mode name, width, height,
+    palette bytes, payload bytes)."""
+    with open(path, "rb") as handle:
+        data = handle.read()
+    if len(data) < 16:
+        raise SystemExit("kimg: %s: truncated header" % path)
+    magic, version, mode_value, flags, palette_count = struct.unpack(
+        "<4sBBBB", data[:8])
+    width, height, payload_size = struct.unpack("<HHI", data[8:16])
+    if magic != MAGIC or version != VERSION or flags != FLAGS:
+        raise SystemExit("kimg: %s: not a KIMG v1 file" % path)
+    names = {value: name for name, (value, _w, _h) in MODES.items()}
+    if mode_value not in names:
+        raise SystemExit("kimg: %s: unknown mode %u" % (path, mode_value))
+    mode = names[mode_value]
+    _value, screen_width, screen_height = MODES[mode]
+    if not (0 < width <= screen_width and 0 < height <= screen_height) or \
+            (mode == "g6" and width % 2) or \
+            (mode == "yjk" and width % YJK_RUN):
+        raise SystemExit("kimg: %s: bad geometry %ux%u for %s"
+                         % (path, width, height, mode))
+    if palette_count > 16 or (palette_count and mode != "g6"):
+        raise SystemExit("kimg: %s: bad palette count %u for %s"
+                         % (path, palette_count, mode))
+    expected = (width // 2 if mode == "g6" else width) * height
+    palette_end = 16 + palette_count * 3
+    if payload_size != expected or len(data) != palette_end + expected:
+        raise SystemExit("kimg: %s: payload is %u bytes (file holds %d), "
+                         "%ux%u %s needs %u"
+                         % (path, payload_size, len(data) - palette_end,
+                            width, height, mode, expected))
+    return mode, width, height, data[16:palette_end], data[palette_end:]
+
+
+def decode(path):
+    """The picture as the V9958 shows it: (mode, width, height, a row-major
+    list of 8-bit (r, g, b))."""
+    mode, width, height, palette, payload = read_kimg(path)
+    pixels = []
+    if mode == "g6":
+        levels = [(CONSOLE_PALETTE[i * 2] >> 4, CONSOLE_PALETTE[i * 2 + 1],
+                   CONSOLE_PALETTE[i * 2] & 7) for i in range(16)]
+        for i in range(len(palette) // 3):
+            r, g, b = palette[i * 3:i * 3 + 3]
+            levels[i] = (r >> 5, g >> 5, b >> 5)
+        colours = [tuple(_dac3(c) for c in level) for level in levels]
+        for byte in payload:
+            pixels.append(colours[byte >> 4])
+            pixels.append(colours[byte & 15])
+    elif mode == "g7":
+        blue = (0, 2, 4, 7)
+        colours = [(_dac3((v >> 2) & 7), _dac3(v >> 5), _dac3(blue[v & 3]))
+                   for v in range(256)]
+        pixels = [colours[byte] for byte in payload]
+    else:
+        def signed6(value):
+            return value - 64 if value & 0x20 else value
+        for run in range(0, len(payload), YJK_RUN):
+            quad = payload[run:run + YJK_RUN]
+            k = signed6((quad[0] & 7) | ((quad[1] & 7) << 3))
+            j = signed6((quad[2] & 7) | ((quad[3] & 7) << 3))
+            ramp = _yjk_decoded_ramp(j, k)
+            for byte in quad:
+                pixels.append(tuple(_dac5(c) for c in ramp[byte >> 3]))
+    return mode, width, height, pixels
+
+
+def preview(source, output, display=False):
+    """Render a KIMG file to PNG as the hardware shows it."""
+    require_pillow()
+    mode, width, height, pixels = decode(source)
+    image = Image.new("RGB", (width, height))
+    image.putdata(pixels)
+    if display:
+        across = 1 if mode == "g6" else 2
+        image = image.resize((width * across, height * 2),
+                             Image.Resampling.NEAREST)
+    image.save(output, "PNG")
+    return image.size
+
+
 def _info(path):
     with open(path, "rb") as handle:
         data = handle.read()
@@ -374,6 +489,14 @@ def main(argv):
                              help="WxH (default: the mode's screen)")
     pack_parser.add_argument("--palette", default=None,
                              help="G6 only: binary RGB888 triples (1-16 colours)")
+    preview_parser = sub.add_parser(
+        "preview", help="render a KIMG file to PNG as the hardware shows it")
+    preview_parser.add_argument("file", help="a KIMG file")
+    preview_parser.add_argument("output", help="the PNG to write")
+    preview_parser.add_argument(
+        "--display", action="store_true",
+        help="scale to the screen's proportions (G6 pixels 1x2, "
+             "G7/YJK pixels 2x2)")
     info_parser = sub.add_parser("info")
     info_parser.add_argument("file")
     args = parser.parse_args(argv)
@@ -400,6 +523,13 @@ def main(argv):
                 raise SystemExit("kimg: %s" % error) from None
         print("kimg: %s -> %s (%s)" % (args.source, args.output,
                                        args.mode))
+    elif args.command == "preview":
+        try:
+            width, height = preview(args.file, args.output, args.display)
+        except OSError as error:
+            raise SystemExit("kimg: %s" % error) from None
+        print("kimg: %s -> %s (%dx%d)" % (args.file, args.output, width,
+                                          height))
     else:
         _info(args.file)
     return 0

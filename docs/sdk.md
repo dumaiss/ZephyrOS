@@ -1313,7 +1313,8 @@ kos-sdk-<version>/
                    crt0.rel
   tools/           exepack.py, exemanifest.py, exeplace.py, ihx.py,
                    exerun.py (Python standard library only), kimg.py
-                   (Pillow for convert; pack needs only the standard library);
+                   (Pillow for convert and preview; pack and info need only
+                   the standard library);
                    kres, the KRES container tool (§13), an executable
                    built for the machine that built the SDK
   mk/kos.mk        the program rule

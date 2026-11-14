@@ -314,6 +314,106 @@ class KimgRawTests(unittest.TestCase):
             self.assertNotEqual(run.returncode, 0)
 
 
+class KimgPreviewTests(unittest.TestCase):
+    """`preview`: a KIMG file rendered as the V9958 shows it."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def packed(self, mode, size, payload, palette=None):
+        source = os.path.join(self.tmp, "raw.bin")
+        with open(source, "wb") as handle:
+            handle.write(bytes(payload))
+        palette_path = None
+        if palette is not None:
+            palette_path = os.path.join(self.tmp, "palette.rgb")
+            with open(palette_path, "wb") as handle:
+                handle.write(bytes(palette))
+        output = os.path.join(self.tmp, "%s.kimg" % mode)
+        kimg.pack(source, output, mode, size, palette_path)
+        return output
+
+    def test_g6_uses_the_file_palette_at_three_bits(self):
+        # Entry 0 = (255, 128, 31) -> levels (7, 4, 0); the unset
+        # entries keep the console's: 1 dark grey (1, 1, 1), 4 blue
+        # (0, 0, 5).
+        path = self.packed("g6", (4, 1), [0x01, 0x04],
+                           palette=[255, 128, 31])
+        mode, width, height, pixels = kimg.decode(path)
+        self.assertEqual((mode, width, height), ("g6", 4, 1))
+        self.assertEqual(pixels[0], (255, 146, 0))
+        self.assertEqual(pixels[1], (36, 36, 36))  # console entry 1
+        self.assertEqual(pixels[3], (0, 0, 182))   # console entry 4
+
+    def test_g6_without_a_palette_shows_the_console_palette(self):
+        path = self.packed("g6", (2, 1), [0x0F])
+        _mode, _w, _h, pixels = kimg.decode(path)
+        self.assertEqual(pixels, [(0, 0, 0), (255, 255, 255)])
+
+    def test_g7_is_grb_332_with_four_blue_levels(self):
+        path = self.packed("g7", (8, 1),
+                           [0x00, 0xFF, 0xE0, 0x1C, 0x01, 0x02, 0x03, 0x24])
+        _mode, _w, _h, pixels = kimg.decode(path)
+        self.assertEqual(pixels, [
+            (0, 0, 0), (255, 255, 255), (0, 255, 0), (255, 0, 0),
+            (0, 0, 73), (0, 0, 146), (0, 0, 255), (36, 36, 0)])
+
+    def test_yjk_matches_the_decoder(self):
+        rng = random.Random(7)
+        payload = [rng.randrange(256) for _ in range(16 * 2)]
+        path = self.packed("yjk", (16, 2), payload)
+        _mode, _w, _h, pixels = kimg.decode(path)
+        expected = [tuple((c << 3) | (c >> 2) for c in rgb)
+                    for rgb in decode_yjk(payload, 16)]
+        self.assertEqual(pixels, expected)
+        white = self.packed("yjk", (4, 1), [0xF8] * 4)
+        self.assertEqual(kimg.decode(white)[3], [(255, 255, 255)] * 4)
+
+    @unittest.skipUnless(HAVE_PILLOW, "Pillow is not installed")
+    def test_png_and_display_proportions(self):
+        for mode, size, scaled in (("g6", (8, 2), (8, 4)),
+                                   ("g7", (8, 2), (16, 4)),
+                                   ("yjk", (8, 2), (16, 4))):
+            with self.subTest(mode=mode):
+                count = size[0] * size[1] // (2 if mode == "g6" else 1)
+                path = self.packed(mode, size, [0x55] * count)
+                out = os.path.join(self.tmp, "%s.png" % mode)
+                self.assertEqual(kimg.preview(path, out), size)
+                with Image.open(out) as image:
+                    self.assertEqual(image.size, size)
+                    self.assertEqual(list(image.convert("RGB").getdata()),
+                                     kimg.decode(path)[3])
+                self.assertEqual(kimg.preview(path, out, display=True),
+                                 scaled)
+
+    @unittest.skipUnless(HAVE_PILLOW, "Pillow is not installed")
+    def test_command_line(self):
+        path = self.packed("g7", (4, 4), [0xE3] * 16)
+        out = os.path.join(self.tmp, "cli.png")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "tools", "kimg.py"),
+             "preview", path, out, "--display"],
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("(8x8)", result.stdout)
+
+    def test_malformed_files_are_refused(self):
+        good = self.packed("g7", (4, 1), [1, 2, 3, 4])
+        with open(good, "rb") as handle:
+            data = handle.read()
+        for name, bad in (("magic", b"XIMG" + data[4:]),
+                          ("mode", data[:5] + b"\x09" + data[6:]),
+                          ("truncated", data[:-1]),
+                          ("trailing", data + b"\x00"),
+                          ("short", data[:10])):
+            with self.subTest(name=name):
+                path = os.path.join(self.tmp, "bad.kimg")
+                with open(path, "wb") as handle:
+                    handle.write(bad)
+                with self.assertRaises(SystemExit):
+                    kimg.decode(path)
+
+
 class KimgYjkSearchTests(unittest.TestCase):
     def test_decoder_preserves_blue_floor_and_clamping(self):
         self.assertEqual(kimg.yjk_decode(1, 0, 0), (1, 1, 1))

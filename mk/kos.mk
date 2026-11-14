@@ -161,7 +161,7 @@ KOS_RULES    ?= $(KOS_SDK_ROOT)/mk/kos.mk
 # adapters and catalog store are the tables handed to kres_install, and
 # kres_mut.rel's functions are installed as the read path's hooks.
 KOS_POINTER_MEMBERS_tui  := tui_mouse.rel
-KOS_POINTER_MEMBERS_kres := kres_mut.rel kres_adapter.rel \
+KOS_POINTER_MEMBERS_kres := kres_reader.rel kres_mut.rel kres_adapter.rel \
 	kres_adapter_mut.rel kres_cache_xmem.rel
 
 SDCC    ?= sdcc
