@@ -1,9 +1,9 @@
 /* KRES: the read-only link proof (card program).
  *
  * A sealed-container reader that installs the read side only -
- * `kres_install(&kres_io_konaos_read, &kres_cache_xmem, &ctx)` - so
- * the link map must carry none of the mutation, flush, builder,
- * compaction, extract or verify members.  tests/test_kres_native.py
+ * `kres_install(&kres_io_konaos_read, &ctx)` - so the link map must
+ * carry none of the mutation, flush, builder, compaction, extract,
+ * verify or XMEM catalog-store members.  tests/test_kres_native.py
  * runs it from the shell and checks its map.
  *
  *   kresread            list /fs/BUILT.KPR and print each resource's
@@ -59,7 +59,7 @@ int main(void)
 	kres_container c;
 	int result;
 
-	kres_install(&kres_io_konaos_read, &kres_cache_xmem, &kresread_ctx);
+	kres_install(&kres_io_konaos_read, &kresread_ctx);
 	result = kres_open(&c, BUILT, KRES_OPEN_READ);
 	printf("kresread: open %d\r\n", result);
 	if (result < 0) {

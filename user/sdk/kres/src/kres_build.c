@@ -1,56 +1,70 @@
 /* KRES core: the sealed builder (private).
  *
- * One build at a time, on the installed adapter: kres_build_begin
- * creates the file with the catalog reserved at the front, add/write
- * stream resources one after the other from record 5, and end writes
- * the catalog area and the header last — its magic the final bytes,
- * so an interrupted build is simply an invalid file (§8).
+ * One build at a time, on the installed adapter, with no resource
+ * count known in advance: kres_build_begin creates the file with a
+ * blank header record, add/write stream resources one after the other
+ * from record 1, and end appends the sorted catalog after the last
+ * resource and writes the header last - so an interrupted build is
+ * simply an invalid file (§8).
  *
- * The accumulating catalog lives in the catalog cache (design §5.5),
- * not in a private array: on the KonaOS edition it is XMEM, and this
- * member's own state is the shared buffer plus a handful of bytes.
+ * The accumulating catalog lives in the catalog store (host memory, or
+ * XMEM on the KonaOS edition), keyed by the installed context (a
+ * container pointer never aliases it), sorted as the names arrive;
+ * this member's own state is the shared buffer plus a few bytes.
  */
 
 #include "kres_internal.h"
 
-/* The accumulating catalog is keyed by the installed context, the
- * same ctx the build file's adapter calls carry (a container pointer
- * never aliases it). */
-
 static uint8_t build_open;
-static uint8_t build_entry_count;
-static uint8_t build_count;
 static uint8_t build_active;
+static uint16_t build_count;
+static uint16_t build_index;
 static uint32_t build_next_record;
 static uint32_t build_start;
 static uint32_t build_used;
-static uint8_t build_name[KRES_NAME_MAX];
-static uint8_t build_name_length;
 
-/* Close the current resource's entry (build_active != 0): compute its
- * allocated records and append it to the catalog in the cache. */
-static void build_finish_entry(void)
+/* Close the current resource (build_active != 0): an empty one still
+ * owns one zero record, so every entry has a distinct extent. */
+static int build_finish_entry(void)
 {
 	uint8_t entry[KRES_ENTRY_SIZE];
-	uint32_t allocated = (build_used + KRES_RECORD_SIZE - 1u) /
-			     KRES_RECORD_SIZE;
+	uint32_t allocated;
+	int result;
 
-	if (allocated == 0u) {
-		allocated = 1u;
-	}
-	kres_entry_emit(entry, build_name, build_name_length, build_start,
-			allocated, build_used);
-	(void)kres_cache->put(kres_ctx, build_count, entry);
-	build_count = (uint8_t)(build_count + 1u);
 	build_active = 0u;
+	if (build_used == 0u) {
+		if (build_next_record >= KRES_RECORD_LIMIT) {
+			return -KRES_E_RECLIM;
+		}
+		result = kres_io->seek(kres_ctx,
+				       kres_record_offset(build_next_record));
+		if (result < 0) {
+			return result;
+		}
+		result = kres_io->write(kres_ctx, kres_zero_page,
+					KRES_RECORD_SIZE);
+		if (result != (int)KRES_RECORD_SIZE) {
+			return result < 0 ? result : -KOS_EIO;
+		}
+		build_next_record = (uint32_t)(build_next_record + 1u);
+	}
+	allocated = build_next_record - build_start;
+	result = kres_cache->entry(kres_ctx, build_index, entry);
+	if (result < 0) {
+		return result;
+	}
+	kres_put32(entry + KRES_ENT_ALLOCATED, allocated);
+	kres_put32(entry + KRES_ENT_USED, build_used);
+	return kres_cache->put(kres_ctx, build_index, entry);
 }
 
-int kres_build_begin(const char *path, uint8_t entry_count)
+int kres_build_begin(const char *path)
 {
 	int result;
 
-	if (kres_io == (const struct kres_io *)0 || path == (const char *)0 ||
-	    entry_count == 0u || entry_count > KRES_RESOURCE_MAX) {
+	if (kres_io == (const struct kres_io *)0 ||
+	    kres_cache == (const struct kres_cache *)0 ||
+	    path == (const char *)0) {
 		return -KOS_EINVAL;
 	}
 	if (build_open != 0u) {
@@ -66,25 +80,24 @@ int kres_build_begin(const char *path, uint8_t entry_count)
 		goto fail;
 	}
 	/* The header slot, zeroed up front so the file never begins
-	 * with a plausible magic; the resources start at record 5. */
-	memset(kres_shared, 0, KRES_RECORD_SIZE);
+	 * with a plausible magic; the resources start at record 1. */
 	result = kres_io->seek(kres_ctx, 0u);
 	if (result < 0) {
 		goto fail;
 	}
-	result = kres_io->write(kres_ctx, kres_shared, KRES_RECORD_SIZE);
+	result = kres_io->write(kres_ctx, kres_zero_page, KRES_RECORD_SIZE);
+	if (result != (int)KRES_RECORD_SIZE) {
+		result = result < 0 ? result : -KOS_EIO;
+		goto fail;
+	}
+	result = kres_cache->load(kres_ctx, 0u, 0u);
 	if (result < 0) {
 		goto fail;
 	}
-	if (result != (int)KRES_RECORD_SIZE) {
-		result = -KOS_EIO;
-		goto fail;
-	}
 	build_open = 1u;
-	build_entry_count = entry_count;
 	build_count = 0u;
 	build_active = 0u;
-	build_next_record = KRES_DATA_BASE_SEALED;
+	build_next_record = 1u;
 	return 0;
 fail:
 	(void)kres_io->close(kres_ctx);
@@ -93,36 +106,74 @@ fail:
 
 int kres_build_add(const char *name)
 {
+	uint8_t entry[KRES_ENTRY_SIZE];
 	uint16_t name_length;
-	unsigned int i;
+	uint16_t low = 0u;
+	uint16_t high;
+	int result;
 
 	if (build_open == 0u) {
 		return -KOS_EINVAL;
 	}
 	if (build_active != 0u) {
 		/* Starting the next resource closes the previous one. */
-		build_finish_entry();
+		result = build_finish_entry();
+		if (result < 0) {
+			return result;
+		}
 	}
-	if (build_count >= build_entry_count) {
+	if (build_count >= KRES_RESOURCE_MAX) {
 		return -KRES_E_FULL;
 	}
 	name_length = kres_name_check(name);
 	if (name_length == 0xFFFFu) {
 		return -KOS_EINVAL;
 	}
-	for (i = 0u; i < build_count; ++i) {
-		uint8_t prior[KRES_ENTRY_SIZE];
-
-		if (kres_cache->entry(kres_ctx, i, prior) < 0) {
-			return -KOS_EIO;
+	/* The sorted position, by binary search (names added in order
+	 * land at the end and shift nothing). */
+	high = build_count;
+	if (high != 0u) {
+		result = kres_cache->entry(kres_ctx, (uint16_t)(high - 1u),
+					   entry);
+		if (result < 0) {
+			return result;
 		}
-		if (prior[KRES_ENT_NAME_LENGTH] == (uint8_t)name_length &&
-		    memcmp(prior + KRES_ENT_NAME, name, name_length) == 0) {
-			return -KOS_EEXIST;
+		if (kres_name_order((const uint8_t *)name,
+				    (uint8_t)name_length, entry) > 0) {
+			low = high;
 		}
 	}
-	memcpy(build_name, name, name_length);
-	build_name_length = (uint8_t)name_length;
+	while (low < high) {
+		uint16_t mid = (uint16_t)(low + ((uint16_t)(high - low) >> 1));
+		int order;
+
+		result = kres_cache->entry(kres_ctx, mid, entry);
+		if (result < 0) {
+			return result;
+		}
+		order = kres_name_order((const uint8_t *)name,
+					(uint8_t)name_length, entry);
+		if (order == 0) {
+			return -KOS_EEXIST;
+		}
+		if (order < 0) {
+			high = mid;
+		} else {
+			low = (uint16_t)(mid + 1u);
+		}
+	}
+	result = kres_cache->insert(kres_ctx, low, build_count);
+	if (result < 0) {
+		return result;
+	}
+	kres_entry_emit(entry, (const uint8_t *)name, (uint8_t)name_length,
+			build_next_record, 0u, 0u);
+	result = kres_cache->put(kres_ctx, low, entry);
+	if (result < 0) {
+		return result;
+	}
+	build_count = (uint16_t)(build_count + 1u);
+	build_index = low;
 	build_start = build_next_record;
 	build_used = 0u;
 	build_active = 1u;
@@ -137,15 +188,17 @@ int kres_build_write(const void *src, uint16_t len)
 	    src == (const void *)0 || len == 0u) {
 		return -KOS_EINVAL;
 	}
+	if ((build_used & (KRES_RECORD_SIZE - 1u)) != 0u) {
+		return -KOS_EINVAL; /* only the final write may be partial */
+	}
 	while (done < len) {
 		uint16_t chunk = (uint16_t)(len - done);
-		uint32_t record = build_next_record;
 		int result;
 
 		if (chunk > KRES_RECORD_SIZE) {
 			chunk = KRES_RECORD_SIZE;
 		}
-		if (record > KRES_RECORD_LIMIT) {
+		if (build_next_record >= KRES_RECORD_LIMIT) {
 			return -KRES_E_RECLIM;
 		}
 		memcpy(kres_shared, (const uint8_t *)src + done, chunk);
@@ -156,7 +209,8 @@ int kres_build_write(const void *src, uint16_t len)
 			memset(kres_shared + chunk, 0,
 			       KRES_RECORD_SIZE - chunk);
 		}
-		result = kres_io->seek(kres_ctx, kres_record_offset(record));
+		result = kres_io->seek(kres_ctx,
+				       kres_record_offset(build_next_record));
 		if (result < 0) {
 			return result;
 		}
@@ -177,45 +231,52 @@ int kres_build_write(const void *src, uint16_t len)
 
 int kres_build_end(void)
 {
-	uint8_t zero[KRES_ENTRY_SIZE];
-	unsigned int i;
+	kres_container state;
+	uint16_t fill;
 	int result;
 
 	if (build_open == 0u) {
 		return -KOS_EINVAL;
 	}
-	if (build_active == 0u) {
-		result = -KOS_EINVAL; /* no resource was started */
+	if (build_active != 0u) {
+		result = build_finish_entry();
+		if (result < 0) {
+			goto fail;
+		}
+	}
+	/* The sorted catalog after the last resource, then the header
+	 * last. */
+	fill = kres_catalog_fill(build_count);
+	if (fill > KRES_RECORD_LIMIT - build_next_record) {
+		result = -KRES_E_RECLIM;
 		goto fail;
 	}
-	/* Close the current resource's entry and zero the rest of the
-	 * catalog, then write the area (records 1..4) and the header
-	 * last. */
-	build_finish_entry();
-	memset(zero, 0, sizeof(zero));
-	for (i = build_count; i < KRES_RESOURCE_MAX; ++i) {
-		(void)kres_cache->put(kres_ctx, i, zero);
+	if (fill != 0u) {
+		result = kres_cache->store(kres_ctx,
+					   (uint16_t)build_next_record,
+					   build_count);
+		if (result < 0) {
+			goto fail;
+		}
 	}
-	result = kres_cache->store(kres_ctx, KRES_AREA_A_BASE);
+	result = kres_io->sync(kres_ctx);
 	if (result < 0) {
 		goto fail;
 	}
-	memset(kres_shared, 0, KRES_RECORD_SIZE);
-	memcpy(kres_shared + KRES_HDR_MAGIC, "KRES", 4);
-	kres_put16(kres_shared + KRES_HDR_MAJOR, KRES_HDR_MAJOR_V1);
-	kres_put16(kres_shared + KRES_HDR_MINOR, KRES_HDR_MINOR_V1);
-	kres_put16(kres_shared + KRES_HDR_RECORD_SIZE, KRES_RECORD_SIZE);
-	kres_put16(kres_shared + KRES_HDR_CATALOG_RECS, KRES_CATALOG_RECORDS);
-	kres_put16(kres_shared + KRES_HDR_RES_COUNT, build_count);
-	kres_put32(kres_shared + KRES_HDR_NEXT_RECORD, build_next_record);
-	kres_put32(kres_shared + KRES_HDR_FLAGS, KRES_HDR_FLAG_SEALED);
+	memset(&state, 0, sizeof(state));
+	state.sealed = 1u;
+	state.resource_count = build_count;
+	state.catalog_start[0] = (uint16_t)build_next_record;
+	state.catalog_records[0] = fill;
+	state.next_record = build_next_record + fill;
+	kres_header_emit(&state, kres_shared);
 	result = kres_io->seek(kres_ctx, 0u);
 	if (result < 0) {
 		goto fail;
 	}
 	result = kres_io->write(kres_ctx, kres_shared, KRES_RECORD_SIZE);
 	if (result != (int)KRES_RECORD_SIZE) {
-		result = -KOS_EIO;
+		result = result < 0 ? result : -KOS_EIO;
 		goto fail;
 	}
 	result = kres_io->sync(kres_ctx);
@@ -226,9 +287,7 @@ int kres_build_end(void)
 	build_open = 0u;
 	return kres_io->close(kres_ctx);
 fail:
-	(void)kres_cache->release(kres_ctx);
-	build_open = 0u;
-	(void)kres_io->close(kres_ctx);
+	(void)kres_build_abort();
 	return result;
 }
 
@@ -238,8 +297,8 @@ int kres_build_abort(void)
 
 	if (build_open != 0u) {
 		result = kres_io->close(kres_ctx);
+		(void)kres_cache->release(kres_ctx);
 	}
-	(void)kres_cache->release(kres_ctx);
 	build_open = 0u;
 	build_active = 0u;
 	build_count = 0u;

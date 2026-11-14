@@ -158,7 +158,7 @@ KOS_RULES    ?= $(KOS_SDK_ROOT)/mk/kos.mk
 # when its code is reached through a pointer (an address stored in data, a
 # table of function pointers handed to another member), not for plain
 # calls.  libtui's mouse member is read through tui_mouse_hook; libkres's
-# adapters and caches are the tables handed to kres_install, and
+# adapters and catalog store are the tables handed to kres_install, and
 # kres_mut.rel's functions are installed as the read path's hooks.
 KOS_POINTER_MEMBERS_tui  := tui_mouse.rel
 KOS_POINTER_MEMBERS_kres := kres_mut.rel kres_adapter.rel \

@@ -1,17 +1,20 @@
 /* KRES host tests: the randomized oracle.  10,000 random operations
  * against the in-memory adapter, with an in-memory name->bytes map as
- * the oracle; every 100 operations the container is verified and
- * every resource is compared byte for byte. */
+ * the oracle; every 100 operations the container is verified (which
+ * checks the catalog's order) and every resource is compared byte for
+ * byte.  The name pool (48 names: mixed case, slashes, CP850 bytes
+ * above 7Fh, prefixes of one another) keeps the catalog moving across
+ * record boundaries and through catalog relocations. */
 
 #include "kres_test.h"
 
 #include "kos/kres.h"
 
-#define MAX_RES 32u
+#define MAX_RES 48u
 #define MAX_BYTES 3000u
 
 struct oracle_entry {
-	char name[16];
+	char name[KRES_NAME_MAX + 1u];
 	uint8_t bytes[MAX_BYTES];
 	uint32_t used;
 	uint8_t live;
@@ -75,7 +78,7 @@ static void compare_all(const char *path)
 	struct kres_info info;
 	unsigned int compared = 0u;
 
-	CHECK_EQ(kres_verify(path), 0);
+	CHECK_EQ(kres_verify(path, (struct kres_usage *)0), 0);
 	CHECK_EQ(kres_open(&c, path, KRES_OPEN_READ), 0);
 	CHECK_EQ(c.resource_count, oracle_count);
 	CHECK_EQ(kres_iter_begin(&c, &it), 0);
@@ -108,9 +111,15 @@ static void compare_all(const char *path)
 
 int main(void)
 {
-	static const char *const name_pool[8] = {
-		"alpha", "beta", "gamma", "delta",
-		"eps", "zeta", "eta", "theta",
+	static const char *const name_pool[MAX_RES] = {
+		"alpha", "beta", "gamma", "delta", "eps", "zeta", "eta",
+		"theta", "Alpha", "ALPHA", "a", "aa", "aaa", "a/b",
+		"a/b/c", "a.b", "src/MAIN.MOD", "src/LIB/MATH.DEF",
+		"build/MAIN.REL", "caf\x82", "caf\x82s", "\x80", "\xff",
+		"\x7f", "~", "z", "Z", "0", "00", "9", "scene/001",
+		"scene/002", "scene/010", "scene/100", "music/title",
+		"music/end", "x", "y", "yy", "yyy", "m", "n", "o", "p",
+		"q", "r", "s", "t",
 	};
 	kres_container c;
 	unsigned int op;
@@ -122,8 +131,8 @@ int main(void)
 	CHECK_EQ(kres_create_container("rnd.kpr"), 0);
 
 	for (op = 0u; op < 10000u; ++op) {
-		unsigned int choice = rnd() % 10u;
-		unsigned int which = rnd() % 8u;
+		unsigned int choice = rnd() % 11u;
+		unsigned int which = rnd() % MAX_RES;
 		const char *name = name_pool[which];
 		struct oracle_entry *entry = find_entry(name);
 		int result;
@@ -238,7 +247,7 @@ int main(void)
 			break;
 		}
 		case 4u: { /* rename to the next pool name */
-			const char *target = name_pool[(which + 1u) % 8u];
+			const char *target = name_pool[(which + 1u) % MAX_RES];
 			struct oracle_entry *there = find_entry(target);
 
 			if (strcmp(name, target) == 0) {
@@ -324,6 +333,28 @@ int main(void)
 			CHECK_EQ(result, 0);
 			compare_all("rnd.kpr");
 			break;
+		case 9u: /* create a burst (catalog growth) */
+		case 10u: {
+			unsigned int k;
+
+			for (k = 0u; k < 6u; ++k) {
+				const char *more = name_pool[rnd() % MAX_RES];
+
+				if (find_entry(more) != (struct oracle_entry *)0) {
+					continue;
+				}
+				result = kres_create(&c, more, 1u,
+						     &(kres_resource){0});
+				CHECK_EQ(result, 0);
+				if (result == 0) {
+					CHECK(add_entry(more) !=
+					      (struct oracle_entry *)0);
+					++oracle_count;
+					++live;
+				}
+			}
+			break;
+		}
 		default:
 			break;
 		}

@@ -378,9 +378,10 @@ static int unsafe_name(const char *name, size_t len)
 }
 
 /* The paths already created by this unpack, for the case-insensitive
- * collision refusal. */
-static char unpacked_paths[KRES_RESOURCE_MAX][512];
+ * collision refusal (grown as the unpack proceeds). */
+static char **unpacked_paths;
 static unsigned int unpacked_count;
+static unsigned int unpacked_capacity;
 
 static int path_clashes(const char *path)
 {
@@ -391,6 +392,28 @@ static int path_clashes(const char *path)
 			return 1;
 		}
 	}
+	return 0;
+}
+
+static int path_remember(const char *path)
+{
+	if (unpacked_count == unpacked_capacity) {
+		unsigned int capacity = unpacked_capacity != 0u
+						? unpacked_capacity * 2u : 64u;
+		char **grown = (char **)realloc(unpacked_paths,
+						capacity * sizeof(char *));
+
+		if (grown == (char **)0) {
+			return -1;
+		}
+		unpacked_paths = grown;
+		unpacked_capacity = capacity;
+	}
+	unpacked_paths[unpacked_count] = strdup(path);
+	if (unpacked_paths[unpacked_count] == (char *)0) {
+		return -1;
+	}
+	unpacked_count++;
 	return 0;
 }
 
@@ -656,13 +679,10 @@ static int cmd_unpack(int argc, char **argv)
 			(void)kres_close(&c);
 			return 1;
 		}
-		if (unpacked_count >= KRES_RESOURCE_MAX ||
-		    strlen(path) + 1u > sizeof(unpacked_paths[0])) {
+		if (path_remember(path) != 0) {
 			(void)kres_close(&c);
-			die("too many export paths");
+			die("out of memory");
 		}
-		memcpy(unpacked_paths[unpacked_count], path, strlen(path) + 1u);
-		unpacked_count++;
 	}
 	(void)kres_close(&c);
 	return 0;
@@ -670,17 +690,26 @@ static int cmd_unpack(int argc, char **argv)
 
 static int cmd_verify(int argc, char **argv)
 {
+	struct kres_usage usage;
 	int result;
 
 	if (argc != 1) {
 		return 1;
 	}
-	result = kres_verify(argv[0]);
+	result = kres_verify(argv[0], &usage);
 	if (result < 0) {
 		fprintf(stderr, "kres: verify failed (%d)\n", result);
 		return 1;
 	}
 	printf("%s: ok\n", argv[0]);
+	printf("resources %u (catalog capacity %u)\n",
+	       (unsigned int)usage.resources,
+	       (unsigned int)usage.catalog_capacity);
+	printf("records   %u: 1 header, %u catalog, %u live, %u abandoned\n",
+	       (unsigned int)usage.next_record,
+	       (unsigned int)usage.catalog_records,
+	       (unsigned int)usage.live_records,
+	       (unsigned int)usage.abandoned_records);
 	return 0;
 }
 
@@ -721,7 +750,7 @@ static int cmd_seal(int argc, char **argv)
 			result);
 		return 1;
 	}
-	result = kres_build_begin(argv[1], (uint8_t)c.resource_count);
+	result = kres_build_begin(argv[1]);
 	if (result < 0) {
 		(void)kres_close(&c);
 		die("build begin failed");
@@ -776,8 +805,51 @@ seal_fail:
 	return 1;
 }
 
-static int pack_walk_files(const char *dir, const char *prefix,
-			   uint16_t *count, int adding)
+/* The pack list: every regular file under the directory, its host
+ * path and its CP850 resource name, sorted by name before the build so
+ * the builder only ever appends. */
+struct pack_file {
+	char *host_path;
+	char name[KRES_NAME_MAX + 1u];
+	size_t name_length;
+};
+
+static struct pack_file *pack_files;
+static size_t pack_count;
+static size_t pack_capacity;
+
+static int pack_note(const char *full, const char *joined)
+{
+	struct pack_file *file;
+
+	if (pack_count == pack_capacity) {
+		size_t capacity = pack_capacity != 0u ? pack_capacity * 2u
+						      : 64u;
+		struct pack_file *grown = (struct pack_file *)realloc(
+			pack_files, capacity * sizeof(*grown));
+
+		if (grown == (struct pack_file *)0) {
+			return -1;
+		}
+		pack_files = grown;
+		pack_capacity = capacity;
+	}
+	file = &pack_files[pack_count];
+	if (utf8_to_cp850(joined, file->name, sizeof(file->name)) != 0) {
+		fprintf(stderr, "kres: name not CP850 or longer than 48 "
+			"bytes: %s\n", joined);
+		return -1;
+	}
+	file->name_length = strlen(file->name);
+	file->host_path = strdup(full);
+	if (file->host_path == (char *)0) {
+		return -1;
+	}
+	pack_count++;
+	return 0;
+}
+
+static int pack_walk_files(const char *dir, const char *prefix)
 {
 	struct dirent *de;
 	DIR *d = opendir(dir);
@@ -817,7 +889,7 @@ static int pack_walk_files(const char *dir, const char *prefix,
 				(void)closedir(d);
 				return -1;
 			}
-			result = pack_walk_files(full, deeper, count, adding);
+			result = pack_walk_files(full, deeper);
 			if (result != 0) {
 				(void)closedir(d);
 				return result;
@@ -833,79 +905,100 @@ static int pack_walk_files(const char *dir, const char *prefix,
 			(void)closedir(d);
 			return -1;
 		}
-		if (adding != 0) {
-			static uint8_t buf[KRES_RECORD_SIZE];
-			char name[KRES_NAME_MAX + 1u];
-			FILE *in;
-
-			if (utf8_to_cp850(joined, name, sizeof(name)) != 0) {
-				fprintf(stderr,
-					"kres: name not CP850: %s\n", joined);
-				(void)closedir(d);
-				return -1;
-			}
-			result = kres_build_add(name);
-			if (result < 0) {
-				(void)closedir(d);
-				return result;
-			}
-			in = fopen(full, "rb");
-			if (in == (FILE *)0) {
-				(void)closedir(d);
-				return -1;
-			}
-			for (;;) {
-				size_t got = fread(buf, 1u, sizeof(buf), in);
-
-				if (got == 0u) {
-					break;
-				}
-				result = kres_build_write(buf, (uint16_t)got);
-				if (result < 0) {
-					(void)fclose(in);
-					(void)closedir(d);
-					return result;
-				}
-			}
-			(void)fclose(in);
-		}
-		if (count != (uint16_t *)0) {
-			if (*count >= KRES_RESOURCE_MAX) {
-				fprintf(stderr,
-					"kres: more than 32 resources\n");
-				(void)closedir(d);
-				return -1;
-			}
-			(*count)++;
+		if (pack_note(full, joined) != 0) {
+			(void)closedir(d);
+			return -1;
 		}
 	}
 	(void)closedir(d);
 	return 0;
 }
 
+/* The catalog order: raw CP850 bytes, unsigned, a prefix first. */
+static int pack_order(const void *a, const void *b)
+{
+	const struct pack_file *fa = (const struct pack_file *)a;
+	const struct pack_file *fb = (const struct pack_file *)b;
+	size_t common = fa->name_length < fb->name_length ? fa->name_length
+							  : fb->name_length;
+	int order = memcmp(fa->name, fb->name, common);
+
+	if (order != 0) {
+		return order;
+	}
+	return (fa->name_length > fb->name_length) -
+	       (fa->name_length < fb->name_length);
+}
+
+static int pack_add(const struct pack_file *file)
+{
+	static uint8_t buf[KRES_RECORD_SIZE];
+	FILE *in;
+	int result;
+
+	result = kres_build_add(file->name);
+	if (result < 0) {
+		return result;
+	}
+	in = fopen(file->host_path, "rb");
+	if (in == (FILE *)0) {
+		return -KOS_EIO;
+	}
+	for (;;) {
+		size_t got = fread(buf, 1u, sizeof(buf), in);
+
+		if (got == 0u) {
+			break;
+		}
+		result = kres_build_write(buf, (uint16_t)got);
+		if (result < 0) {
+			(void)fclose(in);
+			return result;
+		}
+	}
+	result = ferror(in) ? -KOS_EIO : 0;
+	(void)fclose(in);
+	return result;
+}
+
 static int cmd_pack(int argc, char **argv)
 {
-	uint16_t count = 0u;
+	size_t i;
 	int result;
 
 	if (argc != 2) {
 		return 1;
 	}
-	result = pack_walk_files(argv[0], "", &count, 0);
-	if (result != 0) {
+	if (pack_walk_files(argv[0], "") != 0) {
 		fprintf(stderr, "kres: cannot scan %s\n", argv[0]);
 		return 1;
 	}
-	result = kres_build_begin(argv[1], (uint8_t)count);
+	if (pack_count > KRES_RESOURCE_MAX) {
+		fprintf(stderr, "kres: more than %u resources\n",
+			(unsigned int)KRES_RESOURCE_MAX);
+		return 1;
+	}
+	qsort(pack_files, pack_count, sizeof(*pack_files), pack_order);
+	for (i = 1u; i < pack_count; ++i) {
+		if (pack_order(&pack_files[i - 1u], &pack_files[i]) == 0) {
+			fprintf(stderr, "kres: duplicate resource name %s\n",
+				pack_files[i].host_path);
+			return 1;
+		}
+	}
+	result = kres_build_begin(argv[1]);
 	if (result < 0) {
 		fprintf(stderr, "kres: build begin failed (%d)\n", result);
 		return 1;
 	}
-	result = pack_walk_files(argv[0], "", (uint16_t *)0, 1);
-	if (result != 0) {
-		(void)kres_build_abort();
-		fprintf(stderr, "kres: pack failed (%d)\n", result);
-		return 1;
+	for (i = 0u; i < pack_count; ++i) {
+		result = pack_add(&pack_files[i]);
+		if (result < 0) {
+			(void)kres_build_abort();
+			fprintf(stderr, "kres: pack failed at %s (%d)\n",
+				pack_files[i].host_path, result);
+			return 1;
+		}
 	}
 	result = kres_build_end();
 	if (result < 0) {

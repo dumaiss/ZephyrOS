@@ -22,8 +22,14 @@ the containers the runs left on the card back with the host tool:
   intact);
 - sealed and read-only: writes and creates are refused and the
   container is unchanged;
-- the read-only link: kresread's map links only the read path, the
-  adapter's read side and the cache.
+- the read-only link: kresread's map links only the read path and the
+  adapter's read side - no mutation member and no XMEM catalog store;
+- a large catalog: a host-packed container of 1,024 resources opens
+  read-only, walks in name order and finds every resource by binary
+  search; misses are refused;
+- catalog growth on the card: 40 resources created across four commits
+  relocate the catalog each time, the host tool verifies and reads the
+  result, and on-card compaction reclaims the abandoned areas.
 
 The card holds KEEP.TXT untouched in every run, exactly as the
 filesystem suite's runs do.
@@ -76,17 +82,27 @@ DATA_SUM = sum(pattern_data()) & 0xFFFF
 EDIT_SUM = sum(pattern_data(EDIT_BYTES)) & 0xFFFF
 
 # The layout facts the host-side assertions parse (kres_layout.h):
-# the header fields and the catalog areas, in bytes.
+# the header fields, and a fresh container's catalog areas (one record
+# each, at records 1 and 2), in bytes.
 HDR_RES_COUNT = 0x12
 HDR_NEXT_RECORD = 0x14
 HDR_ACTIVE_AREA = 0x10
 HDR_GENERATION = 0x0C
+HDR_CAT_B_START = 0x24
 ENT_START = 0x30
 ENT_ALLOCATED = 0x34
 ENT_USED = 0x38
 AREA_A_BASE = 1 * 512
-AREA_B_BASE = 5 * 512
-DATA_BASE_MUT = 9 * 512
+AREA_B_BASE = 2 * 512
+DATA_BASE_MUT = 3 * 512
+
+# The large catalog: resource i is "R%04d" with (i % 200) bytes, byte
+# j being (i * 7 + j) & 0xFF (krestest many).
+MANY = 1024
+
+
+def pattern_many(i):
+    return bytes((i * 7 + j) & 0xFF for j in range(i % 200))
 
 
 def get16(data, offset):
@@ -134,9 +150,12 @@ class KresReplay(HwtestReplay):
         self.boot_to_shell(z, prompt=SHELL_PROMPT)
         return z
 
-    def run_command(self, z, command, until, since):
+    def run_command(self, z, command, until, since, limit=None):
         z.hid.hid_queue.extend(command.encode("ascii") + b"\r")
-        self.run_to(z, until, since=since)
+        if limit is None:
+            self.run_to(z, until, since=since)
+        else:
+            self.run_to(z, until, since=since, limit=limit)
 
     def run_krestest(self, z, mode, until, since):
         self.run_command(z, "/fs/krestest.exe " + mode, until, since)
@@ -247,9 +266,13 @@ class TestKresNative(KresReplay):
         with open(KRESREAD_MAP, encoding="latin-1") as handle:
             text = handle.read()
         for module in ("kres_util.rel", "kres_read.rel",
-                       "kres_adapter.rel", "kres_cache_xmem.rel"):
+                       "kres_adapter.rel"):
             self.assertIn("[ %s ]" % module, text,
                           "the reader links %s" % module)
+        for module in ("kres_cache_xmem.rel", "kres_mut.rel",
+                       "kres_build.rel"):
+            self.assertNotIn("[ %s ]" % module, text,
+                             "the reader links no %s" % module)
         for symbol in ("_kres_install_mut", "_kres_create_container",
                        "_kres_flush", "_kres_compact", "_kres_verify",
                        "_kres_extract", "_kres_build_begin",
@@ -293,15 +316,16 @@ class TestKresNative(KresReplay):
             self.assertIn("%-28s %6u %6u" % ("B", EDIT_BYTES, 4),
                           listed, listed)
             # Growth and commit: the header switched to area B,
-            # generation 1, next_record 16, and B lives at a fresh
-            # extent (10) - the old extent (9) is unreferenced.
+            # generation 1, next_record 10, and B lives at a fresh
+            # extent (4) - the old extent (3) is unreferenced.
             self.assertEqual(edited[HDR_ACTIVE_AREA], 1)
             self.assertEqual(get32(edited, HDR_GENERATION), 1)
             self.assertEqual(get16(edited, HDR_RES_COUNT), 1)
-            self.assertEqual(get32(edited, HDR_NEXT_RECORD), 16)
+            self.assertEqual(get32(edited, HDR_NEXT_RECORD), 10)
+            self.assertEqual(get32(edited, HDR_CAT_B_START), 2)
             entry = edited[AREA_B_BASE + ENT_START:
                            AREA_B_BASE + ENT_START + 16]
-            self.assertEqual(get32(entry, 0), 10)
+            self.assertEqual(get32(entry, 0), 4)
             self.assertEqual(get32(entry, 4), 4)
             self.assertEqual(get32(entry, 8), EDIT_BYTES)
 
@@ -312,9 +336,9 @@ class TestKresNative(KresReplay):
         trace = self.trace(z, since)
         self.assertEqual(self.line_value(trace, "compact"), 0)
         compacted = self.card_bytes(z, "EDITED.KPR")
-        # B's extent starts at record 9: 9 full records plus the
+        # B's extent starts at record 3: 3 full records plus the
         # 1,000 live bytes (the tail may end in a partial record).
-        self.assertEqual(len(compacted), 9 * 512 + EDIT_BYTES,
+        self.assertEqual(len(compacted), 3 * 512 + EDIT_BYTES,
                          "compact dropped the unreferenced extents")
         self.assertFalse(self.card_has(z, "EDITED#.KPR"),
                          "no recovery name remains")
@@ -344,15 +368,15 @@ class TestKresNative(KresReplay):
         verifies, with the previous catalog."""
         _, edited = self._run_edit_boot()
         z = self.start({"EDITED.KPR": edited})
-        # The flush's catalog writes land in area A (offsets 512..2560)
+        # The flush's catalog write lands in area A (offsets 512..1024)
         # and the header write at offset 0 is the commit point: stop
-        # after at least two catalog records and before the header.
+        # after the catalog write began and before the header.
         peer = z.ioc_peer
 
         def cutoff(_step):
             area_a = [o for o in peer.fs2_write_offsets
                       if AREA_A_BASE <= o < AREA_B_BASE]
-            return 0 not in peer.fs2_write_offsets and len(area_a) >= 2
+            return 0 not in peer.fs2_write_offsets and len(area_a) >= 1
 
         z.hid.hid_queue.extend(b"/fs/krestest.exe edit2\r")
         self.assertIsNotNone(self.drive(z, 4_000_000, tick=cutoff,
@@ -408,6 +432,87 @@ class TestKresNative(KresReplay):
         entries = self.entry_lines(trace, "krestest")
         self.assertEqual(entries, {"INFO": (INFO_BYTES, INFO_SUM),
                                    "DATA": (DATA_BYTES, DATA_SUM)})
+        self.run_to(z, SHELL_PROMPT, since=since)
+
+    def test_large_catalog_host_to_native(self):
+        """1,024 host-packed resources: opened read-only, walked in
+        name order, every one found by name, misses refused."""
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "src")
+            os.mkdir(src)
+            for i in range(MANY):
+                with open(os.path.join(src, "R%04d" % i), "wb") as handle:
+                    handle.write(pattern_many(i))
+            packed = os.path.join(tmp, "MANY.KPR")
+            self.run_tool("pack", src, packed)
+            self.run_tool("verify", packed)
+            with open(packed, "rb") as handle:
+                image = handle.read()
+
+        z = self.start({"MANY.KPR": image})
+        since = len(z.glyphs)
+        self.run_command(z, "/fs/krestest.exe many %d" % MANY,
+                         "krestest: many-close 0", since,
+                         limit=400_000_000)
+        trace = self.trace(z, since)
+        self.assertEqual(self.line_value(trace, "many-open"), 0)
+        self.assertEqual(self.line_value(trace, "many-walk"), MANY)
+        self.assertEqual(self.line_value(trace, "many-unsorted"), 0)
+        self.assertEqual(self.line_value(trace, "many-lookup-errors"), 0)
+        self.assertEqual(self.line_value(trace, "many-miss"), -5)
+        self.assertEqual(self.line_value(trace, "many-miss2"), -5)
+        entries = self.entry_lines(trace, "krestest")
+        for i in (0, MANY // 2, MANY - 1):
+            data = pattern_many(i)
+            self.assertEqual(entries["R%04d" % i],
+                             (len(data), sum(data) & 0xFFFF))
+        self.assertEqual(self.card_bytes(z, "MANY.KPR"), image,
+                         "the sealed container is unchanged")
+
+    def test_native_catalog_growth_and_compaction(self):
+        """40 resources created on the card across four commits: the
+        catalog relocates at each, the host tool reads the result, and
+        on-card compaction reclaims the abandoned areas."""
+        z = self.start({})
+        since = len(z.glyphs)
+        self.run_krestest(z, "grow", "krestest: grow-verify2", since)
+        trace = self.trace(z, since)
+        self.assertEqual(self.line_value(trace, "grow-open"), 0)
+        self.assertEqual(self.line_value(trace, "grow-result"), 0)
+        self.assertEqual(self.line_value(trace, "grow-close"), 0)
+        flushes = [line.split()[2:] for line in trace.splitlines()
+                   if line.startswith("krestest: grow-flush ")]
+        # count, catalog start, catalog records: each commit moved the
+        # inactive area to the allocation mark, doubling as needed.
+        counts = [int(f[0]) for f in flushes]
+        starts = [int(f[1]) for f in flushes]
+        records = [int(f[2]) for f in flushes]
+        self.assertEqual(counts, [10, 20, 30, 40])
+        self.assertEqual(records, [2, 4, 4, 8])
+        self.assertEqual(starts, sorted(starts))
+        self.assertGreater(starts[0], 2)
+        verify = [line.split()[2:] for line in trace.splitlines()
+                  if line.startswith("krestest: grow-verify ")][0]
+        self.assertEqual(verify[:2], ["0", "40"])
+        self.assertGreater(int(verify[2]), 0, "abandoned catalog areas")
+        self.assertEqual(self.line_value(trace, "grow-compact"), 0)
+        verify2 = [line.split()[2:] for line in trace.splitlines()
+                   if line.startswith("krestest: grow-verify2 ")][0]
+        self.assertEqual(verify2, ["0", "40", "0"])
+        grown = self.card_bytes(z, "GROWN.KPR")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "GROWN.KPR")
+            with open(path, "wb") as handle:
+                handle.write(grown)
+            out = self.run_tool("verify", path).stdout.decode()
+            self.assertIn("resources 40", out)
+            self.assertIn(" 0 abandoned", out)
+            listed = self.run_tool("list", path).stdout.decode()
+            names = [line.split()[0] for line in listed.splitlines()]
+            self.assertEqual(names, ["R%04d" % i for i in range(40)])
+            for i in (0, 17, 39):
+                self.assertEqual(self.tool_bytes(path, "R%04d" % i),
+                                 pattern_data(10 + i)[i:i + 10])
         self.run_to(z, SHELL_PROMPT, since=since)
 
 

@@ -46,7 +46,7 @@ int main(int argc, char **argv)
 	}
 	memset(&container, 0, sizeof(container));
 	memset(&resource, 0, sizeof(resource));
-	kres_install(&kres_io_konaos_read, &kres_cache_xmem, &kres_context);
+	kres_install(&kres_io_konaos_read, &kres_context);
 	result = kres_open(&container, argv[0], KRES_OPEN_READ);
 	if (result == 0) {
 		result = kres_get(&container, argv[1], &resource,

@@ -1,7 +1,7 @@
 /* KRES host tests: the design §11 basic rows — create/open/list,
  * names, logical cursors, contiguous allocation, update in capacity,
- * overflow growth, resize, delete/rename, catalog full, buffered I/O
- * across records and the partial final record. */
+ * overflow growth, resize, delete/rename, a catalog past one record,
+ * buffered I/O across records and the partial final record. */
 
 #include "kres_test.h"
 
@@ -82,7 +82,11 @@ int main(void)
 		CHECK(f != (const struct mem_file *)0 &&
 		      f->data[8] == 0x00 && f->data[9] == 0x02);
 		CHECK(f != (const struct mem_file *)0 &&
-		      f->data[10] == 0x04 && f->data[11] == 0x00);
+		      f->data[10] == 0x00 && f->data[11] == 0x00);
+		/* Catalog A at record 1, B at record 2, one record each. */
+		CHECK(f != (const struct mem_file *)0 &&
+		      f->data[0x1C] == 1u && f->data[0x20] == 1u &&
+		      f->data[0x24] == 2u && f->data[0x28] == 1u);
 	}
 
 	/* Names. */
@@ -126,30 +130,30 @@ int main(void)
 	CHECK_EQ(kres_open(&c, "base.kpr", KRES_OPEN_READ | KRES_OPEN_WRITE),
 		 0);
 	CHECK_EQ(kres_create(&c, "A", 2u, &r), 0);
-	CHECK_EQ(r.start_record, 15u);
+	CHECK_EQ(r.start_record, 9u);
 	CHECK_EQ(r.allocated_records, 2u);
 	CHECK_EQ(kres_rclose(&r), 0);
 	CHECK_EQ(kres_create(&c, "B", 1u, &r), 0);
-	CHECK_EQ(r.start_record, 17u);
+	CHECK_EQ(r.start_record, 11u);
 	CHECK_EQ(kres_rclose(&r), 0);
 	CHECK_EQ(kres_create(&c, "C", 3u, &r), 0);
-	CHECK_EQ(r.start_record, 18u);
+	CHECK_EQ(r.start_record, 12u);
 	CHECK_EQ(kres_rclose(&r), 0);
-	CHECK_EQ(c.next_record, 21u);
+	CHECK_EQ(c.next_record, 15u);
 
 	/* Update in capacity: the extent start does not move. */
 	CHECK_EQ(kres_get(&c, "A", &r, KRES_OPEN_WRITE), 0);
-	CHECK_EQ(r.start_record, 15u);
+	CHECK_EQ(r.start_record, 9u);
 	CHECK_EQ(kres_write(&r, pattern, 1000), 1000);
-	CHECK_EQ(r.start_record, 15u);
+	CHECK_EQ(r.start_record, 9u);
 	CHECK_EQ(kres_rclose(&r), 0);
 
 	/* Overflow growth: a fresh extent at the mark, bytes preserved. */
 	CHECK_EQ(kres_get(&c, "A", &r, KRES_OPEN_WRITE), 0);
 	CHECK_EQ(kres_write(&r, pattern, 1200), 1200);
-	CHECK_EQ(r.start_record, 21u);
+	CHECK_EQ(r.start_record, 15u);
 	CHECK_EQ(kres_rclose(&r), 0);
-	CHECK_EQ(c.next_record, 25u); /* grown capacity: 2 -> 3 -> 4 */
+	CHECK_EQ(c.next_record, 19u); /* grown capacity: 2 -> 3 -> 4 */
 	CHECK_EQ(kres_get(&c, "A", &r, KRES_OPEN_READ), 0);
 	CHECK_EQ(r.used_bytes, 1200u);
 	CHECK_EQ(kres_seek(&r, 0u), 0);
@@ -177,22 +181,23 @@ int main(void)
 
 	/* Delete/rename: catalog-only. */
 	CHECK_EQ(kres_get(&c, "B", &r, KRES_OPEN_READ), 0);
-	CHECK_EQ(r.start_record, 17u);
+	CHECK_EQ(r.start_record, 11u);
 	CHECK_EQ(kres_rclose(&r), 0);
 	CHECK_EQ(kres_rename(&c, "B", "B2"), 0);
 	CHECK_EQ(kres_get(&c, "B", &r, KRES_OPEN_READ), -KOS_ENOENT);
 	CHECK_EQ(kres_get(&c, "B2", &r, KRES_OPEN_READ), 0);
-	CHECK_EQ(r.start_record, 17u);
+	CHECK_EQ(r.start_record, 11u);
 	CHECK_EQ(kres_rclose(&r), 0);
 	CHECK_EQ(kres_delete(&c, "B2"), 0);
 	CHECK_EQ(kres_get(&c, "B2", &r, KRES_OPEN_READ), -KOS_ENOENT);
 	CHECK_EQ(kres_close(&c), 0);
 
-	/* Catalog full: the 33rd create. */
+	/* Past one catalog record and past 32 entries: the catalog grows
+	 * at the flush, nothing refuses the 33rd create. */
 	CHECK_EQ(make_container("full.kpr"), 0);
 	CHECK_EQ(kres_open(&c, "full.kpr", KRES_OPEN_READ | KRES_OPEN_WRITE),
 		 0);
-	for (i = 0u; i < KRES_RESOURCE_MAX; ++i) {
+	for (i = 0u; i < 40u; ++i) {
 		char name[8];
 
 		sprintf(name, "r%u", i);
@@ -202,9 +207,9 @@ int main(void)
 			CHECK_EQ(kres_rclose(&r), 0);
 		}
 	}
-	CHECK_EQ(c.resource_count, 32u);
-	CHECK_EQ(kres_create(&c, "r32", 1u, &r), -KRES_E_FULL);
+	CHECK_EQ(c.resource_count, 40u);
 	CHECK_EQ(kres_close(&c), 0);
+	CHECK_EQ(kres_verify("full.kpr", (struct kres_usage *)0), 0);
 
 	/* Buffered I/O across records and the partial final record. */
 	CHECK_EQ(kres_open(&c, "base.kpr", KRES_OPEN_READ | KRES_OPEN_WRITE),

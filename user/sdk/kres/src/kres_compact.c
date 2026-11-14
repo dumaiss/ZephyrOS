@@ -4,7 +4,10 @@
  * (design §7.1), preserving live reservations by default, with
  * KRES_TIGHT dropping reserved slack and KRES_SEAL producing a sealed
  * container.  An interruption at any step leaves at least one complete
- * valid container, so there is no in-place variant.
+ * valid container, so there is no in-place variant.  The rebuild reads
+ * the source catalog in name order, so every entry appends to the
+ * target's catalog; abandoned resource and catalog extents are simply
+ * not copied.
  */
 
 #include "kres_internal.h"
@@ -97,8 +100,8 @@ static int copy_resources(kres_container *src, kres_container *dst,
 		if (capacity == 0u) {
 			capacity = 1u;
 		}
-		result = kres_get(src, (const char *)info.name, &in,
-				  KRES_OPEN_READ);
+		/* The entry the iterator just returned. */
+		result = resource_fill(src, (uint16_t)(it.index - 1u), &in);
 		if (result < 0) {
 			return result;
 		}
@@ -127,7 +130,7 @@ static int seal_copy(kres_container *src, const char *temp)
 	struct kres_info info;
 	int result;
 
-	result = kres_build_begin(temp, (uint8_t)src->resource_count);
+	result = kres_build_begin(temp);
 	if (result < 0) {
 		return result;
 	}
@@ -139,8 +142,7 @@ static int seal_copy(kres_container *src, const char *temp)
 		kres_resource in;
 		uint32_t at = 0u;
 
-		result = kres_get(src, (const char *)info.name, &in,
-				  KRES_OPEN_READ);
+		result = resource_fill(src, (uint16_t)(it.index - 1u), &in);
 		if (result < 0) {
 			goto fail;
 		}
@@ -208,12 +210,17 @@ int kres_compact(const char *path, unsigned int flags)
 		(void)kres_close(&src);
 	} else {
 		kres_container dst;
+		uint16_t fill;
 
 		result = kres_open(&src, path, KRES_OPEN_READ);
 		if (result < 0) {
 			return result;
 		}
-		result = kres_create_container(kres_swap_path);
+		/* Both catalog areas sized for the live entries, so the
+		 * rebuilt container's first flush relocates nothing. */
+		fill = kres_catalog_fill(src.resource_count);
+		result = kres_create_sized(kres_swap_path,
+					   fill != 0u ? fill : 1u);
 		if (result < 0) {
 			(void)kres_close(&src);
 			return result;

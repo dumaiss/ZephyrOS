@@ -44,8 +44,8 @@ READER_KPR = os.path.join(FIXTURES, "reader.kpr")
 
 CARD_SHA = ("8ab783947bae918d01b74448625dfd0fef119e16e97d6fc9fdf"
             "15e310c87cb01")
-KPR_SHA = ("3fabfac55a61e22c5321beaf35405cbd9ce21eedb4690f464fa6"
-           "f3dc202164f6")
+KPR_SHA = ("059dccfaef013072e9d69134c02e1e35da2072cd62c7f5df9d3f"
+           "781ac565c23f")
 
 
 def _digest(path):

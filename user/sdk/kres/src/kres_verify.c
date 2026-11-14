@@ -1,106 +1,191 @@
 /* KRES core: the §10 validation pass (private).
  *
  * kres_verify opens the file through the installed adapter and checks
- * the header, every catalog entry's name and geometry, the name
- * uniqueness and the extents against `next_record` and the real file
- * size.  It fails closed on a malformed file and never follows an
- * unchecked offset.
+ * the header, the catalog extents, every catalog entry's name, order
+ * and geometry, and that no two live extents (the header, the catalog
+ * areas, the resources) share a record.  It fails closed on a
+ * malformed file and never follows an unchecked offset.
  *
- * The walk streams the catalog records one at a time through the
- * shared buffer (no private tables), so this member's own state is a
- * single 64-byte entry.
+ * Memory is bounded and independent of the resource count: the
+ * catalog streams through the one-record cache, and the overlap pass
+ * marks records in a 4,096-record bitmap window held in the shared
+ * buffer, one catalog walk per window (at most 16 windows for the
+ * 65,535-record limit).
  */
 
 #include "kres_internal.h"
 
+/* Records one bitmap window covers: the shared buffer's bits. */
+#define WINDOW_RECORDS ((uint32_t)KRES_RECORD_SIZE * 8u)
+
+static uint32_t window_base;
+
+/* Mark the records of [start, start + count) inside the window;
+ * -KRES_E_BAD when one is marked already (an overlap). */
+static int window_mark(uint32_t start, uint32_t count)
+{
+	uint32_t low = start;
+	uint32_t high = start + count;
+	uint32_t record;
+
+	if (low < window_base) {
+		low = window_base;
+	}
+	if (high > window_base + WINDOW_RECORDS) {
+		high = window_base + WINDOW_RECORDS;
+	}
+	for (record = low; record < high; ++record) {
+		uint16_t bit = (uint16_t)(record - window_base);
+		uint8_t mask = (uint8_t)(1u << (bit & 7u));
+
+		if ((kres_shared[bit >> 3] & mask) != 0u) {
+			return -KRES_E_BAD;
+		}
+		kres_shared[bit >> 3] |= mask;
+	}
+	return 0;
+}
+
 /* Verify one entry's fields, returning 0 or a negated error. */
-static int entry_check(const uint8_t *entry, kres_container *c,
+static int entry_check(const uint8_t *entry, const kres_container *c,
 		       uint32_t file_size)
 {
 	uint32_t start = kres_get32(entry + KRES_ENT_START);
 	uint32_t allocated = kres_get32(entry + KRES_ENT_ALLOCATED);
 	uint32_t used = kres_get32(entry + KRES_ENT_USED);
-	uint32_t base = c->sealed != 0u ? KRES_DATA_BASE_SEALED
-					: KRES_DATA_BASE_MUT;
 	uint8_t name_length = entry[KRES_ENT_NAME_LENGTH];
+	uint8_t i;
 
 	if (name_length == 0u || name_length > KRES_NAME_MAX) {
 		return -KRES_E_BAD;
+	}
+	for (i = 0u; i < KRES_NAME_MAX; ++i) {
+		/* No NUL inside the name, zero padding after it. */
+		if ((entry[KRES_ENT_NAME + i] == 0u) != (i >= name_length)) {
+			return -KRES_E_BAD;
+		}
 	}
 	if (entry[KRES_ENT_FLAGS] != 0u ||
 	    entry[KRES_ENT_RESERVED] != 0u ||
 	    entry[KRES_ENT_RESERVED + 1u] != 0u) {
 		return -KRES_E_BAD;
 	}
-	if (start < base || allocated == 0u ||
-	    used > allocated * KRES_RECORD_SIZE ||
-	    start > c->next_record ||
-	    allocated > c->next_record - start) {
+	if (start < 1u || allocated == 0u || start > c->next_record ||
+	    allocated > c->next_record - start ||
+	    used > allocated * KRES_RECORD_SIZE) {
 		return -KRES_E_BAD;
 	}
 	/* The used bytes must exist in the file; an empty resource has
 	 * none and may sit past the current file length. */
-	if (used > 0u && start * KRES_RECORD_SIZE + used > file_size) {
+	if (used > 0u && kres_record_offset(start) + used > file_size) {
 		return -KRES_E_BAD;
 	}
 	return 0;
 }
 
-/* Read one record of the active area into the shared buffer. */
-static int read_area_record(void *ctx, uint32_t area, unsigned int rec)
+/* The header bytes the parser does not read must be zero. */
+static int header_reserved_zero(const uint8_t *header)
 {
-	int result = kres_read_records_at(ctx, area + rec, kres_shared, 1u);
+	uint16_t i;
 
-	return result == 1 ? 0 : (result < 0 ? result : -KRES_E_BAD);
+	if (header[KRES_HDR_RESERVED1] != 0u) {
+		return 0;
+	}
+	for (i = KRES_HDR_USED; i < KRES_RECORD_SIZE; ++i) {
+		if (header[i] != 0u) {
+			return 0;
+		}
+	}
+	return 1;
 }
 
-/* The pairwise pass: compare entry `a` (a copy in `entry_a`) against
- * the entries of one shared-buffer record, from `start_within`, for
- * duplicate names and overlapping extents. */
-static int pair_check(unsigned int count, const uint8_t *entry_a,
-		      unsigned int first_index, unsigned int start_within)
+static int verify_open(kres_container *c, uint32_t size,
+		       struct kres_usage *usage)
 {
-	unsigned int within;
+	uint8_t previous[KRES_ENTRY_SIZE];
+	uint8_t scratch[KRES_ENTRY_SIZE];
+	uint32_t live = 0u;
+	uint32_t catalog;
+	uint16_t fill = kres_catalog_fill(c->resource_count);
+	uint16_t index;
+	int result;
 
-	for (within = start_within; within < 8u; ++within) {
-		unsigned int index = first_index + within;
-		const uint8_t *eb;
+	/* The sealed layout: the catalog fills exactly its records and
+	 * ends the container. */
+	if (c->sealed != 0u &&
+	    (c->catalog_records[0] != fill ||
+	     (uint32_t)c->catalog_start[0] + fill != c->next_record)) {
+		return -KRES_E_BAD;
+	}
+	if (size < kres_record_offset(
+			   (uint32_t)c->catalog_start[c->active_area] + fill)) {
+		return -KRES_E_BAD; /* a truncated catalog */
+	}
+	/* The entry pass: fields, and names strictly increasing (sorted
+	 * and unique at once). */
+	for (index = 0u; index < c->resource_count; ++index) {
+		const uint8_t *entry = kres_entry_at(c, index, scratch);
 
-		if (index >= count) {
-			continue;
+		if (entry == (const uint8_t *)0) {
+			return -KOS_EIO;
 		}
-		eb = kres_shared + within * KRES_ENTRY_SIZE;
-		if (entry_a[KRES_ENT_NAME_LENGTH] ==
-		    eb[KRES_ENT_NAME_LENGTH] &&
-		    memcmp(entry_a + KRES_ENT_NAME, eb + KRES_ENT_NAME,
-			   entry_a[KRES_ENT_NAME_LENGTH]) == 0) {
+		result = entry_check(entry, c, size);
+		if (result < 0) {
+			return result;
+		}
+		if (index != 0u &&
+		    kres_name_order(previous + KRES_ENT_NAME,
+				    previous[KRES_ENT_NAME_LENGTH],
+				    entry) >= 0) {
 			return -KRES_E_BAD;
 		}
-		{
-			uint32_t a_start = kres_get32(entry_a +
-						      KRES_ENT_START);
-			uint32_t a_end = a_start + kres_get32(entry_a +
-						KRES_ENT_ALLOCATED);
-			uint32_t b_start = kres_get32(eb + KRES_ENT_START);
-			uint32_t b_end = b_start + kres_get32(eb +
-						KRES_ENT_ALLOCATED);
+		memcpy(previous, entry, KRES_ENTRY_SIZE);
+		live += kres_get32(entry + KRES_ENT_ALLOCATED);
+	}
+	/* The overlap pass, one bitmap window at a time. */
+	catalog = (uint32_t)c->catalog_records[0] + c->catalog_records[1];
+	for (window_base = 0u; window_base < c->next_record;
+	     window_base += WINDOW_RECORDS) {
+		memset(kres_shared, 0, KRES_RECORD_SIZE);
+		if (window_mark(0u, 1u) < 0 ||
+		    window_mark(c->catalog_start[0],
+				c->catalog_records[0]) < 0 ||
+		    window_mark(c->catalog_start[1],
+				c->catalog_records[1]) < 0) {
+			return -KRES_E_BAD;
+		}
+		for (index = 0u; index < c->resource_count; ++index) {
+			const uint8_t *entry = kres_entry_at(c, index,
+							     scratch);
 
-			if (a_start < b_end && b_start < a_end) {
+			if (entry == (const uint8_t *)0) {
+				return -KOS_EIO;
+			}
+			if (window_mark(kres_get32(entry + KRES_ENT_START),
+					kres_get32(entry +
+						   KRES_ENT_ALLOCATED)) < 0) {
 				return -KRES_E_BAD;
 			}
 		}
 	}
+	if (usage != (struct kres_usage *)0) {
+		usage->resources = c->resource_count;
+		usage->catalog_capacity =
+			(uint32_t)c->catalog_records[c->active_area] *
+			KRES_ENTRIES_PER_RECORD;
+		usage->next_record = c->next_record;
+		usage->live_records = live;
+		usage->catalog_records = catalog;
+		usage->abandoned_records = c->next_record - 1u - catalog -
+					   live;
+	}
 	return 0;
 }
 
-int kres_verify(const char *path)
+int kres_verify(const char *path, struct kres_usage *usage)
 {
 	kres_container c;
-	uint8_t entry_a[KRES_ENTRY_SIZE];
 	uint32_t size;
-	uint32_t area;
-	unsigned int record;
-	unsigned int index_a;
 	int result;
 
 	if (kres_io == (const struct kres_io *)0 || path == (const char *)0) {
@@ -110,92 +195,32 @@ int kres_verify(const char *path)
 	if (result < 0) {
 		return result;
 	}
+	memset(&c, 0, sizeof(c));
+	c.io_ctx = kres_ctx;
+	c.opened = 1u;
 	result = kres_io->size(kres_ctx, &size);
 	if (result < 0) {
 		goto out;
 	}
-	result = kres_io->seek(kres_ctx, 0u);
-	if (result < 0) {
-		goto out;
-	}
-	result = kres_io->read(kres_ctx, kres_shared, KRES_RECORD_SIZE);
-	if (result < 0) {
-		goto out;
-	}
-	if (result != (int)KRES_RECORD_SIZE) {
+	if (size < KRES_RECORD_SIZE) {
 		result = -KRES_E_BAD;
 		goto out;
 	}
-	memset(&c, 0, sizeof(c));
+	if (kres_read_records_at(kres_ctx, 0u, kres_shared, 1u) != 1) {
+		result = -KRES_E_BAD;
+		goto out;
+	}
 	result = kres_header_parse(kres_shared, &c);
 	if (result < 0) {
 		goto out;
 	}
-	if (size < (uint32_t)(c.sealed != 0u ? KRES_DATA_BASE_SEALED
-					     : KRES_DATA_BASE_MUT) *
-			   KRES_RECORD_SIZE) {
+	if (header_reserved_zero(kres_shared) == 0) {
 		result = -KRES_E_BAD;
 		goto out;
 	}
-	/* One pass per record: every live entry's fields. */
-	area = c.sealed != 0u ? KRES_AREA_A_BASE
-			      : c.active_area != 0u ? KRES_AREA_B_BASE
-						    : KRES_AREA_A_BASE;
-	for (record = 0u; record < c.resource_count; ++record) {
-		unsigned int within = record % 8u;
-		int at_record = (int)(record / 8u);
-
-		if (within == 0u) {
-			result = read_area_record(kres_ctx, area, at_record);
-			if (result < 0) {
-				goto out;
-			}
-		}
-		result = entry_check(kres_shared + within * KRES_ENTRY_SIZE,
-				     &c, size);
-		if (result < 0) {
-			goto out;
-		}
-	}
-	/* The pairwise pass: name uniqueness and non-overlap, reading
-	 * each record at most four times (no stored tables). */
-	for (index_a = 0u; index_a < c.resource_count; ++index_a) {
-		unsigned int rec_a = index_a / 8u;
-		unsigned int rec_b;
-
-		result = read_area_record(kres_ctx, area, rec_a);
-		if (result < 0) {
-			goto out;
-		}
-		memcpy(entry_a, kres_shared + (index_a % 8u) * KRES_ENTRY_SIZE,
-		       KRES_ENTRY_SIZE);
-		/* The later entries of record a. */
-		result = pair_check(c.resource_count, entry_a,
-				    rec_a * 8u, index_a % 8u + 1u);
-		if (result < 0) {
-			goto out;
-		}
-		/* The later records' entries. */
-		for (rec_b = rec_a + 1u; rec_b < KRES_CATALOG_RECORDS;
-		     ++rec_b) {
-			unsigned int first_b = rec_b * 8u;
-
-			if (first_b >= c.resource_count) {
-				continue;
-			}
-			result = read_area_record(kres_ctx, area, rec_b);
-			if (result < 0) {
-				goto out;
-			}
-			result = pair_check(c.resource_count, entry_a,
-					    first_b, 0u);
-			if (result < 0) {
-				goto out;
-			}
-		}
-	}
-	result = 0;
+	result = verify_open(&c, size, usage);
 out:
+	kres_record_cache_drop(&c);
 	(void)kres_io->close(kres_ctx);
 	return result;
 }

@@ -118,7 +118,7 @@ int main(void)
 	CHECK_EQ(kres_close(&c), 0);
 
 	/* The sealed builder: byte-for-byte content, mutations refused. */
-	CHECK_EQ(kres_build_begin("built.kpr", 2u), 0);
+	CHECK_EQ(kres_build_begin("built.kpr"), 0);
 	CHECK_EQ(kres_build_add("A"), 0);
 	CHECK_EQ(kres_build_write(data_a, 1200), 1200);
 	CHECK_EQ(kres_build_add("B"), 0);
@@ -132,35 +132,60 @@ int main(void)
 	CHECK_EQ(kres_close(&c), 0);
 
 	/* An interrupted build is refused at open. */
-	CHECK_EQ(kres_build_begin("half.kpr", 1u), 0);
+	CHECK_EQ(kres_build_begin("half.kpr"), 0);
 	CHECK_EQ(kres_build_add("A"), 0);
 	CHECK_EQ(kres_build_write(data_a, 100), 100);
 	CHECK_EQ(kres_build_abort(), 0);
 	CHECK_EQ(kres_open(&c, "half.kpr", KRES_OPEN_READ), -KRES_E_BAD);
 
-	/* Builder limits: 33 resources, duplicate names. */
+	/* The builder has no count limit below the format's: 40
+	 * resources, added out of order, come back sorted; a duplicate
+	 * name is refused; an empty build is a valid empty container. */
 	{
+		struct kres_iter it;
+		struct kres_info info;
+		char previous[KRES_NAME_MAX + 1u];
 		unsigned int i;
 
-		CHECK_EQ(kres_build_begin("many.kpr", 32u), 0);
-		CHECK_EQ(kres_build_add("x"), 0);
-		CHECK_EQ(kres_build_write("y", 1), 1);
-		for (i = 1u; i < 32u; ++i) {
-			char name[8];
+		CHECK_EQ(kres_build_begin("many.kpr"), 0);
+		for (i = 0u; i < 40u; ++i) {
+			char name[16];
 
-			sprintf(name, "r%u", i);
+			sprintf(name, "r%02u", (i * 17u) % 40u);
 			result = kres_build_add(name);
 			CHECK_EQ(result, 0);
 			if (result != 0) {
 				break;
 			}
-			CHECK_EQ(kres_build_write("y", 1), 1);
+			if (i % 3u != 0u) { /* some stay empty */
+				CHECK_EQ(kres_build_write(name, 3), 3);
+			}
 		}
-		CHECK_EQ(kres_build_add("too-many"), -KRES_E_FULL);
-		CHECK_EQ(kres_build_abort(), 0);
-		CHECK_EQ(kres_open(&c, "many.kpr", KRES_OPEN_READ),
-			 -KRES_E_BAD);
-		CHECK_EQ(kres_build_begin("dup.kpr", 2u), 0);
+		CHECK_EQ(kres_build_add("r07"), -KOS_EEXIST);
+		CHECK_EQ(kres_build_end(), 0);
+		CHECK_EQ(kres_verify("many.kpr", (struct kres_usage *)0), 0);
+		CHECK_EQ(kres_open(&c, "many.kpr", KRES_OPEN_READ), 0);
+		CHECK_EQ(c.resource_count, 40u);
+		CHECK_EQ(kres_iter_begin(&c, &it), 0);
+		previous[0] = '\0';
+		i = 0u;
+		while (kres_iter_next(&it, &info) > 0) {
+			CHECK(strcmp(previous, (const char *)info.name) < 0);
+			strcpy(previous, (const char *)info.name);
+			++i;
+		}
+		CHECK_EQ(i, 40u);
+		CHECK_EQ(kres_close(&c), 0);
+
+		CHECK_EQ(kres_build_begin("empty.kpr"), 0);
+		CHECK_EQ(kres_build_end(), 0);
+		CHECK_EQ(kres_verify("empty.kpr", (struct kres_usage *)0), 0);
+		CHECK_EQ(kres_open(&c, "empty.kpr", KRES_OPEN_READ), 0);
+		CHECK_EQ(c.resource_count, 0u);
+		CHECK_EQ(kres_get(&c, "x", &r, KRES_OPEN_READ), -KOS_ENOENT);
+		CHECK_EQ(kres_close(&c), 0);
+
+		CHECK_EQ(kres_build_begin("dup.kpr"), 0);
 		CHECK_EQ(kres_build_add("same"), 0);
 		CHECK_EQ(kres_build_write("y", 1), 1);
 		CHECK_EQ(kres_build_add("same"), -KOS_EEXIST);
@@ -168,9 +193,9 @@ int main(void)
 	}
 
 	/* verify passes on every completed form. */
-	CHECK_EQ(kres_verify("src.kpr"), 0);
-	CHECK_EQ(kres_verify("built.kpr"), 0);
-	CHECK_EQ(kres_verify("dup.kpr"), -KRES_E_BAD); /* aborted */
+	CHECK_EQ(kres_verify("src.kpr", (struct kres_usage *)0), 0);
+	CHECK_EQ(kres_verify("built.kpr", (struct kres_usage *)0), 0);
+	CHECK_EQ(kres_verify("dup.kpr", (struct kres_usage *)0), -KRES_E_BAD); /* aborted */
 	(void)buf;
 	TEST_DONE();
 }

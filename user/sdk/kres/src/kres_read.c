@@ -7,19 +7,24 @@
 
 #include "kres_internal.h"
 
-/* Open the backing file, validate the header, load the active catalog.
+/* Open the backing file and validate the header.  A writable open
+ * loads the active catalog into the catalog store; a read-only open
+ * reads the catalog one record at a time on demand.
  * KRES_OPEN_CREATE makes a missing file an empty mutable container
  * (through the mutation member, so read-only programs do not link it). */
 int kres_open(kres_container *c, const char *path, unsigned int flags)
 {
 	uint32_t size;
+	uint16_t start;
 	int result;
 
 	if (c == (kres_container *)0 || kres_io == (const struct kres_io *)0 ||
-	    kres_cache == (const struct kres_cache *)0 ||
-	    (flags & KRES_OPEN_READ) == 0u) {
+	    (flags & KRES_OPEN_READ) == 0u ||
+	    ((flags & KRES_OPEN_WRITE) != 0u &&
+	     kres_cache == (const struct kres_cache *)0)) {
 		return -KOS_EINVAL;
 	}
+	kres_record_cache_drop(c);
 	memset(c, 0, sizeof(*c));
 	c->io_ctx = c; /* the adapter keys its per-open state by ctx, so a
 			* compactor can hold two containers open at once */
@@ -45,7 +50,7 @@ int kres_open(kres_container *c, const char *path, unsigned int flags)
 	if (result < 0) {
 		goto fail;
 	}
-	if (size < (uint32_t)KRES_DATA_BASE_SEALED * KRES_RECORD_SIZE) {
+	if (size < KRES_RECORD_SIZE) {
 		result = -KRES_E_BAD;
 		goto fail;
 	}
@@ -57,34 +62,25 @@ int kres_open(kres_container *c, const char *path, unsigned int flags)
 	if (result < 0) {
 		goto fail;
 	}
-	if (c->sealed != 0u) {
-		c->writable = 0u;
-		c->dirty = 0u;
-	} else {
-		c->writable = ((flags & KRES_OPEN_WRITE) != 0u);
-	}
 	c->file_size = size;
-	/* The header and the catalog areas must be present; the data
-	 * records may end in a partial final record. */
-	if (size < (uint32_t)(c->sealed != 0u
-				      ? KRES_DATA_BASE_SEALED
-				      : KRES_DATA_BASE_MUT) *
-			   KRES_RECORD_SIZE) {
+	/* The active catalog's entries must be present; the data records
+	 * may end in a partial final record. */
+	start = c->catalog_start[c->active_area];
+	if (size < kres_record_offset((uint32_t)start +
+				      kres_catalog_fill(c->resource_count))) {
 		result = -KRES_E_BAD;
 		goto fail;
 	}
-	result = kres_cache->load(c, c->sealed != 0u
-				      ? KRES_AREA_A_BASE
-				      : c->active_area != 0u
-					    ? KRES_AREA_B_BASE
-					    : KRES_AREA_A_BASE);
-	if (result < 0) {
-		goto fail;
+	if (c->sealed == 0u && (flags & KRES_OPEN_WRITE) != 0u) {
+		result = kres_cache->load(c, start, c->resource_count);
+		if (result < 0) {
+			goto fail;
+		}
+		c->writable = 1u;
 	}
 	return 0;
 fail:
 	(void)kres_io->close(c->io_ctx);
-	(void)kres_cache->release(c);
 	c->opened = 0u;
 	return result;
 }
@@ -103,16 +99,20 @@ int kres_close(kres_container *c)
 	}
 	if (result == 0) {
 		result = kres_io->close(c->io_ctx);
+	} else {
+		(void)kres_io->close(c->io_ctx);
 	}
-	(void)kres_cache->release(c);
+	if (c->writable != 0u) {
+		(void)kres_cache->release(c);
+	}
+	kres_record_cache_drop(c);
 	c->opened = 0u;
 	return result;
 }
 
 /* --- resources --------------------------------------------------------- */
 
-int resource_fill(kres_container *c, unsigned int index,
-		 kres_resource *r)
+int resource_fill(kres_container *c, uint16_t index, kres_resource *r)
 {
 	uint8_t entry[KRES_ENTRY_SIZE];
 	int result = kres_entry_get(c, index, entry);
@@ -124,7 +124,8 @@ int resource_fill(kres_container *c, unsigned int index,
 	r->container = c;
 	r->open = 1u;
 	r->writable = c->writable;
-	r->entry_index = (uint8_t)index;
+	r->entry_index = index;
+	r->epoch = c->epoch;
 	r->start_record = kres_get32(entry + KRES_ENT_START);
 	r->allocated_records = kres_get32(entry + KRES_ENT_ALLOCATED);
 	r->used_bytes = kres_get32(entry + KRES_ENT_USED);
@@ -135,7 +136,7 @@ int kres_get(kres_container *c, const char *name, kres_resource *r,
 	     unsigned int flags)
 {
 	uint16_t name_length;
-	unsigned int index;
+	uint16_t index;
 
 	if (c == (kres_container *)0 || c->opened == 0u ||
 	    r == (kres_resource *)0) {
@@ -149,7 +150,7 @@ int kres_get(kres_container *c, const char *name, kres_resource *r,
 		return -KOS_EINVAL;
 	}
 	index = kres_find(c, name, (uint8_t)name_length);
-	if (index == 0xFFFFu) {
+	if (index == KRES_NO_ENTRY) {
 		return -KOS_ENOENT;
 	}
 	return resource_fill(c, index, r);
@@ -266,12 +267,16 @@ int kres_read_records(kres_resource *r, uint16_t first_record,
 	return total;
 }
 
-/* --- the catalog -------------------------------------------------------- */
+/* --- the catalog -------------------------------------------------------- *
+ *
+ * kres_stat is one binary search; the iterator walks the entries in
+ * name order, eight to a catalog record, so a read-only walk reads
+ * each record once. */
 
 int kres_stat(kres_container *c, const char *name, struct kres_info *out)
 {
 	uint16_t name_length;
-	unsigned int index;
+	uint16_t index;
 
 	if (c == (kres_container *)0 || c->opened == 0u ||
 	    out == (struct kres_info *)0) {
@@ -282,15 +287,15 @@ int kres_stat(kres_container *c, const char *name, struct kres_info *out)
 		return -KOS_EINVAL;
 	}
 	index = kres_find(c, name, (uint8_t)name_length);
-	if (index == 0xFFFFu) {
+	if (index == KRES_NO_ENTRY) {
 		return -KOS_ENOENT;
 	}
 	{
-		uint8_t entry[KRES_ENTRY_SIZE];
-		int result = kres_entry_get(c, index, entry);
+		uint8_t scratch[KRES_ENTRY_SIZE];
+		const uint8_t *entry = kres_entry_at(c, index, scratch);
 
-		if (result < 0) {
-			return result;
+		if (entry == (const uint8_t *)0) {
+			return -KOS_EIO;
 		}
 		kres_entry_info(entry, out);
 	}
@@ -319,11 +324,12 @@ int kres_iter_next(struct kres_iter *it, struct kres_info *out)
 		return 0; /* enumeration ended */
 	}
 	{
-		uint8_t entry[KRES_ENTRY_SIZE];
-		int result = kres_entry_get(it->container, it->index, entry);
+		uint8_t scratch[KRES_ENTRY_SIZE];
+		const uint8_t *entry = kres_entry_at(it->container, it->index,
+						     scratch);
 
-		if (result < 0) {
-			return result;
+		if (entry == (const uint8_t *)0) {
+			return -KOS_EIO;
 		}
 		kres_entry_info(entry, out);
 	}

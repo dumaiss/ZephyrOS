@@ -1,15 +1,18 @@
 /* KRES: the KonaOS edition's install pieces (libkres).
  *
- * The platform glue installs one of the two io tables and the XMEM
- * catalog cache, once, before the first container call:
+ * The platform glue installs one of the two io tables once, before the
+ * first container call:
  *
- * - readers: kres_install(&kres_io_konaos_read, &kres_cache_xmem,
- *   &ctx) — no mutation member is linked;
+ * - readers: kres_install(&kres_io_konaos_read, &ctx) — no mutation
+ *   member and no XMEM is linked; lookups read the sorted catalog one
+ *   512-byte record at a time;
  * - writers: kres_install_mut(&kres_io_konaos, &kres_cache_xmem,
- *   &ctx) — the full adapter plus the mutation machinery.
+ *   &ctx) — the full adapter, the mutation machinery and the XMEM
+ *   catalog store.
  *
- * The catalog cache is one 2 KiB XMEM object per open container
- * (compaction holds two), allocated at open and freed at close.
+ * The catalog store holds a writable container's (or the builder's)
+ * whole catalog in 16 KiB XMEM chunks of 256 entries, allocated as the
+ * catalog grows and freed at close.
  */
 
 #ifndef KOS_KRES_KONAOS_H
@@ -26,7 +29,8 @@ extern const struct kres_io kres_io_konaos_read;
  * only; the compaction swap names map to 8.3. */
 extern const struct kres_io kres_io_konaos;
 
-/* The catalog cache in XMEM: a 2 KiB object per open container. */
+/* The catalog store in XMEM: up to 16 chunks of 16 KiB (4,096
+ * entries) per store, two stores (a compaction's source and target). */
 extern const struct kres_cache kres_cache_xmem;
 
 #endif /* KOS_KRES_KONAOS_H */

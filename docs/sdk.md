@@ -1460,10 +1460,14 @@ few bytes from many places by copying.
 ## 13. KRES (the resource container)
 
 KRES is a small WAD-style named-resource container in one file
-(`docs/kres-sdk-design.md` is the specification): up to 32 named byte
-resources, each one contiguous run of 512-byte records, with a
-crash-safe catalog commit and an explicit rebuild compaction. Sealed
-containers are built once and only read. The format is v1.
+(`docs/kres-sdk-design.md` is the specification): any number of named
+byte resources (up to 65,535, within the 65,535-record container
+limit), each one contiguous run of 512-byte records, listed in one
+contiguous catalog sorted by name. The catalog's location and capacity
+live in the header; a mutable container's catalog grows by relocating
+to the allocation mark, doubling, at the commit that outgrows it. The
+commit is crash-safe and compaction is an explicit rebuild. Sealed
+containers are built once, their catalog last, and only read.
 
 The portable core lives in `user/sdk/kres/src/` with the public header
 `kos/kres.h`. The core reaches storage only through a small adapter,
@@ -1473,10 +1477,10 @@ SDK file API. A program that does not link libkres pays nothing for it.
 
 The API in one paragraph:
 
-- `kres_install(io, cache, ctx)` installs the adapter, the catalog
-  cache and the per-process context once; `kres_install_mut` also
-  installs the read path's mutation-side hooks (create-on-missing and
-  close-flush).
+- `kres_install(io, ctx)` installs the adapter and the per-process
+  context once, read-only; `kres_install_mut(io, cache, ctx)` also
+  installs the catalog store and the read path's mutation-side hooks
+  (writable opens, create-on-missing and close-flush).
 - `kres_open(c, path, flags)` binds a container (KRES_OPEN_READ/WRITE/
   CREATE), `kres_close` flushes and closes, `kres_flush` commits.
 - `kres_get`, `kres_create`, `kres_read`, `kres_write`, `kres_seek`,
@@ -1485,22 +1489,31 @@ The API in one paragraph:
   descriptor. Record operations do not touch the cursor; a write past
   the logical EOF is refused, a write at it extends.
 - `kres_stat`, `kres_delete`, `kres_rename`, `kres_iter_begin`,
-  `kres_iter_next` walk the catalog.
+  `kres_iter_next` walk the catalog. Lookups are a binary search over
+  the sorted catalog; the iterator returns names in unsigned byte
+  order.
 - `kres_compact(path, flags)` rebuilds in a temporary file and swaps
   names: by default preserving reservations, KRES_TIGHT dropping slack,
   KRES_SEAL producing a sealed container.
 - `kres_extract` copies one resource's bytes into a new file.
-- `kres_verify` is the validation pass: it fails closed on a malformed
-  file and never follows an unchecked offset.
-- `kres_build_begin/add/write/end` build a sealed container; an
-  interrupted build is an invalid file (`kres_build_abort` closes it).
+- `kres_verify(path, usage)` is the validation pass: it fails closed on
+  a malformed file, never follows an unchecked offset, and reports the
+  live, catalog and abandoned records in `usage` (may be NULL).
+- `kres_build_begin(path)`, then `kres_build_add/write` for any number
+  of resources, then `kres_build_end` build a sealed container; the
+  count need not be known in advance. An interrupted build is an
+  invalid file (`kres_build_abort` closes it).
 
-Errors are negated KOS codes; KRES_E_FULL (catalog full), KRES_E_RECLIM
-(the 65,535-record limit), KRES_E_BAD (not a KRES v1 file) and
-KRES_E_GROW are the format's own.
+Errors are negated KOS codes; KRES_E_FULL (the 65,535-resource format
+limit), KRES_E_RECLIM (the 65,535-record limit), KRES_E_BAD (not a
+valid KRES file, including a torn header) and KRES_E_GROW are the
+format's own. A writable container whose catalog store cannot grow
+answers KOS_ENOSPC.
 
 The host tool `build/host/kres` (`make kres-host`) implements create,
-list, show, import, extract, unpack, pack, verify, compact and seal.
+list, show, import, extract, unpack, pack, verify, compact and seal;
+pack takes any number of files and sorts their names, verify prints the
+extent accounting.
 Names are CP850 bytes converted at the host boundary only; payloads are
 byte for byte. Export refuses unsafe paths and case-insensitive
 collisions.
@@ -1515,10 +1528,10 @@ The KonaOS edition ships as `libkres.lib`, linked with `LIBS=kres`
 
 | member | holds |
 |---|---|
-| `kres_util.rel` | the install, header parse, entry codecs, shared buffer |
+| `kres_util.rel` | the install, header parse, entry codecs, shared buffer, the record cache and binary search |
 | `kres_read.rel` | open/close/get/read/seek, the read path |
 | `kres_adapter.rel` | the KonaOS adapter's read side |
-| `kres_cache_xmem.rel` | the 2 KiB XMEM catalog cache |
+| `kres_cache_xmem.rel` | the XMEM catalog store (writable containers, the builder) |
 | `kres_mut.rel` | mutation, flush and the growth machinery |
 | `kres_adapter_mut.rel` | the adapter's write/truncate/rename/unlink |
 | `kres_build.rel` | the sealed builder |
@@ -1526,15 +1539,20 @@ The KonaOS edition ships as `libkres.lib`, linked with `LIBS=kres`
 | `kres_extract.rel` | one-resource export |
 | `kres_verify.rel` | the validation pass |
 
-A sealed-container reader links only the first four members and calls
-`kres_install(&kres_io_konaos_read, &kres_cache_xmem, &ctx)` (from
-`kos/kres_konaos.h`); a mutating program calls
+A reader links only the first three members (about 7.3 KiB of code,
+1 KiB of static data, no XMEM) and calls
+`kres_install(&kres_io_konaos_read, &ctx)` (from `kos/kres_konaos.h`);
+a mutating program calls
 `kres_install_mut(&kres_io_konaos, &kres_cache_xmem, &ctx)`. The
 adapter keeps two file slots keyed by container and the card serves at
 most two open files system-wide, so a tool flushes and **closes its
 container before `run()`ing the next tool** (design §9.1); compaction
-holds both slots. The cache is one 2 KiB XMEM object per open
-container, allocated at open and freed at close. A write beyond the
+holds both slots. A read-only open reads the catalog through one
+512-byte record cache: a lookup in an N-entry catalog reads at most
+ceil(log2(N + 1)) catalog records (about 17 ms each on the board), a
+walk one record per eight entries. A writable open loads the catalog
+into the XMEM store: 2 KiB up to 32 entries, growing in 16 KiB chunks
+to at most 4,096 entries, freed at close. A write beyond the
 physical end extends the file with zero records; compaction's
 temporary and recovery files spell with 8.3 names in the container's
 directory. `krestest` (tests/kres) and `tests/test_kres_native.py` are

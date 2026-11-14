@@ -267,7 +267,7 @@ int main(int argc, char **argv)
 	 * with the card's two file slots free again. */
 	(void)fclose(file);
 	(void)close(handle);
-	kres_install(&kres_io_konaos_read, &kres_cache_xmem, &kresread_ctx);
+	kres_install(&kres_io_konaos_read, &kresread_ctx);
 	result = kres_open(&container, BUILT, KRES_OPEN_READ);
 	if (result < 0) {
 		printf("readertest: kres open %d\r\n", result);
