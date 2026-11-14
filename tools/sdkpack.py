@@ -13,7 +13,8 @@
                        libtui_128x35.lib, libtui_widgets.lib, libgfx.lib,
                        crt0.rel
       tools/           exepack.py, exemanifest.py, exeplace.py, ihx.py,
-                       kimg.py, exerun.py (make run)
+                       kimg.py, exerun.py (make run); kres, the KRES
+                       container tool, an executable for the build host
       mk/kos.mk        the standalone build rules
       template/        Makefile + hello.c
       examples/        hello, fardemo (__banked), files (open/read/list),
@@ -29,7 +30,8 @@ every quoted include the way SDCC will.
 Usage:
     sdkpack.py --version V --libkos FILE --libtui FILE --libtui-wide FILE
                --libtui-widgets FILE --libgfx FILE --libkres FILE
-               --crt0 FILE [--root DIR] [--out DIR] [--tar FILE]
+               --crt0 FILE --kres FILE [--root DIR] [--out DIR]
+               [--tar FILE]
 
 With --tar the tree is also written as a .tar.gz with pinned metadata
 (member order, mtimes, ownership), so the same tree always packs to the
@@ -132,8 +134,13 @@ def abi_headers(root, headers):
     return abi
 
 
+# The packed files that are host executables (mode 755 in the tree and
+# the archive; everything else is 644).
+EXECUTABLES = ("tools/kres",)
+
+
 def tree_files(root, headers, abi, libkos, libtui, libtui_wide,
-               libtui_widgets, libgfx, libkres, libsnd, crt0):
+               libtui_widgets, libgfx, libkres, libsnd, crt0, kres):
     """The complete (relative destination, source) list of the SDK tree."""
     files = []
     files += headers
@@ -151,6 +158,7 @@ def tree_files(root, headers, abi, libkos, libtui, libtui_wide,
     ]
     files += [("tools/%s" % name, root / "tools" / name)
               for name in TOOL_FILES]
+    files += [("tools/kres", Path(kres))]
     files += [("template/%s" % name, root / SDK_TEMPLATE / name)
               for name in ("Makefile", "hello.c")]
     files += [("examples/%s" % name, root / SDK_EXAMPLES / name)
@@ -165,20 +173,20 @@ def tree_files(root, headers, abi, libkos, libtui, libtui_wide,
 
 
 def build_tree(root, out, version, libkos, libtui, libtui_wide,
-               libtui_widgets, libgfx, libkres, libsnd, crt0):
+               libtui_widgets, libgfx, libkres, libsnd, crt0, kres):
     """Lay out the SDK tree under `out`; returns the destination list."""
     root = Path(root)
     out = Path(out)
     for path in (root / "formats/include/exe.h", Path(libkos), Path(libtui),
                  Path(libtui_wide), Path(libtui_widgets), Path(libgfx),
-                 Path(libkres), Path(libsnd), Path(crt0)):
+                 Path(libkres), Path(libsnd), Path(crt0), Path(kres)):
         if not path.is_file():
             raise PackError("%s is missing" % path)
     abi = abi_version((root / "formats/include/exe.h").read_text())
     headers = sdk_headers(root)
     files = tree_files(root, headers, abi_headers(root, headers), libkos,
                        libtui, libtui_wide, libtui_widgets, libgfx, libkres,
-                       libsnd, crt0)
+                       libsnd, crt0, kres)
     for _dest, source in files:
         if not Path(source).is_file():
             raise PackError("%s is missing" % source)
@@ -191,6 +199,7 @@ def build_tree(root, out, version, libkos, libtui, libtui_wide,
         target = out / dest
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
+        target.chmod(0o755 if dest in EXECUTABLES else 0o644)
 
     for dest, _source in files:
         if dest.startswith("docs/"):
@@ -224,7 +233,8 @@ def pack_tar(tree, tarball):
                 info.mtime = 0
                 info.uid = info.gid = 0
                 info.uname = info.gname = ""
-                info.mode = 0o755 if info.isdir() else 0o644
+                info.mode = 0o755 if info.isdir() or \
+                    (path.stat().st_mode & 0o100) else 0o644
                 if info.isdir():
                     tar.addfile(info)
                 else:
@@ -244,6 +254,8 @@ def main(argv):
     parser.add_argument("--libkres", required=True)
     parser.add_argument("--libsnd", required=True)
     parser.add_argument("--crt0", required=True)
+    parser.add_argument("--kres", required=True,
+                        help="the host kres tool (make kres-host)")
     parser.add_argument("--root", default=None,
                         help="the repository root (default: this tool's)")
     parser.add_argument("--out", default=None,
@@ -260,7 +272,7 @@ def main(argv):
         dests = build_tree(root, out, args.version, args.libkos,
                            args.libtui, args.libtui_wide,
                            args.libtui_widgets, args.libgfx, args.libkres,
-                           args.libsnd, args.crt0)
+                           args.libsnd, args.crt0, args.kres)
         if args.tar:
             pack_tar(out, args.tar)
     except (PackError, OSError) as exc:

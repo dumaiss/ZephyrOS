@@ -1422,7 +1422,7 @@ sdk: $(KOS_SDK_TARBALL)
 $(KOS_SDK_TARBALL): $(EXE_SDK_RELEASE_LIB) $(EXE_LIBTUI) $(EXE_LIBTUI_WIDE) \
 		$(EXE_LIBTUI_WIDGETS) $(EXE_LIBGFX) $(EXE_LIBKRES) \
 		$(EXE_LIBSND) \
-		$(EXE_CRT0) $(SDK_INPUTS)
+		$(EXE_CRT0) $(BUILD)/host/kres $(SDK_INPUTS)
 	$(PYTHON) tools/sdkpack.py --version $(KOS_SDK_VERSION) \
 		--libkos $(EXE_SDK_RELEASE_LIB) --libtui $(EXE_LIBTUI) \
 		--libtui-wide $(EXE_LIBTUI_WIDE) \
@@ -1431,6 +1431,7 @@ $(KOS_SDK_TARBALL): $(EXE_SDK_RELEASE_LIB) $(EXE_LIBTUI) $(EXE_LIBTUI_WIDE) \
 		--libkres $(EXE_LIBKRES) \
 		--libsnd $(EXE_LIBSND) \
 		--crt0 $(EXE_CRT0) \
+		--kres $(BUILD)/host/kres \
 		--out $(KOS_SDK_DIR) --tar $@
 
 # --- ROMFS recovery store (ROM pages 2-7) ------------------------------------

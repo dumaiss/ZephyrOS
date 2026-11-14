@@ -128,6 +128,7 @@ SDK_FILES = {
     "tools/ihx.py",
     "tools/kimg.py",
     "tools/exerun.py",
+    "tools/kres",
     "mk/kos.mk",
     "template/Makefile",
     "template/hello.c",
@@ -450,7 +451,8 @@ class TestSdkPackage(unittest.TestCase):
             os.path.join(self.tree, "lib", "libgfx.lib"),
             os.path.join(self.tree, "lib", "libkres.lib"),
             os.path.join(self.tree, "lib", "libsnd.lib"),
-            os.path.join(self.tree, "lib", "crt0.rel"))
+            os.path.join(self.tree, "lib", "crt0.rel"),
+            os.path.join(self.tree, "tools", "kres"))
         sdkpack.pack_tar(tree, again)
         # Same tree, same bytes: neither the member order nor the gzip
         # header carries anything of the build that produced them.
@@ -500,6 +502,30 @@ class TestSdkPackage(unittest.TestCase):
                             and top not in local:
                         violations.append("%s.py imports %s" % (name, module))
         self.assertEqual(violations, [], "\n".join(violations))
+
+    def test_the_kres_tool_ships_and_runs(self):
+        """tools/kres is the host KRES tool, executable in the tree and
+        the archive: it packs, verifies and lists a container from the
+        unpacked SDK."""
+        modes = {entry.name: entry.mode for entry in self.entries}
+        self.assertEqual(modes["kos-sdk-%s/tools/kres" % self.version],
+                         0o755)
+        tool = os.path.join(self.tree, "tools", "kres")
+        self.assertTrue(os.access(tool, os.X_OK))
+        work = os.path.join(self.tmp, "kres-tool")
+        source = os.path.join(work, "src")
+        os.makedirs(source)
+        with open(os.path.join(source, "A.TXT"), "wb") as handle:
+            handle.write(b"alpha")
+        packed = os.path.join(work, "OUT.KPR")
+        subprocess.run([tool, "pack", source, packed], check=True,
+                       capture_output=True)
+        verified = subprocess.run([tool, "verify", packed], check=True,
+                                  capture_output=True, text=True)
+        self.assertIn(": ok", verified.stdout)
+        listed = subprocess.run([tool, "list", packed], check=True,
+                                capture_output=True, text=True)
+        self.assertTrue(listed.stdout.startswith("A.TXT"))
 
     def test_version_matches_the_config_and_the_abi_header(self):
         abi = sdkpack.abi_version(_read(ABI_HEADER))

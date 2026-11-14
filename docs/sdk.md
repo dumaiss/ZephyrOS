@@ -1313,7 +1313,9 @@ kos-sdk-<version>/
                    crt0.rel
   tools/           exepack.py, exemanifest.py, exeplace.py, ihx.py,
                    exerun.py (Python standard library only), kimg.py
-                   (Pillow for convert; pack needs only the standard library)
+                   (Pillow for convert; pack needs only the standard library);
+                   kres, the KRES container tool (§13), an executable
+                   built for the machine that built the SDK
   mk/kos.mk        the program rule
   template/        Makefile and hello.c
   examples/        hello, fardemo, fardata, files, tui_demo, tui_keys,
@@ -1510,7 +1512,8 @@ valid KRES file, including a torn header) and KRES_E_GROW are the
 format's own. A writable container whose catalog store cannot grow
 answers KOS_ENOSPC.
 
-The host tool `build/host/kres` (`make kres-host`) implements create,
+The host tool `kres` (`tools/kres` in the SDK; `build/host/kres`, from
+`make kres-host`, in the OS tree) implements create,
 list, show, import, extract, unpack, pack, verify, compact and seal;
 pack takes any number of files and sorts their names, verify prints the
 extent accounting.
