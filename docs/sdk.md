@@ -59,6 +59,8 @@ user/sdk/
                           mouse_read, mouse_init, mouse_track; the
                           pointer: pointer_open, pointer_move,
                           pointer_hide
+  src/key.c               the keyboard key decoder: key_pending,
+                          key_poll, key_reset (key_get.c: key_get)
   src/joy.c               the JOY protocol client: joy_open, joy_close,
                           joy_read_call
   src/joy_read.asm        joy_read, the direct latch read
@@ -285,7 +287,14 @@ non-overlapping pieces per scanline, so an XOR ellipse drawn twice
 restores everything - and `gfx_fill_rect` takes the op, with HMMV for
 an aligned COPY and the per-pixel LMMV otherwise.  In YJK only an
 aligned COPY `gfx_fill_rect` is accepted; the other shapes are
--KOS_ENOTSUP.
+-KOS_ENOTSUP.  `GFX_MODE_256x212_YJK_YAE` mixes a YJK picture with
+16-colour palette pixels (gfx-sdk.md section 6.1): every call takes a
+palette index, and a drawing changes only bits 7-3 of a four-pixel
+group it covers in part (an AND 07h then an OR per COPY command, one
+EOR per XOR), so the picture around it keeps its colour; opaque text
+widens the string to its outer group edges in the background colour,
+transparent text is an AND from a mask atlas then an OR from its
+colour's, and copies and uploads move whole groups.
 
 The costs, on the emulated 10 MHz CPU in T-states of CPU time with the
 command engine's waits taken out (the simulator's V9958 peer
@@ -322,7 +331,8 @@ the shown page right after `gfx_wait_vblank()` instead.
 Pictures come prepared: the
 KIMG v1 format (`kos/kimg.h`) carries a header, an optional palette and
 the payload in the mode's packing, `tools/kimg.py` converts
-PNG/JPEG to it on the host (with Pillow), or wraps already encoded G6/G7/YJK
+PNG/JPEG to it on the host (with Pillow; `--mode yae` for the YJK+YAE
+mode), or wraps already encoded G6/G7/YJK/YAE
 bytes with `kimg.py pack` (no Pillow), and `pview.exe` (UserSoftware/PView)
 displays a picture file; the design is gfx-sdk.md sections 10-17.
 `convert` optionally selects nearest/box/Lanczos resampling, unsharp masking,
@@ -1073,6 +1083,34 @@ The byte functions are in assembly and make no OS call; before
 `serial_hold` (or after `serial_release`) they send nothing and receive
 nothing.
 
+### 6.15 The keyboard (`kos/key.h`)
+
+```c
+int        key_pending(void);   /* 1 when a key can be read now */
+key_code_t key_poll(void);      /* the next key, or KEY_NONE */
+key_code_t key_get(void);       /* the next key, waiting (idle_input pacing) */
+void       key_reset(void);     /* drop a partly decoded sequence */
+```
+
+The keyboard reaches a program as console bytes: the HID driver translates
+each keypress to text, with the editing and function keys as VT100
+sequences. `kos/key.h` decodes them back into one key code each: the byte
+(1..255) for an ordinary character, `KEY_UP`/`DOWN`/`LEFT`/`RIGHT`,
+`KEY_HOME`/`END`/`PGUP`/`PGDN`/`INSERT`/`DELETE`, `KEY_F1`..`KEY_F12` and
+`KEY_ESC` for the others. It needs no setup and reads `console_read()` on
+demand, so a graphics program or a game reads keys without libtui; libtui's
+`tui_getkey()` is the same decoder with its mouse events added, and
+`TUI_KEY_*` are these codes.
+- **ESC:** a lone ESC is delivered at once when no continuation byte is
+  already pending (one immediate look-ahead, no timer).
+- **Unknown sequences:** an unknown or malformed sequence comes back as
+  `KEY_ESC` followed by its bytes as characters.
+- **Text, not key states:** there are no key-up events and no held-key
+  state.
+- **Placement:** the two members (`key.rel`, `key_get.rel`) are the libkos
+  members a placed program may move out of the resident zone; the rest of
+  libkos stays resident with the runtime.
+
 ## 7. Memory layout
 
 ```text
@@ -1136,6 +1174,8 @@ needed.
 | `run` | `exec`, `ipc`, `kos_ipcgate`, `nsgate` |
 | `timer_open`, `timer_now`, `timer_us`, `timer_wait_us` | `timer`, `ipc`, `kos_ipcgate`, `nsgate` |
 | `mouse_open`, `mouse_read`, `mouse_init`, `mouse_track` | `mouse`, `ipc`, `kos_ipcgate`, `nsgate`, `memcpy` |
+| `key_pending`, `key_poll`, `key_reset` | `key`, `console_proto` |
+| `key_get` | `key_get`, `key`, `idle_input` |
 | `xalloc` and friends | `xmem`, `kos_xmemgate` |
 | `seginfo`, `segmap`, `farcall`, `farmap`, `blob` | `seg` |
 | `xload` | `xload` |

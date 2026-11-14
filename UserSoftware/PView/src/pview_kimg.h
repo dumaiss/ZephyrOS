@@ -16,6 +16,7 @@
 #define PVIEW_MODE_G6  0u
 #define PVIEW_MODE_G7  1u
 #define PVIEW_MODE_YJK 2u
+#define PVIEW_MODE_YAE 3u /* YJK + palette pixels: a palette allowed */
 
 /* Validate the 16-byte KIMG v1 header at `raw`: 0 when the viewer can
  * display it, or -KOS_EINVAL.  Touches nothing but the argument. */

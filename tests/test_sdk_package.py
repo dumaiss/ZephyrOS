@@ -90,6 +90,7 @@ SDK_FILES = {
     "include/kos/snd.h",
     "include/kos/reader.h",
     "include/kos/kimg.h",
+    "include/kos/key.h",
     "include/kos/kres.h",
     "include/kos/kres_konaos.h",
     "include/kos/timer.h",

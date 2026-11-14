@@ -673,6 +673,8 @@ ell_span:
 	or	a
 	jr	nz,ell_span_lmmv	; XOR: per dot
 	ld	a,(_gfx_draw_mode)
+	cp	#3
+	jr	z,ell_span_lmmv		; YJK+YAE: masked spans (the commit)
 	or	a
 	jr	nz,ell_span_hmmv	; G7: one dot per byte
 	; G6: HMMV over the whole bytes, LMMV for an odd end dot; a span
@@ -736,6 +738,9 @@ ell_issue:
 	ld	a,(_gfx_batch_depth)
 	or	a
 	jr	nz,ell_issue_queue
+	ld	a,(_gfx_draw_mode)
+	cp	#3
+	jr	z,ell_issue_queue	; YJK+YAE: through the masking commit
 	call	gfx_wait_ce		; C = the command port
 	ld	a,#36
 	out	(c),a

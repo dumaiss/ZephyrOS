@@ -681,13 +681,19 @@ class TuiSimBase(unittest.TestCase):
                 expected = b"tui: PASS"
             else:
                 expected = ("tui: %s pass" % mode).encode("ascii")
+        # A render call is captured once: an interrupt taken at the entry
+        # returns to the same PC, so a second hit before the call has
+        # returned is the same call, not a new stream.
         state = {"armed": False, "init_command_start": command_start,
-                 "init_write_start": init_write_start, "late_sent": False}
+                 "init_write_start": init_write_start, "late_sent": False,
+                 "render_return": None}
 
         def watch():
             pcs = {self.dispatch}
             if stream_at is not None:
                 pcs.add(stream_at)
+                if state["render_return"] is not None:
+                    pcs.add(state["render_return"])
             if grid is not None and self._grid_pending is not None:
                 pcs.add(self._grid_pending[1])
             return pcs
@@ -708,11 +714,16 @@ class TuiSimBase(unittest.TestCase):
                 renders.append(render_length)
             if grid is not None:
                 self._grid_hook(z, grid)
-            if z.pc == stream_at and state["armed"] and bytes(
+            if z.pc == state["render_return"]:
+                state["render_return"] = None
+            if z.pc == stream_at and state["armed"] and \
+                    state["render_return"] is None and bytes(
                     z.rd((stream_at + i) & 0xFFFF)
                     for i in range(len(signature))) == signature:
                 collected.append(bytes(z.rd((z.hl + i) & 0xFFFF)
                                        for i in range(z.de)))
+                state["render_return"] = (z.rd(z.sp & 0xFFFF) |
+                                          (z.rd((z.sp + 1) & 0xFFFF) << 8))
             return watch()
 
         def tick(_step):

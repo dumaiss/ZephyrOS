@@ -72,6 +72,7 @@
 ; The modes (enum gfx_mode).
 GFX_MODE_G6             = 0
 GFX_MODE_YJK            = 2
+GFX_MODE_YAE            = 3
 
 ; The command codes and ARG bits (V9958 Technical Data Book, the drawing
 ; commands); the low nibble of LINE/PSET/LMMV is the logical operation
@@ -81,7 +82,14 @@ GFX_CMD_HMMM            = 0xD0
 GFX_CMD_LMMV            = 0x80
 GFX_CMD_LINE            = 0x70
 GFX_CMD_PSET            = 0x50
+GFX_OP_AND              = 0x01
+GFX_OP_OR               = 0x02
 GFX_OP_EOR              = 0x03
+
+; YJK+YAE: a palette pixel's byte is (index << 4) | A; a masked write
+; keeps bits 2-0, the pixel's share of its group's J/K.
+GFX_YAE_A               = 0x08
+GFX_YAE_KEEP            = 0x07
 GFX_ARG_MAJ             = 0x01
 GFX_ARG_DIX             = 0x04
 GFX_ARG_DIY             = 0x08
@@ -293,12 +301,25 @@ gfx_wait_ce_loop:
 ; gfx_cmd_commit: issue gfx_cmd_block now from R#32 (fifteen bytes), or
 ; queue it inside a batch.  gfx_cmd_commit_short: the same from R#36
 ; (eleven bytes, a command that reads no source).  Clobber A, BC, DE, HL.
+;
+; In YJK+YAE a logical command below HMMV (PSET, LINE, LMMV) carries a
+; palette index in CLR and IMP or EOR in its low nibble; the commit
+; turns it into the masked form, which never changes bits 2-0 (the J/K
+; shares of the picture pixels the shape leaves):
+;   IMP: two commands, AND 07h, then OR (index << 4) | A;
+;   EOR: one command, EOR index << 4 (A and the shares untouched).
+; CLR and CMD are as the caller built them afterwards.  HMMV and the
+; copies pass unchanged: their callers write whole palette bytes.
 gfx_cmd_commit_short::
+	ld	a,(_gfx_draw_mode)
+	cp	#GFX_MODE_YAE
+	jr	z,gfx_commit_yae
+gfx_commit_short_raw:
 	ld	a,#4
 	ld	(gfx_cmd_block+15),a
 	ld	a,(_gfx_batch_depth)
 	or	a
-	jr	nz,gfx_cmd_queue
+	jp	nz,gfx_cmd_queue
 	ld	hl,#gfx_cmd_block+4
 	jr	gfx_issue_short
 gfx_cmd_commit::
@@ -306,7 +327,7 @@ gfx_cmd_commit::
 	ld	(gfx_cmd_block+15),a
 	ld	a,(_gfx_batch_depth)
 	or	a
-	jr	nz,gfx_cmd_queue
+	jp	nz,gfx_cmd_queue
 	ld	hl,#gfx_cmd_block
 ; gfx_issue_full: HL = a block's R#32 byte; gfx_issue_short: HL = its
 ; R#36 byte.  Wait for the engine, select R#17, stream the bytes; the
@@ -347,6 +368,51 @@ gfx_issue_11:
 	outi
 	outi
 	ei
+	ret
+
+gfx_commit_yae:
+	ld	a,(gfx_cmd_block+GFX_BLK_CMD)
+	cp	#GFX_CMD_HMMV
+	jr	nc,gfx_commit_short_raw
+	ld	hl,(gfx_cmd_block+GFX_BLK_CLR)
+	push	hl			; L = the index
+	push	af			; A = the command as built
+	and	#0x0F
+	jr	nz,gfx_commit_yae_eor
+	ld	a,#GFX_YAE_KEEP		; AND 07h: the shares stay
+	ld	(gfx_cmd_block+GFX_BLK_CLR),a
+	pop	af
+	push	af
+	or	#GFX_OP_AND
+	ld	(gfx_cmd_block+GFX_BLK_CMD),a
+	call	gfx_commit_short_raw
+	pop	af
+	push	af
+	or	#GFX_OP_OR		; then OR the index and A
+	ld	(gfx_cmd_block+GFX_BLK_CMD),a
+	ld	a,#GFX_YAE_A
+	jr	gfx_commit_yae_last
+gfx_commit_yae_eor:
+	xor	a			; EOR the index bits only
+gfx_commit_yae_last:
+	pop	bc			; B = the command as built
+	pop	hl
+	push	hl
+	push	bc
+	ld	c,a
+	ld	a,l
+	add	a,a
+	add	a,a
+	add	a,a
+	add	a,a
+	or	c
+	ld	(gfx_cmd_block+GFX_BLK_CLR),a
+	call	gfx_commit_short_raw
+	pop	af
+	ld	(gfx_cmd_block+GFX_BLK_CMD),a
+	pop	hl
+	ld	a,l
+	ld	(gfx_cmd_block+GFX_BLK_CLR),a
 	ret
 
 gfx_cmd_queue:
@@ -487,6 +553,8 @@ gfx_fill_op:
 	jp	nc,gfx_ret_einval
 	ld	b,a			; B = the op
 	ld	a,(_gfx_draw_mode)
+	cp	#GFX_MODE_YAE
+	jp	z,gfx_fill_yae
 	cp	#GFX_MODE_YJK
 	jr	nz,gfx_fill_not_yjk
 	; YJK: only an aligned COPY keeps the four-pixel J/K runs
@@ -543,6 +611,80 @@ gfx_fill_commit:
 	ld	(gfx_cmd_block+GFX_BLK_CMD),a
 	call	gfx_cmd_commit_short
 	jp	gfx_ret_zero
+
+; gfx_fill_yae: the YJK+YAE fill, B = the op.  XOR is one LMMV (the
+; commit makes it EOR index << 4).  COPY splits at the four-pixel groups:
+; [a, b) with a = (x + 3) & ~3 and b = (x + w) & ~3 is whole groups, one
+; HMMV of (index << 4) | A; the edges [x, a) and [b, x + w) are partial
+; groups, masked LMMVs (the commit's AND/OR pair).  A rectangle inside
+; one group is one masked LMMV.
+gfx_fill_yae:
+	ld	a,(gfx_a_c)
+	and	#0xF0
+	jp	nz,gfx_ret_einval
+	call	gfx_fill_block
+	ld	a,b
+	or	a
+	jp	nz,gfx_fill_lmmv
+	ld	hl,(gfx_a_x)
+	ld	de,(gfx_a_w)
+	add	hl,de
+	ld	(gfx_r_x1),hl		; the end
+	ld	a,l
+	and	#0xFC
+	ld	l,a
+	ld	(gfx_r_y1),hl		; b
+	ld	hl,(gfx_a_x)
+	inc	hl
+	inc	hl
+	inc	hl
+	ld	a,l
+	and	#0xFC
+	ld	l,a
+	ld	(gfx_r_x0),hl		; a
+	ld	de,(gfx_r_y1)
+	or	a
+	sbc	hl,de
+	jp	nc,gfx_fill_lmmv	; a >= b: no whole group
+	ld	hl,(gfx_r_x0)
+	ld	(gfx_cmd_block+GFX_BLK_DX),hl
+	ex	de,hl
+	ld	hl,(gfx_r_y1)
+	or	a
+	sbc	hl,de
+	ld	(gfx_cmd_block+GFX_BLK_NX),hl
+	ld	a,(gfx_a_c)
+	add	a,a
+	add	a,a
+	add	a,a
+	add	a,a
+	or	#GFX_YAE_A
+	ld	(gfx_cmd_block+GFX_BLK_CLR),a
+	ld	a,#GFX_CMD_HMMV
+	ld	(gfx_cmd_block+GFX_BLK_CMD),a
+	call	gfx_cmd_commit_short
+	ld	hl,(gfx_r_x0)		; the left edge [x, a)
+	ld	de,(gfx_a_x)
+	or	a
+	sbc	hl,de
+	call	nz,gfx_fill_yae_edge
+	ld	hl,(gfx_r_x1)		; the right edge [b, end)
+	ld	de,(gfx_r_y1)
+	or	a
+	sbc	hl,de
+	call	nz,gfx_fill_yae_edge
+	jp	gfx_ret_zero
+
+; gfx_fill_yae_edge: HL = the width, DE = the first dot: one masked LMMV
+; on the block's DY/NY.
+gfx_fill_yae_edge:
+	ld	(gfx_cmd_block+GFX_BLK_NX),hl
+	ld	(gfx_cmd_block+GFX_BLK_DX),de
+	ld	a,(gfx_a_c)
+	ld	(gfx_cmd_block+GFX_BLK_CLR),a
+	ld	a,#GFX_CMD_LMMV
+	ld	(gfx_cmd_block+GFX_BLK_CMD),a
+	jp	gfx_cmd_commit_short
 
 ; gfx_fill_block: DX/DY/NX/NY from gfx_a_x/y/w/h, ARG zero (a fill reads
 ; no source: SX/SY are not issued).  Keeps BC.
@@ -627,7 +769,10 @@ gfx_copy_dst:
 	jr	gfx_copy_build
 gfx_copy_not_g6:
 	cp	#GFX_MODE_YJK
+	jr	z,gfx_copy_groups
+	cp	#GFX_MODE_YAE
 	jr	nz,gfx_copy_build
+gfx_copy_groups:
 	ld	a,c
 	and	#3
 	jp	nz,gfx_ret_einval

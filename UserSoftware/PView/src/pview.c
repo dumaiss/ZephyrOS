@@ -78,8 +78,9 @@ int main(int argc, char **argv)
 	}
 	/* Clear the visible page first: the console's bitmap would
 	 * otherwise show around a smaller picture.  Byte 0 is black in
-	 * GRAPHIC 7 and in YJK; a 16-colour byte is a palette index, so
-	 * that mode clears to the picture palette's darkest entry. */
+	 * GRAPHIC 7 and in YJK; in the 16-colour and YJK+YAE modes the
+	 * colour is a palette index, so they clear to the picture
+	 * palette's darkest entry (entry 0 without one). */
 	{
 		gfx_color_t background = 0u;
 
@@ -105,7 +106,8 @@ int main(int argc, char **argv)
 	x = (uint16_t)((info.width - header.width) / 2u);
 	if (header.mode == (uint8_t)GFX_MODE_512x212_16) {
 		x = (uint16_t)(x & ~1u);
-	} else if (header.mode == (uint8_t)GFX_MODE_256x212_YJK) {
+	} else if (header.mode == (uint8_t)GFX_MODE_256x212_YJK ||
+		   header.mode == (uint8_t)GFX_MODE_256x212_YJK_YAE) {
 		x = (uint16_t)(x & ~3u);      /* the four-pixel J/K runs */
 	}
 	y = (uint16_t)((info.height - header.height) / 2u);

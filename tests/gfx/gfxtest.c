@@ -993,6 +993,97 @@ static void gfxtest_mark(void)
 	gfx_timing_mark();
 }
 
+/* YJK+YAE: a YJK "picture" (A clear, a pattern in Y and the J/K bits)
+ * uploaded over the whole page, then every drawing path over it:
+ * fills whole and in part, XOR, a line, a point, an outline, ellipses,
+ * a batch, opaque text at an odd x, transparent atlas text and the
+ * refusals.  Key 1 holds the result on the peer; after the close one
+ * line reports every call's result in order. */
+#define YAE_CALLS 22
+
+static int yae_results[YAE_CALLS];
+static uint8_t yae_row[256];
+
+static uint8_t yae_picture(uint16_t x, uint16_t y)
+{
+	return (uint8_t)((((x * 5u) + (y * 3u)) & 0xF0u) | ((x ^ y) & 0x07u));
+}
+
+static int gfxtest_yae(void)
+{
+	static const struct gfx_rgb palette[16] = {
+		{0, 0, 0}, {0, 0, 160}, {0, 160, 0}, {0, 160, 160},
+		{160, 0, 0}, {160, 0, 160}, {160, 96, 0}, {160, 160, 160},
+		{96, 96, 96}, {96, 96, 255}, {96, 255, 96}, {96, 255, 255},
+		{255, 96, 96}, {255, 96, 255}, {255, 255, 96}, {255, 255, 255}
+	};
+	static const struct gfx_text_style opaque = {15u, 1u, 0u, 0u};
+	static const struct gfx_text_style clear = {14u, 0u,
+		GFX_TEXT_TRANSPARENT, 0u};
+	static const struct gfx_text_style bad = {16u, 1u, 0u, 0u};
+	uint16_t x;
+	uint16_t y;
+	int n = 0;
+	int result;
+
+	printf("gfxtest: yae\r\n");
+	result = gfx_open();
+	if (result < 0) {
+		printf("gfxtest: FAIL open %d\r\n", result);
+		return 1;
+	}
+	yae_results[n++] = gfx_set_mode(GFX_MODE_256x212_YJK_YAE);
+	yae_results[n++] = gfx_set_palette(0u, 16u, palette);
+	yae_results[n++] = gfx_upload_begin(0u, 0u, 256u, 212u);
+	for (y = 0u; y < 212u; ++y) {
+		for (x = 0u; x < 256u; ++x) {
+			yae_row[x] = yae_picture(x, y);
+		}
+		(void)gfx_upload_write(yae_row, 256u);
+	}
+	yae_results[n++] = gfx_upload_end();
+	(void)gfx_display_enable(1u);
+	/* Fills: partial edges both sides, inside one group, XOR. */
+	yae_results[n++] = gfx_fill_rect(10u, 20u, 21u, 6u, 5u, GFX_OP_COPY);
+	yae_results[n++] = gfx_fill_rect(41u, 30u, 2u, 3u, 6u, GFX_OP_COPY);
+	yae_results[n++] = gfx_fill_rect(64u, 40u, 16u, 4u, 3u, GFX_OP_XOR);
+	/* The per-dot shapes. */
+	yae_results[n++] = gfx_line(100u, 10u, 140u, 30u, 7u, GFX_OP_COPY);
+	yae_results[n++] = gfx_point(150u, 50u, 9u, GFX_OP_COPY);
+	yae_results[n++] = gfx_rect(160u, 60u, 13u, 9u, 10u, GFX_OP_COPY);
+	yae_results[n++] = gfx_fill_ellipse(60u, 120u, 10u, 6u, 11u,
+					    GFX_OP_COPY);
+	yae_results[n++] = gfx_ellipse(200u, 120u, 20u, 8u, 12u, GFX_OP_COPY);
+	/* A batch: the queued blocks keep their masking. */
+	gfx_begin();
+	yae_results[n++] = gfx_fill_rect(201u, 10u, 7u, 5u, 13u,
+					 GFX_OP_COPY);
+	yae_results[n++] = gfx_line(201u, 20u, 230u, 20u, 4u, GFX_OP_COPY);
+	yae_results[n++] = gfx_end();
+	/* Opaque text at x 101: padded to 100..115. */
+	yae_results[n++] = gfx_text(101u, 150u, "Hi", &opaque);
+	/* Transparent text: one slot is too few, two hold mask and
+	 * colour. */
+	yae_results[n++] = gfx_text_atlas(GFX_FONT_6X8, 212u, 20u, 32u, 64u);
+	yae_results[n++] = gfx_text_atlas(GFX_FONT_6X8, 212u, 44u, 32u, 64u);
+	yae_results[n++] = gfx_text(30u, 180u, "OK", &clear);
+	/* Refusals: an index above 15, an unaligned copy. */
+	yae_results[n++] = gfx_fill_rect(0u, 0u, 4u, 4u, 16u, GFX_OP_COPY) +
+			   gfx_line(0u, 0u, 3u, 3u, 16u, GFX_OP_COPY) +
+			   gfx_text(0u, 0u, "x", &bad);
+	yae_results[n++] = gfx_copy_rect(2u, 0u, 8u, 256u, 8u, 4u);
+	yae_results[n++] = gfx_copy_rect(0u, 0u, 8u, 256u, 8u, 4u);
+	(void)gfx_wait();
+	(void)getchar(); /* key 1: the drawings are on the peer */
+	gfx_close();
+	printf("gfxtest: yae");
+	for (result = 0; result < n; ++result) {
+		printf(" %d", yae_results[result]);
+	}
+	printf("\r\ngfxtest: yae done\r\n");
+	return 0;
+}
+
 static int gfxtest_timing(void)
 {
 	static const struct gfx_text_style style = {0x0Fu, 0x00u};
@@ -1444,6 +1535,9 @@ int main(int argc, char **argv)
 	}
 	if (strcmp(argv[0], "atlas") == 0) {
 		return gfxtest_atlas();
+	}
+	if (strcmp(argv[0], "yae") == 0) {
+		return gfxtest_yae();
 	}
 	if (strcmp(argv[0], "pointer") == 0) {
 		return gfxtest_pointer();

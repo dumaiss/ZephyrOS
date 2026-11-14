@@ -19,6 +19,7 @@ int gfx_set_mode(enum gfx_mode mode)
 	case GFX_MODE_512x212_16:
 	case GFX_MODE_256x212_256:
 	case GFX_MODE_256x212_YJK:
+	case GFX_MODE_256x212_YJK_YAE:
 		break;
 	default:
 		return -KOS_EINVAL;
@@ -29,7 +30,8 @@ int gfx_set_mode(enum gfx_mode mode)
 	if (gfx_state.backend != KVIDEO_BACKEND_V9958) {
 		return -KOS_ENOTSUP;
 	}
-	if (mode == GFX_MODE_256x212_YJK &&
+	if ((mode == GFX_MODE_256x212_YJK ||
+	     mode == GFX_MODE_256x212_YJK_YAE) &&
 	    (gfx_state.caps & KVIDEO_YJK) == 0u) {
 		return -KOS_ENOTSUP;
 	}
@@ -54,8 +56,11 @@ int gfx_set_mode(enum gfx_mode mode)
 	/* The drawing assembly's view of the mode. */
 	gfx_draw_mode = (uint8_t)mode;
 	gfx_draw_width = gfx_state.width;
+	/* Shape 1 checks the colour is 0..15: the 16-colour mode's and
+	 * YJK+YAE's palette indices. */
 	gfx_draw_shape = mode == GFX_MODE_256x212_256 ? 2u :
-		mode == GFX_MODE_512x212_16 ? 1u : 0u;
+		(mode == GFX_MODE_512x212_16 ||
+		 mode == GFX_MODE_256x212_YJK_YAE) ? 1u : 0u;
 	gfx_draw_ready = 1u;
 	return 0;
 }

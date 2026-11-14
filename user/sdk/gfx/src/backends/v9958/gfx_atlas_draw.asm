@@ -13,6 +13,14 @@
 ;
 ; An atlas build draws each atlas row of glyphs as one opaque string
 ; through the text emit (one VRAM address per scanline of the row).
+;
+; YJK+YAE: a glyph must change only bits 7-3 of the pixels it inks, or
+; the picture pixels sharing their groups lose their colour.  A mask
+; atlas (slot key 10h: ink 07h on FFh) joins the colours' atlases (ink
+; (index << 4) | A on 00h), and each glyph is two LMMMs: AND from the
+; mask, then OR from its colour.  The mask is taken first and both
+; slots are marked recent at once, so neither evicts the other (the
+; setup guarantees two slots).
 ; -----------------------------------------------------------------------------
 
 	.module gfx_atlas_draw
@@ -62,6 +70,11 @@
 	.globl _gfx_font_stale4
 
 GFX_CMD_LMMM_TIMP       = 0x98
+GFX_CMD_LMMM_AND        = 0x91
+GFX_CMD_LMMM_OR         = 0x92
+GFX_MODE_YAE            = 3
+GFX_SLOT_MASK           = 0x10
+GFX_YAE_A               = 0x08
 GFX_ARG_DIX             = 0x04
 GFX_ARG_DIY             = 0x08
 GFX_SLOT_FREE           = 0xFF
@@ -85,6 +98,10 @@ ad_slot:
 	.ds 1
 ad_slot_y:
 	.ds 2
+ad_mask_y:
+	.ds 2			; YJK+YAE: the mask atlas's top
+ad_copy_y:
+	.ds 2			; the slot top the next glyph copy reads
 ad_dx:
 	.ds 2
 ad_outside:
@@ -181,8 +198,34 @@ gfx_atlas_draw::
 	ld	hl,#_gfx_font_stale4
 ad_stale_set:
 	ld	(ad_stale),hl
+	ld	a,(_gfx_draw_mode)
+	cp	#GFX_MODE_YAE
+	jr	nz,ad_colour_slot
+	ld	a,(gfx_ad_fg)
+	push	af
+	ld	a,#GFX_SLOT_MASK
+	ld	(gfx_ad_fg),a
+	call	ad_slot_for
+	push	af
+	call	ad_touch
+	pop	af
+	add	a,a
+	ld	l,a
+	ld	h,#0
+	ld	de,#_gfx_atlas_slot_y
+	add	hl,de
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	ld	(ad_mask_y),de
+	pop	af
+	ld	(gfx_ad_fg),a
+ad_colour_slot:
 	call	ad_slot_for
 	ld	(ad_slot),a
+	push	af
+	call	ad_touch
+	pop	af
 	add	a,a
 	ld	l,a
 	ld	h,#0
@@ -261,6 +304,25 @@ ad_inside:
 	ld	(hl),a			; cleared
 	call	ad_redraw_stale
 ad_cell:
+	ld	a,(_gfx_draw_mode)
+	cp	#GFX_MODE_YAE
+	jr	nz,ad_cell_plain
+	ld	hl,(ad_mask_y)		; AND from the mask ...
+	ld	(ad_copy_y),hl
+	ld	a,#GFX_CMD_LMMM_AND
+	ld	(gfx_cmd_block+14),a
+	call	ad_copy
+	ld	a,#GFX_CMD_LMMM_OR	; ... then OR from the colour
+	ld	(gfx_cmd_block+14),a
+ad_cell_plain:
+	ld	hl,(ad_slot_y)
+	ld	(ad_copy_y),hl
+	call	ad_copy
+	jr	ad_next
+
+; ad_copy: the glyph ad_idx from the slot at ad_copy_y to (ad_dx,
+; gfx_ad_y), with the block's command.
+ad_copy:
 	; SY = slot_y + cell_y[idx], SX = cell_x[idx]
 	ld	a,(ad_idx)
 	ld	c,a
@@ -268,7 +330,7 @@ ad_cell:
 	ld	hl,#_gfx_atlas_cell_y
 	add	hl,bc
 	ld	a,(hl)
-	ld	hl,(ad_slot_y)
+	ld	hl,(ad_copy_y)
 	add	a,l
 	ld	l,a
 	ld	a,#0
@@ -327,8 +389,7 @@ ad_y_fwd:
 	ld	(gfx_cmd_block+6),de	; DY
 	ld	a,b
 	ld	(gfx_cmd_block+13),a	; ARG
-	call	gfx_cmd_commit
-	jr	ad_next
+	jp	gfx_cmd_commit
 ad_outside_glyph:
 	ld	hl,(ad_outside)
 	inc	hl
@@ -348,6 +409,12 @@ ad_next:
 ad_done:
 	; the slot is the most recently used
 	ld	a,(ad_slot)
+	call	ad_touch
+	ld	de,(ad_outside)
+	ret
+
+; ad_touch: A = a slot, now the most recently used.
+ad_touch:
 	ld	e,a
 	ld	d,#0
 	ld	hl,#_gfx_atlas_slot_lru
@@ -356,7 +423,35 @@ ad_done:
 	inc	a
 	ld	(_gfx_atlas_lru_next),a
 	ld	(hl),a
-	ld	de,(ad_outside)
+	ret
+
+; ad_colours: A = a slot key; the build's gfx_e_fg/gfx_e_bg bytes.  The
+; key itself on 0, but in YJK+YAE (index << 4) | A on 00h, or the mask
+; key's 07h on FFh.  Keeps BC, DE, HL.
+ad_colours:
+	push	bc
+	ld	c,a
+	ld	b,#0
+	ld	a,(_gfx_draw_mode)
+	cp	#GFX_MODE_YAE
+	ld	a,c
+	jr	nz,ad_colours_set
+	cp	#GFX_SLOT_MASK
+	jr	nz,ad_colours_index
+	ld	a,#0x07
+	ld	b,#0xFF
+	jr	ad_colours_set
+ad_colours_index:
+	add	a,a
+	add	a,a
+	add	a,a
+	add	a,a
+	or	#GFX_YAE_A
+ad_colours_set:
+	ld	(gfx_e_fg),a
+	ld	a,b
+	ld	(gfx_e_bg),a
+	pop	bc
 	ret
 
 ; ---------------------------------------------------------------------------
@@ -458,9 +553,7 @@ ad_build:
 	add	hl,de
 	ld	(gfx_e_ptr),hl
 	ld	a,(gfx_ad_fg)
-	ld	(gfx_e_fg),a
-	xor	a
-	ld	(gfx_e_bg),a
+	call	ad_colours
 	ld	hl,#0
 	ld	(gfx_e_x),hl
 	ld	a,(_gfx_atlas_font)
@@ -551,7 +644,7 @@ ad_redraw_loop:
 	ld	a,(hl)
 	cp	#GFX_SLOT_FREE
 	jr	z,ad_redraw_next
-	ld	(gfx_e_fg),a
+	call	ad_colours
 	; y = slot_y[i] + cell_y[idx]
 	ld	a,c
 	add	a,a

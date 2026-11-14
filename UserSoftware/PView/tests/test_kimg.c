@@ -71,6 +71,17 @@ int main(void)
 	/* YJK runs are four pixels wide. */
 	header(raw, PVIEW_MODE_YJK, 62, 32, 0);
 	expect(raw, -KOS_EINVAL);
+	/* YJK+YAE: the runs, and a palette of up to 16 entries. */
+	header(raw, PVIEW_MODE_YAE, 256, 159, 16);
+	expect(raw, 0);
+	header(raw, PVIEW_MODE_YAE, 64, 32, 0);
+	expect(raw, 0);
+	header(raw, PVIEW_MODE_YAE, 62, 32, 0);
+	expect(raw, -KOS_EINVAL);
+	header(raw, PVIEW_MODE_YAE, 64, 32, 17);
+	expect(raw, -KOS_EINVAL);
+	header(raw, PVIEW_MODE_YAE, 260, 32, 0);
+	expect(raw, -KOS_EINVAL);
 
 	/* Geometry bounds: the 16-colour mode to 512 even pixels, the
 	 * byte modes to 256, every mode to 212 lines. */
@@ -94,7 +105,7 @@ int main(void)
 	raw[4] = 2;
 	expect(raw, -KOS_EINVAL);
 	header(raw, PVIEW_MODE_G6, 64, 32, 0);
-	raw[5] = 3;
+	raw[5] = 4;
 	expect(raw, -KOS_EINVAL);
 	header(raw, PVIEW_MODE_G6, 64, 32, 0);
 	raw[6] = 1;

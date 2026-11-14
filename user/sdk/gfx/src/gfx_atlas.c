@@ -116,6 +116,12 @@ int gfx_atlas_setup(enum gfx_font font, uint16_t y, uint16_t lines,
 	if (gfx_atlas_slots > GFX_ATLAS_SLOTS_MAX) {
 		gfx_atlas_slots = GFX_ATLAS_SLOTS_MAX;
 	}
+	/* YJK+YAE draws each glyph from the mask atlas and its colour's:
+	 * the band holds both. */
+	if (gfx_state.mode == (uint8_t)GFX_MODE_256x212_YJK_YAE &&
+	    gfx_atlas_slots < 2u) {
+		return -KOS_EINVAL;
+	}
 	gfx_atlas_lru_next = 0u;
 	for (i = 0u; i < GFX_ATLAS_SLOTS_MAX; ++i) {
 		gfx_atlas_slot_color[i] = GFX_ATLAS_SLOT_FREE;

@@ -194,6 +194,28 @@ class TestFunctionPointers(unittest.TestCase):
         self.assertEqual(plan.zone[("state.rel", "code")], "resident")
         self.assertEqual(plan.size[("state.rel", "code")], 0)
 
+    def test_libkos_is_resident_but_the_key_decoder_places(self):
+        """The runtime (libkos) stays resident whatever calls it; the key
+        decoder's members are leaf code the placer may move like any
+        library member."""
+        room = exeplace.APERTURE - exeplace.LOW_BASE - exeplace.SDK_LOW
+        main = module("main", [("_CODE", room - 0x100, [0, 0, 0])],
+                      [("_main", 0), ("_key_poll", None),
+                       ("_console_read", None)])
+        main.origin = "main.rel"
+        key = module("key", [("_CODE", 0x200, [0] * 4)],
+                     [("_key_poll", 0)])
+        key.origin = "libkos.lib(key.rel)"
+        console = module("console", [("_CODE", 0x40, [0] * 4)],
+                         [("_console_read", 0)])
+        console.origin = "libkos.lib(console_proto.rel)"
+        plan, _ = exeplace.place([main, key, console], 256, set(),
+                                 {"main.rel": "resident"})
+        self.assertEqual(plan.zone[("libkos.lib(console_proto.rel)",
+                                    "code")], "resident")
+        self.assertNotEqual(plan.zone[("libkos.lib(key.rel)", "code")],
+                            "resident")
+
     def test_a_data_word_keeps_it_resident(self):
         self.assertEqual(self.zone(pointer_program("data")), "resident")
 

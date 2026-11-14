@@ -31,6 +31,7 @@
 
 #include "kos/types.h"
 #include "kos/errno.h"
+#include "kos/key.h"
 
 typedef uint16_t tui_key_t;
 typedef uint8_t  tui_style_t;
@@ -199,44 +200,41 @@ int tui_frame_title(const struct tui_rect *rect,
 
 /* ---- keyboard ------------------------------------------------------- */
 
+/* The keys are kos/key.h's: the same decoder, the same codes.  A program
+ * that wants keys without the TUI (a graphics program) uses kos/key.h
+ * directly. */
 enum {
-	TUI_KEY_NONE      = 0x0000,
+	TUI_KEY_NONE      = KEY_NONE,
 
-	TUI_KEY_ESC       = 0x001B,
+	TUI_KEY_ESC       = KEY_ESC,
 
-	TUI_KEY_UP        = 0x0101,
-	TUI_KEY_DOWN      = 0x0102,
-	TUI_KEY_LEFT      = 0x0103,
-	TUI_KEY_RIGHT     = 0x0104,
+	TUI_KEY_UP        = KEY_UP,
+	TUI_KEY_DOWN      = KEY_DOWN,
+	TUI_KEY_LEFT      = KEY_LEFT,
+	TUI_KEY_RIGHT     = KEY_RIGHT,
 
-	TUI_KEY_HOME      = 0x0110,
-	TUI_KEY_END       = 0x0111,
-	TUI_KEY_PGUP      = 0x0112,
-	TUI_KEY_PGDN      = 0x0113,
-	TUI_KEY_INSERT    = 0x0114,
-	TUI_KEY_DELETE    = 0x0115,
+	TUI_KEY_HOME      = KEY_HOME,
+	TUI_KEY_END       = KEY_END,
+	TUI_KEY_PGUP      = KEY_PGUP,
+	TUI_KEY_PGDN      = KEY_PGDN,
+	TUI_KEY_INSERT    = KEY_INSERT,
+	TUI_KEY_DELETE    = KEY_DELETE,
 
-	TUI_KEY_F1        = 0x0121,
-	TUI_KEY_F2        = 0x0122,
-	TUI_KEY_F3        = 0x0123,
-	TUI_KEY_F4        = 0x0124,
-	TUI_KEY_F5        = 0x0125,
-	TUI_KEY_F6        = 0x0126,
-	TUI_KEY_F7        = 0x0127,
-	TUI_KEY_F8        = 0x0128,
-	TUI_KEY_F9        = 0x0129,
-	TUI_KEY_F10       = 0x012A,
-	TUI_KEY_F11       = 0x012B,
-	TUI_KEY_F12       = 0x012C,
+	TUI_KEY_F1        = KEY_F1,
+	TUI_KEY_F2        = KEY_F2,
+	TUI_KEY_F3        = KEY_F3,
+	TUI_KEY_F4        = KEY_F4,
+	TUI_KEY_F5        = KEY_F5,
+	TUI_KEY_F6        = KEY_F6,
+	TUI_KEY_F7        = KEY_F7,
+	TUI_KEY_F8        = KEY_F8,
+	TUI_KEY_F9        = KEY_F9,
+	TUI_KEY_F10       = KEY_F10,
+	TUI_KEY_F11       = KEY_F11,
+	TUI_KEY_F12       = KEY_F12,
 
-	TUI_KEY_MOUSE     = 0x0140
+	TUI_KEY_MOUSE     = 0x0140  /* the TUI's own: a mouse event */
 };
-
-/* Decoder-only lifecycle for graphics applications: no cell map, screen
- * reset, rendition changes or cursor output. Do not combine with tui_init().
- * The usual key functions below work until tui_key_shutdown(). */
-int tui_key_init(void);
-void tui_key_shutdown(void);
 
 /* Nonzero when enough input is pending to return a key without blocking. */
 int tui_key_pending(void);

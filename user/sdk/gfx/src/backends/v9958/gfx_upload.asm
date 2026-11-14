@@ -37,6 +37,7 @@
 
 GFX_MODE_G6             = 0
 GFX_MODE_YJK            = 2
+GFX_MODE_YAE            = 3
 
 	.area _DATA
 
@@ -111,7 +112,10 @@ _gfx_upload_begin::
 	jr	up_start
 up_not_g6:
 	cp	#GFX_MODE_YJK
+	jr	z,up_groups
+	cp	#GFX_MODE_YAE
 	jr	nz,up_start
+up_groups:
 	ld	a,c
 	and	#3
 	jp	nz,gfx_ret_einval

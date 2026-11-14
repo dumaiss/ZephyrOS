@@ -1,6 +1,6 @@
 /* KonaOS libgfx: the palette.
  *
- * The 16-colour mode holds a 16-entry programmable palette;
+ * The 16-colour and YJK+YAE modes hold a 16-entry programmable palette;
  * gfx_set_palette converts the portable 8-bit RGB to the backend's
  * scale and writes it under the hardware WAIT.  The 256-colour and YJK
  * modes have no application palette: -KOS_ENOTSUP.  No VIDEO IPC.
@@ -17,7 +17,8 @@ int gfx_set_palette(uint8_t first, uint8_t count,
 	if (gfx_state.video_handle == 0 || gfx_state.mode_set == 0u) {
 		return -KOS_EINVAL;
 	}
-	if (gfx_state.mode != (uint8_t)GFX_MODE_512x212_16) {
+	if (gfx_state.mode != (uint8_t)GFX_MODE_512x212_16 &&
+	    gfx_state.mode != (uint8_t)GFX_MODE_256x212_YJK_YAE) {
 		return -KOS_ENOTSUP;
 	}
 	if (count == 0u) {

@@ -2076,27 +2076,46 @@ class V9958Peer:
                 self.vram[(dst + dst_x) & 0x1FFFF] = \
                     self.vram[(src + src_x) & 0x1FFFF]
 
+    @staticmethod
+    def _logic(dest, src, op):
+        """The V9958's logical operation on one dot (the command's low
+        nibble): IMP 0, AND 1, OR 2, EOR 3, NOT 4, and their T forms
+        (8-12), which leave the dot when the source is 0 (V9958
+        Technical Data Book, the logical operations).  None: the dot is
+        left."""
+        if op & 0x08 and src == 0:
+            return None
+        base = op & 0x07
+        if base == 0x00:
+            return src
+        if base == 0x01:
+            return dest & src
+        if base == 0x02:
+            return dest | src
+        if base == 0x03:
+            return dest ^ src
+        if base == 0x04:
+            return ~src
+        return dest
+
     def _dot_write(self, x, address, color, op):
-        """One dot at `x` under the logical operation `op` (0 IMP, 3
-        EOR): the four-bit pixel's nibble (the dot's x parity picks
-        it), in GRAPHIC 6; the whole byte in GRAPHIC 7."""
+        """One dot at `x` under the logical operation `op`: the
+        four-bit pixel's nibble (the dot's x parity picks it), in
+        GRAPHIC 6; the whole byte in GRAPHIC 7 (and the YJK modes,
+        where a dot is a byte)."""
         value = self.vram[address]
         if self._dots_per_byte() == 2:
-            if x & 1:
-                if op == 0x03:  # EOR
-                    value ^= color & 0x0F
-                else:           # IMP, the low nibble
-                    value = (value & 0xF0) | (color & 0x0F)
-            else:
-                if op == 0x03:  # EOR, the high nibble
-                    value ^= (color & 0x0F) << 4
-                else:           # IMP, the high nibble
-                    value = (value & 0x0F) | ((color & 0x0F) << 4)
+            shift = 0 if x & 1 else 4
+            pixel = self._logic((value >> shift) & 0x0F, color & 0x0F, op)
+            if pixel is None:
+                return
+            value = (value & ~(0x0F << shift) & 0xFF) | \
+                ((pixel & 0x0F) << shift)
         else:
-            if op == 0x03:
-                value ^= color
-            else:
-                value = color
+            pixel = self._logic(value, color, op)
+            if pixel is None:
+                return
+            value = pixel & 0xFF
         self.vram[address] = value
 
     def _dot_read(self, x, address):
@@ -2111,9 +2130,9 @@ class V9958Peer:
     def _lmmm(self, block, op):
         """LMMM: NX by NY dots copied from (SX, SY) to (DX, DY) in the
         ARG's DIX/DIY directions, dot by dot, under the logical
-        operation `op`: IMP (0) copies, TIMP (8) skips colour-0 source
-        dots so they leave the destination (V9958 Technical Data Book,
-        the logical move commands)."""
+        operation `op` (_logic: IMP copies, TIMP skips colour-0 source
+        dots so they leave the destination, AND/OR/EOR combine; V9958
+        Technical Data Book, the logical move commands)."""
         dots = self._dots_per_byte()
         sx = block[0] | (block[1] << 8)
         sy = block[2] | (block[3] << 8)
@@ -2132,14 +2151,14 @@ class V9958Peer:
                 sx_i = sx + index * step_x
                 pixel = self._dot_read(sx_i,
                                        (src + sx_i // dots) & 0x1FFFF)
-                if op == 0x08 and pixel == 0:
-                    continue  # TIMP: colour 0 leaves the destination
+                # The logical operation (TIMP: colour 0 leaves the
+                # destination) in the dot write.
                 self._dot_write(x, (dst + x // dots) & 0x1FFFF,
-                                pixel, 0)
+                                pixel, op)
 
     def _logical_fill(self, dx, dy, nx, ny, color, op, arg):
         """LMMV: nx by ny dots, per dot, in the ARG's DIX/DIY
-        directions, under IMP or EOR.  GRAPHIC 6's two dots per byte
+        directions, under the logical operation (_logic).  GRAPHIC 6's two dots per byte
         are addressed through the dot's x/2 and written through the
         dot's nibble, GRAPHIC 7's byte as is (the VDP's logical
         commands are dot operations, V9958 Technical Data Book)."""

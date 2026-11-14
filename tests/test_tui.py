@@ -63,7 +63,7 @@ TUI_FUNCTIONS = {
     "tui_push_window", "tui_pop_window",
     "tui_set_style", "tui_get_style", "tui_set_attr", "tui_get_attr",
     "tui_fill", "tui_hline", "tui_vline", "tui_frame", "tui_frame_title",
-    "tui_key_init", "tui_key_shutdown", "tui_key_pending", "tui_getkey", "tui_pollkey",
+    "tui_key_pending", "tui_getkey", "tui_pollkey",
     "tui_saved_size", "tui_save", "tui_restore",
 }
 
@@ -201,9 +201,12 @@ def _ar_members(path):
     return members
 
 
-def _enum_values(text):
-    """The explicit and implied numeric values of every enum block."""
+def _enum_values(text, known=None):
+    """The explicit and implied numeric values of every enum block; a
+    value may name an entry of `known` (another header's enums)."""
     values = {}
+    known = known or {}
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
     for block in re.findall(r"enum\s*\{(.*?)\};", text, re.S):
         following = 0
         for entry in block.split(","):
@@ -214,7 +217,8 @@ def _enum_values(text):
                 name, value = entry.split("=", 1)
                 name = name.strip()
                 value = value.strip()
-                following = int(value, 0)
+                following = (known[value] if value in known
+                             else int(value, 0))
             else:
                 name = entry
             values[name] = following
@@ -251,7 +255,13 @@ class TestTuiHeader(unittest.TestCase):
                              "tui.h includes %s" % include)
 
     def test_style_frame_and_key_values_are_the_architecture_values(self):
-        values = _enum_values(self.text)
+        # The key codes are kos/key.h's: TUI_KEY_* name them.
+        keys = _enum_values(_read(os.path.join("user", "sdk", "include",
+                                               "kos", "key.h")))
+        values = _enum_values(self.text, keys)
+        for name, value in TUI_KEYS.items():
+            if name != "TUI_KEY_MOUSE":
+                self.assertEqual(keys[name[4:]], value, name)
         for expected in (TUI_STYLES, TUI_FRAMES, TUI_KEYS):
             for name, value in expected.items():
                 self.assertIn(name, values, "tui.h defines no %s" % name)
@@ -354,6 +364,8 @@ class TestTuiLibrary(unittest.TestCase):
                     continue
                 if name == "tui_mouse.c" and include == "kos/mouse.h":
                     continue
+                if name == "tui_key.c" and include == "kos/key.h":
+                    continue  # the keys are libkos's decoder
                 self.assertIn(include, ("tui.h", "tui_internal.h",
                            "kos.h", "kos/console.h",
                            "kos/console_render.h",
@@ -442,6 +454,10 @@ class TestTuiLink(unittest.TestCase):
     def test_every_public_declaration_has_a_linked_definition(self):
         for name in TUI_FUNCTIONS | WIDGET_FUNCTIONS:
             self.assertIn("_" + name, self.symbols)
+        # The keys come from libkos's decoder; the waiting key_get (and
+        # its input pacing) is not linked by a TUI program.
+        self.assertIn("key", _linked_modules(self.symbols))
+        self.assertNotIn("_key_get", self.symbols)
         public = _read(os.path.join(ROOT, TUI_HEADER))
         public += _read(os.path.join(ROOT, WIDGET_HEADER))
         self.assertNotIn("tui_priv_", public)
@@ -643,7 +659,7 @@ class TestTuiProbeLinks(unittest.TestCase):
                                 if "mouse" in name.lower() or
                                 "pointer" in name.lower()),
                          ["_tui_mouse_hook"])
-        self.assertEqual(dialog["_tui_mouse_hook"][1], "tui_state")
+        self.assertEqual(dialog["_tui_mouse_hook"][1], "tui_core")
 
     def test_modal_member_has_a_measurable_data_cost(self):
         def data_size(path):

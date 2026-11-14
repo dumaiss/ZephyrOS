@@ -30,7 +30,7 @@ int pview_kimg_check(const uint8_t *raw)
 		return -KOS_EINVAL;
 	}
 	mode = raw[5];
-	if (mode > PVIEW_MODE_YJK) {
+	if (mode > PVIEW_MODE_YAE) {
 		return -KOS_EINVAL;
 	}
 	width = pview_u16(raw + 8);
@@ -44,6 +44,14 @@ int pview_kimg_check(const uint8_t *raw)
 			return -KOS_EINVAL;
 		}
 		if (payload != (unsigned long)(width / 2u) * height) {
+			return -KOS_EINVAL;
+		}
+	} else if (mode == PVIEW_MODE_YAE) {
+		/* Four-pixel J/K runs, and the 16-entry palette. */
+		if (width > 256u || (width & 3u) != 0u || raw[7] > 16u) {
+			return -KOS_EINVAL;
+		}
+		if (payload != (unsigned long)width * height) {
 			return -KOS_EINVAL;
 		}
 	} else {

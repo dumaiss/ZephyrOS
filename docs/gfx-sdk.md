@@ -331,7 +331,8 @@ Initial modes:
 enum gfx_mode {
     GFX_MODE_512x212_16,
     GFX_MODE_256x212_256,
-    GFX_MODE_256x212_YJK
+    GFX_MODE_256x212_YJK,
+    GFX_MODE_256x212_YJK_YAE
 };
 ```
 
@@ -350,6 +351,10 @@ GFX_MODE_256x212_256
 GFX_MODE_256x212_YJK
     -> V9958 GRAPHIC 7 + YJK
     -> host-prepared YJK pixels
+
+GFX_MODE_256x212_YJK_YAE
+    -> V9958 GRAPHIC 7 + YJK + YAE
+    -> host-prepared YJK pixels mixed with 16-colour palette pixels
 ```
 
 The intended usage is:
@@ -364,6 +369,9 @@ The intended usage is:
 256×212×256 / YJK
     picture viewer
     artwork/media applications
+
+256×212 YJK+YAE
+    a picture with a user interface over it: menus, text, frames
 ```
 
 GFX v1 does not expose interlaced modes: every mode is 212 lines,
@@ -375,6 +383,53 @@ VRAM pages. y runs 0-511: lines 0-211 are the visible screen (page 0) and
 lines 256-511 the off-screen page, which belongs to the application while
 libgfx holds the display, apart from the pointer's band while the pointer
 is in use (section 15).
+
+## 6.1 The YJK+YAE mode
+
+`GFX_MODE_256x212_YJK_YAE` sets R#25's YJK and YAE bits. Each byte is one
+pixel:
+
+| Bits | Meaning |
+|---|---|
+| 7-4 | the palette index (A set), or the 4-bit luminance (A clear: Y = bits 7-4 x 2) |
+| 3 | A: set, the pixel shows palette entry bits 7-4; clear, a YJK pixel |
+| 2-0 | the pixel's share of the J/K colour its four-pixel group shares |
+
+The four pixels at x & ~3 share one J/K pair whatever their A bits, so a
+palette pixel's bits 2-0 still colour the YJK pixels of its group. That
+gives the mode its one rule: **a drawing never changes bits 2-0 of a group
+it covers only in part.** libgfx keeps it:
+
+- **Colour:** every drawing call takes a palette index 0..15 (above 15 is
+  `-KOS_EINVAL`); `gfx_set_palette` programs the 16 entries as in the
+  16-colour mode.
+- **Fills:** `gfx_fill_rect` with COPY draws the groups the rectangle
+  covers whole as one HMMV of `(index << 4) | 08h` (`gfx_clear` is one
+  such fill), and each partial group at its left and right edges as two
+  LMMVs: AND `07h`, then OR `(index << 4) | 08h`. XOR is one LMMV that
+  EORs `index << 4`, leaving A and the shares; drawn twice it restores.
+- **Per-dot shapes:** lines, points, outlines and ellipses draw each COPY
+  command twice (the same AND/OR pair) and each XOR once. The pair costs
+  about twice a G7 shape's command time; the CPU builds the block once.
+- **Opaque text** writes whole bytes through the G7 expansion tables, so
+  the string's cell is widened to its outer four-pixel group edges: up to
+  three dots on each side are filled with the background colour (one
+  HMMV each). The glyphs stay at x; only the string's edges, not each
+  glyph, are aligned.
+- **Transparent text** draws each glyph as two LMMMs from the atlas
+  (section 14.1): AND from a mask atlas (ink `07h` on `FFh`), then OR from
+  the colour's atlas (ink `(index << 4) | 08h` on `00h`). The band must
+  hold two atlases.
+- **Copies and uploads** move whole bytes: `src_x`, `dst_x`, `width` (and
+  an upload's `x` and `width`) are multiples of 4, as in the YJK mode, so
+  every group moves with its own J/K shares. A save-under (copy a
+  group-aligned rectangle to page 1 before drawing a menu, copy it back
+  after) is therefore exact.
+- **The pointer** is a sprite and needs nothing: in the YJK modes the
+  V9958 shows sprites in its fixed GRAPHIC 7 sprite colours.
+
+A picture for this mode comes from `tools/kimg.py --mode yae`
+(section 16): YJK pixels with an even luminance, A clear.
 
 ---
 
@@ -505,7 +560,9 @@ marker, a selection).
   nothing;
 - in YJK only `gfx_fill_rect` with COPY and the four-pixel alignment is
   accepted, since a uniform fill keeps the J/K runs. The other shapes are
-  `-KOS_ENOTSUP`.
+  `-KOS_ENOTSUP`;
+- in YJK+YAE every shape is accepted, in palette indices, and draws
+  through the masked commands of section 6.1.
 
 All shapes are batched in order, like the fills and copies (an ellipse
 queues one block per span).
@@ -623,6 +680,9 @@ The pixel packing is determined by the current mode:
 
 256×212 YJK
     one host-encoded V9958 YJK byte per pixel
+
+256×212 YJK+YAE
+    one byte per pixel: a YJK pixel (A clear) or a palette pixel (A set)
 ```
 
 ---
@@ -646,7 +706,8 @@ int gfx_set_palette(
 
 `r`, `g` and `b` use the portable SDK representation; the backend converts them to the V9958 palette representation.
 
-For `GFX_MODE_512x212_16`, at most 16 entries exist.
+For `GFX_MODE_512x212_16` and `GFX_MODE_256x212_YJK_YAE`, at most 16
+entries exist.
 
 A mode without a programmable application palette returns `-KOS_ENOTSUP`.
 
@@ -877,7 +938,10 @@ VRAM, copied by the VDP.
   - a glyph outside the atlas range draws nothing and is counted in the
     call's result;
   - transparent text without an atlas is `-KOS_EINVAL`;
-  - YJK is `-KOS_ENOTSUP`, as for opaque text.
+  - YJK is `-KOS_ENOTSUP`, as for opaque text;
+  - YJK+YAE draws each glyph as an LMMM AND from the mask atlas then an
+    LMMM OR from its colour's (section 6.1), so `gfx_text_atlas` needs a
+    band of two atlases there (`-KOS_EINVAL` otherwise).
 - **Redefined glyphs:** redefining a glyph marks it stale in every atlas,
   and it is redrawn into each at its next use.
 
@@ -1043,6 +1107,9 @@ Initial payload formats are:
 
 256×212 YJK
     one host-generated YJK byte per pixel
+
+256×212 YJK+YAE
+    one byte per pixel; palette_count up to 16
 ```
 
 The host converter is `tools/kimg.py`, shipped in the SDK's `tools/`. Its
@@ -1102,13 +1169,24 @@ python3 tools/kimg.py convert title.png title.kimg --mode yjk \
     --resample box --yjk-quality optimized
 ```
 
+`--mode yae` encodes for `GFX_MODE_256x212_YJK_YAE` (section 6.1): the
+same J/K choice as `yjk` (fast or optimized), but each pixel takes the
+nearest **even** luminance, so A (bit 3) stays clear and every pixel is a
+picture pixel. The mode has 16 luminance levels instead of 32; on painted
+artwork the difference is slight, most visible in dark gradients.
+
+```sh
+python3 tools/kimg.py convert scene.png scene.kimg --mode yae --size 256x159 \
+    --resample lanczos --yjk-quality optimized
+```
+
 Run `python3 tools/kimg_compare.py` for a full 256x212 comparison on the
 existing parrot image and a generated gradient/lettering fixture. It writes
 source/reference/decoded PNGs, IMG files and timing/SSE/size measurements under
 `build/kimg-quality/`; it never rewrites the committed golden fixtures. See
 [KIMG quality acceptance](kimg-quality.md) for the recorded run and limitations.
 
-For pixels already encoded in the native G6, G7 or YJK packing, use `pack`
+For pixels already encoded in the native G6, G7, YJK or YAE packing, use `pack`
 instead of `convert`. It adds only the KIMG header and optional palette;
 pixel bytes are copied unchanged, without Pillow or image conversion:
 
@@ -1116,20 +1194,23 @@ pixel bytes are copied unchanged, without Pillow or image conversion:
 python3 tools/kimg.py pack scene.g7 scene.img --mode g7 --size 256x144
 python3 tools/kimg.py pack scene.g6 scene.img --mode g6 --size 512x212 --palette palette.rgb
 python3 tools/kimg.py pack scene.yjk scene.img --mode yjk --size 256x212
+python3 tools/kimg.py pack scene.yae scene.img --mode yae --size 256x159 --palette ui.rgb
 ```
 
 Without `--size`, dimensions default to the mode's screen size (512x212 for
-G6, 256x212 for G7/YJK). Dimensions must fit that screen; G6 width must be
-even and YJK width must be a multiple of four. The input must contain exactly
-the tightly packed pixels: G6 uses `width * height / 2` bytes and G7/YJK use
-`width * height` bytes. Headers (including MSX BSAVE), row padding and trailing
+G6, 256x212 for G7/YJK/YAE). Dimensions must fit that screen; G6 width must
+be even and YJK/YAE width must be a multiple of four. The input must contain
+exactly the tightly packed pixels: G6 uses `width * height / 2` bytes and
+G7/YJK/YAE use `width * height` bytes. Headers (including MSX BSAVE), row padding and trailing
 palettes are not part of the pixel input and are rejected by the length check.
 
-`--palette` is optional and G6-only. Its binary file contains 1-16 RGB888
+`--palette` is optional, for G6 and YAE. Its binary file contains 1-16 RGB888
 triples in R/G/B order, with each component an 8-bit byte, matching KIMG's
 palette format. These bytes are copied unchanged; a native VDP register
 palette dump is not an RGB888 palette. Omitting it writes `palette_count=0`,
 so the picture does not override the mode's palette. G7/YJK reject `--palette`.
+A YAE file's palette serves its palette pixels and the program's drawing;
+`pview` programs it before the upload.
 The output extension may be `.img` or `.kimg`; both contain KIMG v1.
 
 To see a KIMG file as the hardware will show it, render it back to PNG
@@ -1150,12 +1231,14 @@ It decodes the payload with the V9958's own rules:
 - **G7:** the fixed GRB 3-3-2 colours, the 2-bit blue at levels 0, 2, 4
   and 7 of 7.
 - **YJK:** the YJK decoder above, at 5 bits per channel.
+- **YAE:** YJK pixels (A clear) through the same decoder with the even
+  luminance of bits 7-4; palette pixels (A set) through the palette as G6.
 
 Levels expand to 8 bits as the emulator's DAC model does (3-bit
 `v<<5 | v<<2 | v>>1`, 5-bit `v<<3 | v>>2`). `--display` scales the PNG to
 the screen's proportions: a G6 pixel is half as wide as a G7/YJK pixel and
 a line is about twice as tall as a G6 pixel is wide, so G6 pixels become
-1 x 2 and G7/YJK pixels 2 x 2, every mode 512 wide. The PNG holds the
+1 x 2 and G7/YJK/YAE pixels 2 x 2, every mode 512 wide. The PNG holds the
 picture only; `pview` centres a smaller picture on a cleared screen.
 
 The target format does not depend on the source format. Golden IMG fixtures
@@ -1222,6 +1305,7 @@ The first viewer SHOULD support:
 ```text
 GFX_MODE_256x212_256
 GFX_MODE_256x212_YJK
+GFX_MODE_256x212_YJK_YAE
 ```
 
 G6 image support is useful but is not required to prove the first viewer milestone.

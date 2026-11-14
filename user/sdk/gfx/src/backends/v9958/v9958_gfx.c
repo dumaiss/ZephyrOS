@@ -73,6 +73,8 @@ void v9958_set_mode(struct gfx_state *state, enum gfx_mode mode)
 
 	if (mode == GFX_MODE_256x212_YJK) {
 		r25 |= GFX_V9958_R25_YJK;
+	} else if (mode == GFX_MODE_256x212_YJK_YAE) {
+		r25 |= GFX_V9958_R25_YJK | GFX_V9958_R25_YAE;
 	}
 	v9958_load_ports(&state->info);
 	/* A previous holder may have left a command running: the mode set
@@ -134,7 +136,7 @@ void v9958_show_page(struct gfx_state *state, uint8_t page)
 			 GFX_V9958_REG_R2);
 }
 
-/* The palette, only in the 16-colour mode (gfx_palette.c refuses the
+/* The palette, in the 16-colour and YJK+YAE modes (gfx_palette.c refuses the
  * others): for each entry the V9958 representation is (R3 << 4) | B3
  * then G3, the entry selected through R#16 and the palette pointer
  * auto-advancing after every pair. */

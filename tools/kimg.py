@@ -19,14 +19,21 @@ the mode's size and packs the payload:
          G = Y + K, B = (5Y - 2J - K) / 4 (5-bit, clamped).  J and K
          come from the run's average colour; each pixel's Y is the one
          whose decoded colour is nearest its own.
+    yae  GRAPHIC 7 + YJK + YAE, 256 x 212, the width a multiple of 4: the
+         YJK packing with bit 3 the A flag.  A clear: a YJK pixel whose
+         luminance is bits 7-4 (an even 5-bit Y); A set: a palette pixel,
+         bits 7-4 its index into the 16-entry palette (bits 2-0 still
+         carry the group's J/K).  The converter writes picture pixels
+         only (A clear), with the even Y nearest each pixel; a palette
+         (for the program's own drawing) may be given to `pack`.
 
 Usage:
-    kimg.py convert SOURCE OUTPUT --mode {g6,g7,yjk} [--size WxH]
+    kimg.py convert SOURCE OUTPUT --mode {g6,g7,yjk,yae} [--size WxH]
                     [--resample {nearest,box,lanczos}] [--sharpen]
                     [--sharpen-radius FLOAT] [--sharpen-percent INTEGER]
                     [--sharpen-threshold INTEGER]
                     [--yjk-quality {fast,optimized}]
-    kimg.py pack SOURCE OUTPUT --mode {g6,g7,yjk} [--size WxH]
+    kimg.py pack SOURCE OUTPUT --mode {g6,g7,yjk,yae} [--size WxH]
                  [--palette RGB_FILE]
     kimg.py preview FILE OUTPUT.png [--display]
     kimg.py info FILE
@@ -40,8 +47,8 @@ the build.
 cropping, scaling, colour conversion or pixel repacking. The default size
 is the mode's screen; specify --size for other dimensions. A G6 palette
 may be supplied as 1-16 RGB888 triples (3-48 bytes, R/G/B order), copied
-unchanged before the pixels. Without it, the file has no palette override.
-G7 and YJK do not accept a palette. BSAVE headers, row padding and
+unchanged before the pixels; YAE takes one the same way. Without it, the
+file has no palette override. G7 and YJK do not accept a palette. BSAVE headers, row padding and
 embedded palettes must be removed from the input before packing.
 
 `preview` renders a KIMG file back to PNG the way the V9958 shows it:
@@ -49,11 +56,13 @@ G6 through the hardware palette (the file's colours at the V9958's 3 bits
 per channel; entries the file does not set keep the console's palette,
 which is what a picture without a palette is shown with), G7 through the
 fixed GRB 3-3-2 colours (2-bit blue at levels 0, 2, 4 and 7 of 7), YJK
-through the V9958's YJK decoder at 5 bits per channel.  Channels expand
+through the V9958's YJK decoder at 5 bits per channel, YAE the same with
+the even luminance of bits 7-4 and palette pixels (A set) through the
+palette as G6.  Channels expand
 to 8 bits as the emulator's DAC model does (3-bit v -> v<<5|v<<2|v>>1,
 5-bit v -> v<<3|v>>2).  The PNG has one pixel per screen pixel;
 `--display` scales it to the screen's proportions (each G6 pixel 1 x 2,
-each G7/YJK pixel 2 x 2), so every mode comes out 512 wide.
+each G7/YJK/YAE pixel 2 x 2), so every mode comes out 512 wide.
 
 Only `convert` and `preview` require Pillow (it is not a build
 dependency).
@@ -85,7 +94,14 @@ MODES = {
     "g6": (0, 512, 212),
     "g7": (1, 256, 212),
     "yjk": (2, 256, 212),
+    "yae": (3, 256, 212),
 }
+
+# The modes whose width is whole four-pixel J/K groups.
+GROUPED = ("yjk", "yae")
+
+# The modes that carry a 16-entry palette.
+PALETTED = ("g6", "yae")
 
 # Each YJK colour difference pair covers this many pixels.
 YJK_RUN = 4
@@ -148,8 +164,9 @@ def yjk_decode(y, j, k):
     return (clamp(y + j), clamp(y + k), clamp((5 * y - 2 * j - k) // 4))
 
 
-def _yjk_run(pixels):
-    """Four 5-bit (r, g, b) pixels -> their four YJK bytes."""
+def _yjk_run(pixels, even=False):
+    """Four 5-bit (r, g, b) pixels -> their four YJK bytes (`even`: the
+    YAE luminance, even Y only, so bit 3 - A - stays clear)."""
     count = len(pixels)
     r = sum(p[0] for p in pixels) / count
     g = sum(p[1] for p in pixels) / count
@@ -163,6 +180,8 @@ def _yjk_run(pixels):
         start = round(pb / 2 + pr / 4 + pg / 8)
         best = None
         for candidate in range(max(0, start - 4), min(31, start + 4) + 1):
+            if even and candidate & 1:
+                continue
             dr, dg, db = yjk_decode(candidate, j, k)
             error = (dr - pr) ** 2 + (dg - pg) ** 2 + (db - pb) ** 2
             if best is None or error < best[0]:
@@ -182,12 +201,14 @@ _SQUARED_DIFFS = tuple(tuple((a - b) ** 2 for b in range(32))
                       for a in range(32))
 
 
-def _yjk_best_y(pixel, ramp):
-    """Exhaustive luminance search, preferring the lowest Y on a tie."""
+def _yjk_best_y(pixel, ramp, step=1):
+    """Exhaustive luminance search, preferring the lowest Y on a tie
+    (`step` 2: the even Y of YAE)."""
     red, green, blue = (_SQUARED_DIFFS[c] for c in pixel)
     best_error = 3 * 31 * 31 + 1
     best_y = 0
-    for y, (r, g, b) in enumerate(ramp):
+    for y in range(0, 32, step):
+        r, g, b = ramp[y]
         error = red[r] + green[g] + blue[b]
         if error < best_error:
             best_y, best_error = y, error
@@ -197,7 +218,7 @@ def _yjk_best_y(pixel, ramp):
 
 
 @lru_cache(maxsize=4096)
-def _yjk_optimized_group(pixels):
+def _yjk_optimized_group(pixels, step=1):
     """Search a four-pixel RGB555 group; cache immutable results, bounded.
 
     The initial chroma is the average of the per-pixel estimates. This is
@@ -221,7 +242,7 @@ def _yjk_optimized_group(pixels):
             ramp = _yjk_decoded_ramp(j, k)
             luminances, error = [], 0
             for pixel in pixels:
-                y, pixel_error = _yjk_best_y(pixel, ramp)
+                y, pixel_error = _yjk_best_y(pixel, ramp, step)
                 luminances.append(y)
                 error += pixel_error
                 if error >= best_error:
@@ -234,12 +255,12 @@ def _yjk_optimized_group(pixels):
     return bytes((y << 3) | low for y, low in zip(luminances, lows))
 
 
-def _yjk_run_optimized(pixels):
+def _yjk_run_optimized(pixels, even=False):
     """Accept the same RGB555 group API as the fast encoder."""
-    return _yjk_optimized_group(tuple(pixels))
+    return _yjk_optimized_group(tuple(pixels), 2 if even else 1)
 
 
-def _pack_yjk(rgb, size, quality="fast"):
+def _pack_yjk(rgb, size, quality="fast", even=False):
     width, height = size
     raw = rgb.tobytes()
     payload = bytearray()
@@ -258,11 +279,20 @@ def _pack_yjk(rgb, size, quality="fast"):
                                 quantize[raw[at + 2]]))
                 else:
                     run.append((raw[at] >> 3, raw[at + 1] >> 3, raw[at + 2] >> 3))
-            payload += _yjk_run_optimized(run) if optimized else _yjk_run(run)
+            if optimized:
+                payload += (_yjk_run_optimized(run, True) if even
+                            else _yjk_run_optimized(run))
+            else:
+                payload += _yjk_run(run, True) if even else _yjk_run(run)
     return [], bytes(payload)
 
 
-PACKERS = {"g6": _pack_g6, "g7": _pack_g7, "yjk": _pack_yjk}
+def _pack_yae(rgb, size, quality="fast"):
+    return _pack_yjk(rgb, size, quality, even=True)
+
+
+PACKERS = {"g6": _pack_g6, "g7": _pack_g7, "yjk": _pack_yjk,
+           "yae": _pack_yae}
 
 
 def _write_image(output, mode_value, width, height, palette, payload):
@@ -289,7 +319,7 @@ def convert(source, output, mode, size=None, *, resample="nearest",
     if size is not None:
         width, height = size
     if width <= 0 or height <= 0 or (mode == "g6" and width % 2) or \
-            (mode == "yjk" and width % YJK_RUN):
+            (mode in GROUPED and width % YJK_RUN):
         raise SystemExit("kimg: bad geometry %dx%d for %s"
                          % (width, height, mode))
     with Image.open(source) as image:
@@ -297,8 +327,9 @@ def convert(source, output, mode, size=None, *, resample="nearest",
     if sharpen:
         rgb = rgb.filter(ImageFilter.UnsharpMask(radius=sharpen_radius,
                          percent=sharpen_percent, threshold=sharpen_threshold))
-    if mode == "yjk":
-        palette, payload = _pack_yjk(rgb, (width, height), yjk_quality)
+    if mode in GROUPED:
+        palette, payload = _pack_yjk(rgb, (width, height), yjk_quality,
+                                     even=mode == "yae")
     else:
         palette, payload = PACKERS[mode](rgb, (width, height))
     _write_image(output, mode_value, width, height, palette, payload)
@@ -315,11 +346,11 @@ def pack(source, output, mode, size=None, palette_source=None):
     width, height = size if size is not None else (screen_width, screen_height)
     if not (0 < width <= screen_width and 0 < height <= screen_height) or \
             (mode == "g6" and width % 2) or \
-            (mode == "yjk" and width % YJK_RUN):
+            (mode in GROUPED and width % YJK_RUN):
         raise SystemExit("kimg: bad geometry %dx%d for %s"
                          % (width, height, mode))
-    if palette_source is not None and mode != "g6":
-        raise SystemExit("kimg: --palette is only supported for g6")
+    if palette_source is not None and mode not in PALETTED:
+        raise SystemExit("kimg: --palette is only supported for g6 and yae")
     palette = b""
     if palette_source is not None:
         with open(palette_source, "rb") as handle:
@@ -376,10 +407,10 @@ def read_kimg(path):
     _value, screen_width, screen_height = MODES[mode]
     if not (0 < width <= screen_width and 0 < height <= screen_height) or \
             (mode == "g6" and width % 2) or \
-            (mode == "yjk" and width % YJK_RUN):
+            (mode in GROUPED and width % YJK_RUN):
         raise SystemExit("kimg: %s: bad geometry %ux%u for %s"
                          % (path, width, height, mode))
-    if palette_count > 16 or (palette_count and mode != "g6"):
+    if palette_count > 16 or (palette_count and mode not in PALETTED):
         raise SystemExit("kimg: %s: bad palette count %u for %s"
                          % (path, palette_count, mode))
     expected = (width // 2 if mode == "g6" else width) * height
@@ -397,13 +428,13 @@ def decode(path):
     list of 8-bit (r, g, b))."""
     mode, width, height, palette, payload = read_kimg(path)
     pixels = []
+    levels = [(CONSOLE_PALETTE[i * 2] >> 4, CONSOLE_PALETTE[i * 2 + 1],
+               CONSOLE_PALETTE[i * 2] & 7) for i in range(16)]
+    for i in range(len(palette) // 3):
+        r, g, b = palette[i * 3:i * 3 + 3]
+        levels[i] = (r >> 5, g >> 5, b >> 5)
+    colours = [tuple(_dac3(c) for c in level) for level in levels]
     if mode == "g6":
-        levels = [(CONSOLE_PALETTE[i * 2] >> 4, CONSOLE_PALETTE[i * 2 + 1],
-                   CONSOLE_PALETTE[i * 2] & 7) for i in range(16)]
-        for i in range(len(palette) // 3):
-            r, g, b = palette[i * 3:i * 3 + 3]
-            levels[i] = (r >> 5, g >> 5, b >> 5)
-        colours = [tuple(_dac3(c) for c in level) for level in levels]
         for byte in payload:
             pixels.append(colours[byte >> 4])
             pixels.append(colours[byte & 15])
@@ -421,7 +452,13 @@ def decode(path):
             j = signed6((quad[2] & 7) | ((quad[3] & 7) << 3))
             ramp = _yjk_decoded_ramp(j, k)
             for byte in quad:
-                pixels.append(tuple(_dac5(c) for c in ramp[byte >> 3]))
+                if mode == "yae" and byte & 0x08:
+                    pixels.append(colours[byte >> 4])
+                elif mode == "yae":
+                    pixels.append(tuple(_dac5(c)
+                                        for c in ramp[(byte >> 3) & 0x1E]))
+                else:
+                    pixels.append(tuple(_dac5(c) for c in ramp[byte >> 3]))
     return mode, width, height, pixels
 
 
@@ -488,7 +525,7 @@ def main(argv):
     pack_parser.add_argument("--size", default=None,
                              help="WxH (default: the mode's screen)")
     pack_parser.add_argument("--palette", default=None,
-                             help="G6 only: binary RGB888 triples (1-16 colours)")
+                             help="G6 and YAE: binary RGB888 triples (1-16 colours)")
     preview_parser = sub.add_parser(
         "preview", help="render a KIMG file to PNG as the hardware shows it")
     preview_parser.add_argument("file", help="a KIMG file")

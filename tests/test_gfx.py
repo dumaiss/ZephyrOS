@@ -726,6 +726,131 @@ class TestGfxModes(GfxReplay):
         self.run_mode("yjk")
 
 
+class TestGfxYae(GfxReplay):
+    """`gfxtest yae`: YJK+YAE drawing over a YJK picture.  Every drawing
+    leaves bits 2-0 (the J/K shares) of the picture pixels it does not
+    cover whole-group: the page is rebuilt here from the picture and
+    each call's effect - a masked palette pixel (old & 07h) | (index <<
+    4) | 08h, a whole-group HMMV byte (index << 4) | 08h, an XOR index
+    << 4, opaque text widened to its outer group edges - and compared
+    byte for byte."""
+
+    @staticmethod
+    def picture(x, y):
+        return (((x * 5) + (y * 3)) & 0xF0) | ((x ^ y) & 0x07)
+
+    def expected_page(self):
+        page = [[self.picture(x, y) for x in range(256)]
+                for y in range(212)]
+
+        def masked(x, y, index):
+            page[y][x] = (page[y][x] & 0x07) | (index << 4) | 0x08
+
+        def whole(x, y, index):
+            page[y][x] = (index << 4) | 0x08
+
+        for y in range(20, 26):              # fill 10..30, groups 12..27
+            for x in range(10, 31):
+                (whole if 12 <= x < 28 else masked)(x, y, 5)
+        for y in range(30, 33):              # inside one group
+            for x in (41, 42):
+                masked(x, y, 6)
+        for y in range(40, 44):              # XOR
+            for x in range(64, 80):
+                page[y][x] ^= 3 << 4
+        for x, y in vdp_line(100, 10, 140, 30, 0):
+            masked(x, y, 7)
+        masked(150, 50, 9)
+        for x, y in rect_outline_pixels(160, 60, 13, 9):
+            masked(x, y, 10)
+        for x, y in fill_ellipse_pixels(60, 120, 10, 6):
+            masked(x, y, 11)
+        for x, y in outline_ellipse_pixels(200, 120, 20, 8):
+            masked(x, y, 12)
+        for y in range(10, 15):              # the batch's fill
+            for x in range(201, 208):
+                (whole if x >= 204 else masked)(x, y, 13)
+        for x, y in vdp_line(201, 20, 230, 20, 0):
+            masked(x, y, 4)
+        font = load_font()
+        for row in range(8):                 # "Hi" at 101, cell 100..115
+            y = 150 + row
+            whole(100, y, 1)
+            for index, code in enumerate(b"Hi"):
+                cells = g7_text_row(font, code, row, 0xF8, 0x18)
+                for bit in range(6):
+                    page[y][101 + 6 * index + bit] = cells[bit]
+            for x in (113, 114, 115):
+                whole(x, y, 1)
+        for row in range(8):                 # transparent "OK" at 30
+            for index, code in enumerate(b"OK"):
+                ink = g7_text_row(font, code, row, 1, 0)
+                for bit in range(6):
+                    if ink[bit]:
+                        masked(30 + 6 * index + bit, 180 + row, 14)
+        return page
+
+    def test_drawing_over_the_picture(self):
+        z = self.start()
+        before = self.snapshot(z)
+        ops = []
+        since = len(z.glyphs)
+        z.hid.hid_queue.extend(b"/fs/gfxtest.exe yae\r")
+        self.run_recording(z, ops, lambda z: OPS_DIRECT_INFO in ops)
+        c0 = len(z.vdp.commands)
+        steady = 0
+        count = 0
+        for _step in range(EXEC_BUDGET * 4):
+            self.skip_delay(z)
+            self.feed(z)
+            self.step(z)
+            now = len(z.vdp.commands)
+            if now - c0 >= 40 and now == count:
+                steady += 1
+            else:
+                steady = 0
+            count = now
+            if steady >= 300000:
+                break
+        else:
+            self.fail("gfxtest yae never reached key 1")
+        self.assertNotIn(OPS_RELEASE, ops, "key 1 still holds the display")
+        self.assertEqual(z.vdp.regs[0], 0x0E, "GRAPHIC 7")
+        # R#25: WTE (04h), YJK (08h) and YAE (10h).
+        self.assertEqual(z.vdp.regs[25], 0x1C, "R#25 YJK + YAE")
+        self.assertEqual(z.vdp.palette[15], [0x77, 0x07], "palette 15")
+        self.assertEqual(z.vdp.palette[1], [0x05, 0x00], "palette 1")
+        page = self.expected_page()
+        wrong = []
+        for y in range(212):
+            got = bytes(z.vdp.vram[y * 256:(y + 1) * 256])
+            want = bytes(page[y])
+            if got != want:
+                x = next(i for i in range(256) if got[i] != want[i])
+                wrong.append("line %d x %d: %02X, want %02X"
+                             % (y, x, got[x], want[x]))
+        self.assertEqual(wrong, [], "\n".join(wrong[:12]))
+        # Every logical command is masked: no LMMV, LINE or PSET with
+        # IMP reaches the engine in this mode.
+        for entry in z.vdp.commands[c0:]:
+            code = entry["code"]
+            if (code & 0xF0) in (0x50, 0x70, 0x80):
+                self.assertIn(code & 0x0F, (1, 2, 3),
+                              "a %02X command in YJK+YAE" % code)
+
+        z.hid.hid_queue.extend(b"x")
+        self.run_recording(z, ops, lambda z:
+                           SHELL_PROMPT in "".join(z.glyphs[since:]))
+        self.settle(z, lambda z: z.vdp.regs[8] == 0x08)
+        fresh = self.trace(z, since)
+        self.assertIn("gfxtest: yae 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 "
+                      "-2 0 0 -6 -2 0", fresh)
+        self.assertIn("gfxtest: yae done", fresh)
+        self.assertNotIn("FAIL", fresh)
+        self.assert_hold_sequence(ops)
+        self.assert_restored(z, before)
+
+
 class TestGfxExitWithoutClose(GfxReplay):
     """The process exit releases the handle: the console is restored."""
 
@@ -987,6 +1112,51 @@ class TestPView(GfxReplay):
         self.assertTrue(all(op == OPS_WRITE for op in ops),
                         "a bad header must not reach the video "
                         "endpoint: %s" % (ops,))
+
+
+    def test_yae_picture_with_palette(self):
+        """A YJK+YAE picture (YJK pixels and palette pixels, with a
+        file palette): R#25's YJK and YAE, the palette, the bytes at x
+        on four-pixel groups, and the clear in palette bytes."""
+        width, height = 60, 20
+        palette = bytes(value for i in range(16)
+                        for value in (i * 16, 255 - i * 16, i * 8))
+        payload = bytes(((x * 9 + y * 5) & 0xF7) | (0x08 if x % 7 == 0
+                                                    else 0)
+                        for y in range(height) for x in range(width))
+        picture = (b"KIMG" + bytes((1, 3, 0, 16))
+                   + width.to_bytes(2, "little")
+                   + height.to_bytes(2, "little")
+                   + len(payload).to_bytes(4, "little")
+                   + palette + payload)
+        with open(PVIEW_EXE, "rb") as handle:
+            files = {"/".join(KEEP_NAME): KEEP_CONTENT,
+                     PVIEW_DEV: handle.read(), "TESTY.IMG": picture}
+        z = self.start(files)
+        before = self.snapshot(z)
+        ops = []
+        since = self.pview_keyed(z, ops, "testy.img")
+        peer = z.vdp
+        self.assertEqual(peer.regs[0], 0x0E, "yae R#0")
+        self.assertEqual(peer.regs[25], 0x1C, "R#25: WTE, YJK and YAE")
+        for entry in range(16):
+            red, green, blue = palette[entry * 3:entry * 3 + 3]
+            self.assertEqual(peer.palette[entry],
+                             [((red >> 5) << 4) | (blue >> 5),
+                              green >> 5], "entry %u" % entry)
+        # Centred at x (256 - 60) / 2 = 98, down to the group at 96.
+        top = (212 - height) // 2
+        for row in range(height):
+            base = (top + row) * 256 + 96
+            self.assertEqual(peer.vram[base:base + width],
+                             payload[row * width:(row + 1) * width],
+                             "yae row %u" % row)
+        levels = [palette[i * 3] * 2 + palette[i * 3 + 1] * 4 +
+                  palette[i * 3 + 2] for i in range(16)]
+        dark = levels.index(min(levels))
+        self.assert_cleared(peer, 256, (96, top, width, height),
+                            (dark << 4) | 0x08, "yae")
+        self.pview_done(z, ops, since, before)
 
 
 class TestGfxPrims(GfxReplay):

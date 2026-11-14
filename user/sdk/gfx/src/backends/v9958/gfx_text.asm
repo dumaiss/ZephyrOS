@@ -47,6 +47,8 @@
 	.globl gfx_ad_fg
 
 	.globl gfx_wait_ce
+	.globl gfx_cmd_block
+	.globl gfx_cmd_commit_short
 	.globl gfx_ret_zero
 	.globl gfx_ret_einval
 	.globl gfx_ret_enotsup
@@ -63,7 +65,10 @@
 
 GFX_MODE_G6             = 0
 GFX_MODE_YJK            = 2
+GFX_MODE_YAE            = 3
 GFX_TEXT_TRANSPARENT    = 0x01
+GFX_YAE_A               = 0x08
+GFX_CMD_HMMV            = 0xC0
 
 	.area _DATA
 
@@ -195,8 +200,11 @@ gfx_text_style:
 	and	#~GFX_TEXT_TRANSPARENT
 	jp	nz,gfx_ret_einval
 	ld	a,(_gfx_draw_mode)
+	cp	#GFX_MODE_YAE
+	jr	z,gfx_text_colours_16	; palette indices
 	or	a
 	jr	nz,gfx_text_colours_ok
+gfx_text_colours_16:
 	ld	a,(gfx_e_fg)
 	ld	c,a
 	ld	a,(gfx_e_bg)
@@ -265,8 +273,92 @@ gfx_text_fit:
 	ld	(gfx_e_y),hl
 	ld	hl,(t_ptr)
 	ld	(gfx_e_ptr),hl
+	ld	a,(_gfx_draw_mode)
+	cp	#GFX_MODE_YAE
+	call	z,gfx_text_yae
 	call	gfx_text_emit
 	jp	gfx_ret_zero
+
+; ---------------------------------------------------------------------------
+; gfx_text_yae: YJK+YAE opaque text.  The emit writes whole bytes, so the
+; colours become palette bytes ((index << 4) | A) and the string's cell is
+; widened to its outer four-pixel group edges: [x & ~3, x) and [end,
+; (end + 3) & ~3) take one HMMV each in the background, so every group the
+; string touches holds palette pixels only and no picture pixel is left
+; with a stranger's J/K share.  The glyphs do not move.
+; ---------------------------------------------------------------------------
+gfx_text_yae:
+	ld	a,(gfx_e_fg)
+	add	a,a
+	add	a,a
+	add	a,a
+	add	a,a
+	or	#GFX_YAE_A
+	ld	(gfx_e_fg),a
+	ld	a,(gfx_e_bg)
+	add	a,a
+	add	a,a
+	add	a,a
+	add	a,a
+	or	#GFX_YAE_A
+	ld	(gfx_e_bg),a
+	ld	a,(gfx_e_n)
+	or	a
+	ret	z
+	; the pads' common fields: DY, NY (the glyph height), CLR, ARG, HMMV
+	ld	hl,(gfx_e_y)
+	ld	(gfx_cmd_block+6),hl
+	ld	a,(gfx_e_font)
+	or	a
+	ld	hl,#8
+	ld	c,#6
+	jr	z,gfx_text_yae_h
+	ld	hl,#6
+	ld	c,#4
+gfx_text_yae_h:
+	ld	(gfx_cmd_block+10),hl
+	ld	a,(gfx_e_bg)
+	ld	(gfx_cmd_block+12),a
+	xor	a
+	ld	(gfx_cmd_block+13),a
+	; end = x + n * the glyph width (at most the mode's width)
+	ld	a,(gfx_e_n)
+	ld	b,a
+	ld	hl,(gfx_e_x)
+	ld	d,#0
+	ld	e,c
+gfx_text_yae_w:
+	add	hl,de
+	djnz	gfx_text_yae_w
+	push	hl
+	; the left pad: x & 3 dots from x & ~3
+	ld	hl,(gfx_e_x)
+	ld	a,l
+	and	#3
+	jr	z,gfx_text_yae_right
+	ld	e,a
+	ld	d,#0
+	or	a
+	sbc	hl,de
+	ld	(gfx_cmd_block+4),hl
+	ld	(gfx_cmd_block+8),de
+	call	gfx_text_yae_pad
+gfx_text_yae_right:
+	; the right pad: 4 - (end & 3) dots from end
+	pop	hl
+	ld	a,l
+	and	#3
+	ret	z
+	ld	(gfx_cmd_block+4),hl
+	neg
+	add	a,#4
+	ld	l,a
+	ld	h,#0
+	ld	(gfx_cmd_block+8),hl
+gfx_text_yae_pad:
+	ld	a,#GFX_CMD_HMMV
+	ld	(gfx_cmd_block+14),a
+	jp	gfx_cmd_commit_short
 
 ; ---------------------------------------------------------------------------
 ; gfx_fit: HL = the room in dots (1..512), C = the glyph width (4 or 6),

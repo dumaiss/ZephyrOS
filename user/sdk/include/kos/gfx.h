@@ -19,11 +19,20 @@
 #include "kos/errno.h"
 #include "kos/kvideo.h"
 
-/* The graphics modes.  Every mode is 212 lines, non-interlaced. */
+/* The graphics modes.  Every mode is 212 lines, non-interlaced.
+ *
+ * GFX_MODE_256x212_YJK_YAE mixes a host-encoded YJK picture with
+ * 16-colour palette pixels, one byte per pixel: bits 7-4 the pixel's
+ * palette index (A set) or its 4-bit luminance (A clear), bit 3 A, and
+ * bits 2-0 its share of the J/K colour its four-pixel group (x & ~3)
+ * shares.  A drawing call's colour is a palette index 0..15; it changes
+ * only bits 7-3 of a group the shape covers in part, so the picture
+ * pixels around it keep their colour (docs/gfx-sdk.md, the YAE mode). */
 enum gfx_mode {
 	GFX_MODE_512x212_16,   /* 512 x 212, 4 bpp, 16-colour palette   */
 	GFX_MODE_256x212_256,  /* 256 x 212, 8 bpp                     */
-	GFX_MODE_256x212_YJK   /* 256 x 212, host-encoded YJK bytes    */
+	GFX_MODE_256x212_YJK,  /* 256 x 212, host-encoded YJK bytes    */
+	GFX_MODE_256x212_YJK_YAE /* 256 x 212, YJK + palette pixels    */
 };
 
 typedef uint8_t gfx_color_t;
@@ -117,7 +126,11 @@ void gfx_timing_mark(void);
  * per-pixel fill) otherwise, so any x is accepted in the 16-colour
  * mode with LMMV, and XOR combines with what is there.  In YJK (four
  * pixels share one J/K pair) only an aligned COPY is accepted
- * (-KOS_ENOTSUP otherwise).  y may target the off-screen page
+ * (-KOS_ENOTSUP otherwise).  In YJK+YAE any rectangle is accepted:
+ * the groups it covers whole take one HMMV of palette bytes, the
+ * partial groups at its left and right edges two LMMVs each (AND 07h,
+ * then OR the index and A), and XOR is one LMMV flipping the index
+ * bits.  y may target the off-screen page
  * (256-511).  A zero width or height is a no-op (0, nothing queued);
  * a rectangle outside the mode's width or the 512-line space is
  * -KOS_EINVAL and queues nothing.  Batched or immediate per above. */
@@ -127,7 +140,9 @@ int gfx_fill_rect(uint16_t x, uint16_t y, uint16_t width, uint16_t height,
 /* The rectangle's outline in `color`: four LINE commands, each corner
  * plotted exactly once.  Sizes, bounds, YJK and batching as
  * gfx_fill_rect (the outline runs per dot, so in YJK it is
- * -KOS_ENOTSUP). */
+ * -KOS_ENOTSUP).  In YJK+YAE every per-dot command (outline, line,
+ * point, ellipse) draws twice for COPY - AND 07h, then OR the palette
+ * index and A - and once for XOR. */
 int gfx_rect(uint16_t x, uint16_t y, uint16_t width, uint16_t height,
 	     gfx_color_t color, enum gfx_op op);
 
@@ -160,7 +175,9 @@ int gfx_fill_ellipse(uint16_t cx, uint16_t cy, uint16_t rx, uint16_t ry,
  * dst_y) with one high-speed move (HMMM); the direction is chosen
  * from the overlap, so overlapping copies are exact in all four
  * directions.  Source and destination may sit on either page.  Bounds
- * and zero sizes as gfx_fill_rect. */
+ * and zero sizes as gfx_fill_rect; src_x, dst_x and width even in the
+ * 16-colour mode, multiples of 4 in both YJK modes (a copy moves whole
+ * J/K groups), -KOS_EINVAL otherwise. */
 int gfx_copy_rect(uint16_t src_x, uint16_t src_y, uint16_t dst_x,
 		  uint16_t dst_y, uint16_t width, uint16_t height);
 
@@ -180,7 +197,7 @@ int gfx_font_reset_glyph(enum gfx_font font, uint8_t code);
 void gfx_font_reset(enum gfx_font font);
 
 /* Opaque text.  `fg` and `bg` are the mode's colour (0..15 in the
- * 16-colour mode); a zeroed style is the opaque 6x8 font. */
+ * 16-colour and YJK+YAE modes); a zeroed style is the opaque 6x8 font. */
 struct gfx_text_style {
 	gfx_color_t fg;
 	gfx_color_t bg;
@@ -200,7 +217,10 @@ struct gfx_text_style {
  * colour, built on the colour's first use and rebuilt least recently
  * used when the band is full.  The band must lie entirely in one
  * page's spare lines (212-255 or 468-511), must hold one atlas of the
- * range, and rebuilds discard every atlas; a program that uses the
+ * range (two in YJK+YAE: a colour-independent mask atlas joins the
+ * colours', and each glyph is an LMMM AND from the mask then an LMMM
+ * OR from its colour, so the picture keeps its colour around the
+ * strokes), and rebuilds discard every atlas; a program that uses the
  * pointer keeps it off lines 496-511.  -KOS_EINVAL without a mode
  * set or a bad band; -KOS_ENOTSUP in YJK.  No VIDEO IPC. */
 int gfx_text_atlas(enum gfx_font font, uint16_t y, uint16_t lines,
@@ -212,6 +232,9 @@ int gfx_text_atlas(enum gfx_font font, uint16_t y, uint16_t lines,
  * the right edge; the off-screen page is an ordinary target.  A
  * pending drawing batch is flushed first.  The YJK mode is
  * -KOS_ENOTSUP; in the 16-colour mode x must be even for opaque text.
+ * In YJK+YAE opaque text writes whole bytes, so the string's cell is
+ * widened to its outer four-pixel group edges, the widening drawn in
+ * the background colour (the glyphs themselves do not move).
  * Transparent text needs a gfx_text_atlas of the style's font
  * (-KOS_EINVAL without one) and returns the count of glyphs outside
  * the atlas range, which draw nothing (0 when every glyph drew).  No
@@ -225,8 +248,8 @@ int gfx_text_n(uint16_t x, uint16_t y, const char *text, uint16_t length,
 uint16_t gfx_text_width(const char *text, enum gfx_font font);
 
 /* Program `count` palette entries starting at `first` (the 16-colour
- * mode holds 16 entries).  Direct I/O under the hardware WAIT; a mode
- * without a programmable palette (256-colour and YJK) is
+ * and YJK+YAE modes hold 16 entries).  Direct I/O under the hardware
+ * WAIT; a mode without a programmable palette (256-colour and YJK) is
  * -KOS_ENOTSUP.  No VIDEO IPC. */
 int gfx_set_palette(uint8_t first, uint8_t count,
 		    const struct gfx_rgb *colors);
@@ -263,7 +286,7 @@ int gfx_pointer_shape(const uint8_t *pattern, uint8_t color);
  * height): the geometry is pixels, y may target the off-screen page
  * (256-511), and the rectangle must lie inside the 512-line space and
  * the mode's width (x and width even in the 16-colour mode, multiples
- * of 4 in YJK, where four pixels share one J/K pair).  The byte
+ * of 4 in both YJK modes, where four pixels share one J/K pair).  The byte
  * stream follows the mode's packing; the transfer takes exactly
  * bytes(width, height), position is kept across gfx_upload_write
  * calls, and a pending drawing batch is flushed first.  Not nestable.

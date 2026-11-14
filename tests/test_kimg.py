@@ -397,6 +397,60 @@ class KimgPreviewTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("(8x8)", result.stdout)
 
+    def test_yae_decodes_picture_and_palette_pixels(self):
+        # Group: K = 5 (bits of bytes 0 and 1), J = -3 (bytes 2 and 3).
+        # Byte 0 a YJK pixel (A clear, Y = 2 * 9 = 18); byte 1 a palette
+        # pixel (A set, index 2, the file's entry 2); bytes 2 and 3 YJK.
+        j, k = -3, 5
+        lows = (k & 7, (k >> 3) & 7, j & 7, (j >> 3) & 7)
+        payload = [(9 << 4) | lows[0], (2 << 4) | 0x08 | lows[1],
+                   (31 << 3) & 0xF0 | lows[2], lows[3]]
+        path = self.packed("yae", (4, 1), payload,
+                           palette=[0, 0, 0, 0, 0, 0, 255, 0, 0])
+        mode, _w, _h, pixels = kimg.decode(path)
+        self.assertEqual(mode, "yae")
+        dac5 = lambda rgb: tuple((c << 3) | (c >> 2) for c in rgb)
+        self.assertEqual(pixels[0], dac5(kimg.yjk_decode(18, j, k)))
+        self.assertEqual(pixels[1], (255, 0, 0))
+        self.assertEqual(pixels[2], dac5(kimg.yjk_decode(30, j, k)))
+        self.assertEqual(pixels[3], dac5(kimg.yjk_decode(0, j, k)))
+
+    def test_yae_palette_only_for_paletted_modes(self):
+        with self.assertRaises(SystemExit):
+            self.packed("yjk", (4, 1), [0] * 4, palette=[1, 2, 3])
+        self.packed("yae", (4, 1), [0] * 4, palette=[1, 2, 3])
+
+    @unittest.skipUnless(HAVE_PILLOW, "Pillow is not installed")
+    def test_yae_convert_writes_picture_pixels_only(self):
+        source = os.path.join(self.tmp, "gradient.png")
+        image = Image.new("RGB", (32, 8))
+        image.putdata([(x * 8, y * 30, 255 - x * 8)
+                       for y in range(8) for x in range(32)])
+        image.save(source)
+        for quality in ("fast", "optimized"):
+            with self.subTest(quality=quality):
+                out = os.path.join(self.tmp, "g.kimg")
+                kimg.convert(source, out, "yae", (32, 8),
+                             yjk_quality=quality)
+                header = parse_header(out)
+                self.assertEqual(header["mode"], 3)
+                self.assertEqual(header["palette_count"], 0)
+                self.assertTrue(all(b & 0x08 == 0
+                                    for b in header["payload"]),
+                                "A is clear: picture pixels only")
+                # Each pixel's even Y is the best even choice for the
+                # group's J/K, so YAE's error stays near YJK's.
+                yjk_out = os.path.join(self.tmp, "g.yjk")
+                kimg.convert(source, yjk_out, "yjk", (32, 8),
+                             yjk_quality=quality)
+                source_rgb = list(image.getdata())
+
+                def error(path):
+                    return sum((a - b) ** 2 for p, q in
+                               zip(kimg.decode(path)[3], source_rgb)
+                               for a, b in zip(p, q))
+                self.assertLess(error(out), error(yjk_out) * 2 + 1000)
+
     def test_malformed_files_are_refused(self):
         good = self.packed("g7", (4, 1), [1, 2, 3, 4])
         with open(good, "rb") as handle:
@@ -495,7 +549,7 @@ class KimgQualityTests(unittest.TestCase):
             self.pattern().save(source)
             # Old 23x17 -> 16x8 crop, followed unconditionally by NEAREST.
             fitted = self.pattern().crop((0, 3, 23, 14)).resize((16, 8), Image.Resampling.NEAREST)
-            for mode in kimg.MODES:
+            for mode in hashes:
                 kimg.convert(source, output, mode, (16, 8))
                 with open(output, 'rb') as stream:
                     data = stream.read()

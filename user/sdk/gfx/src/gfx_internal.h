@@ -46,7 +46,7 @@ extern uint8_t gfx_draw_open;      /* 1 while the handle is held */
 extern uint8_t gfx_draw_ready;     /* 1 while open with a mode set */
 extern uint8_t gfx_draw_mode;      /* enum gfx_mode */
 extern uint16_t gfx_draw_width;    /* the mode's width in dots */
-extern uint8_t gfx_draw_shape;     /* 2 G7, 1 G6, 0 no shapes (YJK/none) */
+extern uint8_t gfx_draw_shape;     /* 2 G7, 1 G6/YAE (index 0..15), 0 none */
 extern uint8_t gfx_batch_depth;    /* gfx_begin nesting */
 extern uint8_t gfx_batch_count;    /* queued command blocks */
 
@@ -239,7 +239,8 @@ void gfx_pointer_install(void);
 #define GFX_V9958_R11_SPRITE_ATTR   0x03u
 #define GFX_V9958_R15_STATUS2  0x02u
 #define GFX_V9958_R25_WAIT_ON  0x04u
-#define GFX_V9958_R25_YJK      0x08u /* R#25 bit 3; bit 4 (10h) is YAE */
+#define GFX_V9958_R25_YJK      0x08u /* R#25 bit 3 */
+#define GFX_V9958_R25_YAE      0x10u /* R#25 bit 4: palette pixels in YJK */
 
 /* The command engine (the drawing assembly holds the command codes). */
 #define GFX_V9958_STATUS2_CE 0x01u

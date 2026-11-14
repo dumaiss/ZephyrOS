@@ -417,11 +417,15 @@ def place(modules, stack, resident_sources, pins, declared=()):
     # stubs and event delivery run whatever is mapped; its own calls out
     # (crt0 to main) happen with the aperture closed, so they are not
     # followed.  Handler sources are followed: a handler runs wherever
-    # the program was interrupted.
+    # the program was interrupted.  The libkos members in
+    # PLACEABLE_RUNTIME are ordinary leaf code (no trampoline, stub or
+    # event path runs them), so they place like any library member.
     roots = []
     for module in modules:
         o = module.origin
-        if o.endswith("crt0.rel") or o.startswith("libkos.lib("):
+        if o in PLACEABLE_RUNTIME:
+            pass
+        elif o.endswith("crt0.rel") or o.startswith("libkos.lib("):
             plan.zone[(o, "code")] = "resident"
             plan.why[(o, "code")] = "runtime"
         elif (o in resident_sources or pins.get(o) == "resident" or
@@ -620,6 +624,10 @@ def report(plan, edges, stack):
 CODE_AREA = {"resident": "_CODE", "home": "_ZHOME"}
 DATA_AREA = {"home": "_ZHOMEB"}
 VENEER_BYTES = 6       # CALL kos_vcall, the zone byte, the target word
+# libkos members placed like library code rather than kept resident with
+# the runtime: the keyboard key decoder (kos/key.h) and its waiting read.
+PLACEABLE_RUNTIME = ("libkos.lib(key.rel)", "libkos.lib(key_get.rel)")
+
 SDK_LOW = 0x005D       # _KOS_SDK_DATA before _CODE
 
 

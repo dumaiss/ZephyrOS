@@ -18,7 +18,9 @@
  *
  * Payload packings: the 16-colour mode two 4-bit pixels per byte, the
  * 256-colour mode one pixel per byte, the YJK mode one host-encoded
- * YJK byte per pixel.
+ * YJK byte per pixel, the YJK+YAE mode one byte per pixel (a YJK pixel
+ * with A, bit 3, clear, or a palette pixel with it set).  The 16-colour
+ * and YJK+YAE modes may carry up to 16 palette entries.
  */
 
 #ifndef KOS_SDK_KIMG_H
