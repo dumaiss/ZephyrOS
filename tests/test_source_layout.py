@@ -411,23 +411,11 @@ OWNER_FILES = (
     "systems/console-serial-missing.json",
     "systems/console-init-fail.json",
     "drivers/runtime/sdcc_indirect_calls.asm",
-    "tests/target/syscall/syscall_entry.asm",
-    "tests/target/syscall/syscall_test.c",
-    "tests/target/irq/irq_entry.asm",
-    "tests/target/irq/irq_test.c",
-    "tests/target/include/syscall_selftest.h",
-    "tests/target/include/syscall_entry.inc",
-    "tests/target/include/irq_entry.inc",
     "tests/target/include/romfs_selftest.h",
     "tests/target/include/process_selftest.h",
-    "tests/target/include/ctc_test.h",
-    "tests/target/nucleus/nucleus_entry.asm",
-    "tests/target/nucleus/nucleus_test.c",
-    "tests/target/include/nucleus_selftest.h",
-    "tests/target/include/nucleus_entry.inc",
+    "systems/process.json",
+    "systems/exe2.json",
     "tests/target/support/target_test.c",
-    "tests/target/support/ctc_test.c",
-    "systems/nucleus.json",
     "systems/ipc.json",
     "systems/ns.json",
     "systems/xmem.json",
@@ -459,7 +447,6 @@ REQUIRED_DIRS = (
     "tests/subsys", "tests/console",
     "tests/fs", "tests/bench", "tests/io", "tests/sound", "tests/tui",
     "tests/gfx", "tests/snd", "tests/reader",
-    "tests/target/syscall", "tests/target/irq",
     "tests/target/romfs", "tests/target/process", "tests/target/support",
     "tests/target/ns",
     "tests/target/include",
@@ -477,6 +464,7 @@ TEST_ONLY_SIO_MACROS = (
 # kernel/main.c and the shared KOS_TARGET_TEST_BUILD seam.
 PRODUCTION_SELFTEST_MACROS = (
     "KOS_SUBSYS_SELFTEST",
+    "KOS_PROCESS_SELFTEST",
     "KOS_ROMFS_CORRUPT_SELFTEST",
     "KOS_CONSOLE_SELFTEST",
     "KOS_CONSOLE_SERIAL_SELFTEST",
@@ -1266,26 +1254,13 @@ class TestPlatformBoundary(unittest.TestCase):
             self.assertIn('#include "%s"' % header, text)
 
 
-# Acceptance constant pairs: the C header is the source of truth and the
-# .inc is the assembly listing of the same acceptance image, so a drift
-# between them is a silent test bug.
-ACCEPTANCE_CONSTANT_PAIRS = (
-    ("tests/target/include/syscall_selftest.h",
-     "tests/target/include/syscall_entry.inc"),
-    ("tests/target/include/irq_selftest.h",
-     "tests/target/include/irq_entry.inc"),
-    ("tests/target/include/nucleus_selftest.h",
-     "tests/target/include/nucleus_entry.inc"),
-)
-
 # C/assembly constant pairs that must stay value-identical: the platform
-# declarations, the interrupt-executive vectors, and the acceptance pairs
-# above.
+# declarations and the interrupt-executive vectors.
 CONSTANT_PARITY_PAIRS = (
     ("platform/zephyr80/public/hardware.h", "platform/zephyr80/public/hardware.inc"),
     ("platform/zephyr80/private/memory.h", "platform/zephyr80/private/memory.inc"),
     ("platform/zephyr80/private/irq.h", "platform/zephyr80/private/irq.inc"),
-) + ACCEPTANCE_CONSTANT_PAIRS
+)
 
 
 class TestConstantParity(unittest.TestCase):
@@ -1310,27 +1285,6 @@ class TestConstantParity(unittest.TestCase):
                         cv, av,
                         "%s: C %s = %d, assembly %s = %d"
                         % (name, c[name], cv, asm[name], av))
-
-    def test_acceptance_constant_pairs_are_complete(self):
-        # The acceptance .inc files exist for their assembly listing only,
-        # so every C constant must be present in the assembly view too.
-        for c_rel, asm_rel in ACCEPTANCE_CONSTANT_PAIRS:
-            c = parse_c_header(os.path.join(ROOT, c_rel))
-            asm = parse_asm_inc(os.path.join(ROOT, asm_rel))
-            for name in sorted(c):
-                self.assertIn(name, asm, "%s missing %s" % (asm_rel, name))
-
-    def test_errno_codes_match_the_assembly_view(self):
-        errno_c = parse_c_header(
-            os.path.join(ROOT, "abi", "kos", "errno.h"))
-        pairs = (("tests/target/include/syscall_entry.inc", "KOS_ENOSYS"),
-                 ("tests/target/include/irq_entry.inc", "KOS_IST_ENOSYS"))
-        for asm_rel, name in pairs:
-            asm = parse_asm_inc(os.path.join(ROOT, asm_rel))
-            self.assertIn(name, asm, "%s missing %s" % (asm_rel, name))
-            self.assertEqual(evaluate(errno_c["KOS_ENOSYS"], errno_c),
-                             evaluate(asm[name], asm),
-                             "%s differs from errno.h" % name)
 
 
 class TestKernelNameComparison(unittest.TestCase):

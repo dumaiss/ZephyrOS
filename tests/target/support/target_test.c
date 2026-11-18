@@ -1,53 +1,36 @@
 /* KonaOS target acceptance runner (test artifact).
  *
  * The single integration seam between the production kernel and the
- * acceptance tests.  kernel/main.c calls the two hooks below only when
- * KOS_TARGET_TEST_BUILD is defined; the concrete acceptance-group
- * selection lives here so production files never contain self-test
- * implementations (docs/architecture.md section 3).
- *
- * Boot phases:
- *   early  before the boot program load (syscall gate, IRQ executive)
- *   late   after console binding (ROMFS reader, process/EXE, loader)
+ * acceptance tests.  kernel/main.c calls the hook below, after console
+ * binding, only when KOS_TARGET_TEST_BUILD is defined; the concrete
+ * acceptance-group selection lives here so production files never
+ * contain self-test implementations (docs/architecture.md section 3).
  *
  * Each acceptance image selects exactly one group: the subsystem image
- * (the subsystem mechanism selftests), the nucleus image (the revision-13
- * gate and upcall-shim surface) or the IPC image (the resident-driver
- * substrate).
+ * (the ROMFS reader), the process image (the process/EXE lifecycle), the
+ * exe2 image (the EXE v2 loader outcomes: the same process selftest's
+ * last group) or the IPC image (the resident-driver substrate).
  */
 
 #include "kernel.h"
 
 #if KOS_SUBSYS_SELFTEST
-#include "syscall_selftest.h"
-#include "irq_selftest.h"
 #include "romfs_selftest.h"
-#include "process_selftest.h"
 #endif
-#if KOS_NUCLEUS_SELFTEST
-#include "nucleus_selftest.h"
+#if KOS_PROCESS_SELFTEST || KOS_EXE2_SELFTEST
+#include "process_selftest.h"
 #endif
 #if KOS_IPC_SELFTEST
 #include "mod.h"
 #include "kos/ipc.h"
 #endif
 
-void kos_target_test_early(void)
-{
-#if KOS_SUBSYS_SELFTEST
-	kos_run_syscall_selftest();
-	kos_run_irq_selftest();
-#endif
-#if KOS_NUCLEUS_SELFTEST
-	kos_run_nucleus_selftest();
-#endif
-}
-
 void kos_target_test_late(void)
 {
 #if KOS_SUBSYS_SELFTEST
-	/* ROMFS reader, then the process/EXE lifecycle. */
 	kos_run_romfs_selftest();
+#endif
+#if KOS_PROCESS_SELFTEST || KOS_EXE2_SELFTEST
 	kos_run_process_selftest();
 #endif
 #if KOS_IPC_SELFTEST

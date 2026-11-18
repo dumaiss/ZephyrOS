@@ -7,9 +7,9 @@
  * driver image that failed to load, must not leave either running; the
  * timer driver stops channel 3 itself when its handle is released, and
  * this is the unconditional backstop the panic path uses.  Channel 0's
- * start/stop programming is acceptance-only and lives under tests/target/
- * (tests/target/include/ctc_test.h, tests/target/support/ctc_test.c); no
- * production image declares those helpers.  The ports are the *physical*
+ * start/stop programming is acceptance-only and lives with the suite that
+ * needs it (tests/target/ipc/irqx.c); no production image declares it.
+ * The ports are the *physical*
  * channels (hardware.h: channel 1 answers 42h, channel 2 answers 41h), so
  * a quiesce writes the channel the interrupt vectors for, not the address
  * that looks like its number.

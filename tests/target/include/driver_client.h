@@ -1,7 +1,7 @@
 /* KonaOS resident-driver acceptance client.
  *
  * The driver acceptance images run their diagnostic inside the
- * nucleus (kernel/main.c calls kos_target_test_early/late), which makes
+ * nucleus (kernel/main.c calls kos_target_test_late), which makes
  * that diagnostic a *bank-7 client* of the resident drivers: it holds no
  * descriptor and cannot use `move`, so it drives each protocol through
  * the descriptor-less forms plus the staged buffers that drivers name in

@@ -1,6 +1,6 @@
 /* KonaOS EXE v2 loader-outcome probe (test only).
  *
- * Run by the subsystem process selftest after it has written a marker
+ * Run by the process selftest after it has written a marker
  * into this program's bank outside its image, BSS and stack, and after it
  * has dirtied the whole BSS range.  The program proves the 4.8 rule
  * from inside the child:

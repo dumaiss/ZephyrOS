@@ -1,0 +1,19 @@
+{
+  "schema": "kos-system-1",
+  "name": "exe2",
+  "drivers": [
+    "sio",
+    "console-serial"
+  ],
+  "boot": "/system/monitor.exe",
+  "after_exit": "monitor",
+  "store": [
+    "monitor.exe",
+    "exe2probe.exe",
+    "exe2seg.exe",
+    "exe2big.exe"
+  ],
+  "cflags": [
+    "-DKOS_EXE2_SELFTEST=1"
+  ]
+}

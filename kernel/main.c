@@ -40,9 +40,7 @@
 #if KOS_TARGET_TEST_BUILD
 /* TEST-ONLY HOOK: target acceptance runner; implementation and group
  * selection live in tests/target/support/target_test.c (acceptance images
- * only).  The early hook runs before the boot program load; the late hook
- * runs after console binding. */
-void kos_target_test_early(void);
+ * only).  It runs after console binding. */
 void kos_target_test_late(void);
 #endif
 
@@ -496,11 +494,6 @@ void kernel_main(void)
 	early_console_puts("platform: Zephyr-80\r\n");
 	early_console_puts("kernel entry: OK\r\n");
 	early_console_puts("serial: OK\r\n");
-
-#if KOS_TARGET_TEST_BUILD
-	/* TEST-ONLY HOOK: subsystem acceptance phase (target_test.c). */
-	kos_target_test_early();
-#endif
 
 	/* The early console above stays authoritative: it, and the panic
 	 * path, work with no driver at all.  The resident driver set loads

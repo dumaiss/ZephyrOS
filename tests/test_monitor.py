@@ -396,25 +396,24 @@ class _CapturedOutput:
 
 
 class TestSubsystemSmokeMode(unittest.TestCase):
-    """--mode subsystem: the boot-log gate, the interactive Q step at the
-    monitor prompt, and the exit-line finish.  The monitor session itself is replayed end to end by tests/test_subsys_sim.py."""
+    """--mode subsystem/process/exe2: the boot-log gate, the interactive Q
+    step at the monitor prompt, and the exit-line finish.  The monitor
+    session itself is replayed end to end by tests/test_subsys_sim.py and
+    tests/test_process_sim.py."""
 
-    def transcript(self):
+    def transcript(self, mode="subsystem"):
         import serial_smoke
         return (
             serial_smoke.BANNER
             + serial_smoke.CONSOLE_DRIVER_OK
-            + serial_smoke.SUBSYS_SYSCALL_OK
-            + serial_smoke.SUBSYS_IRQ_OK
-            + serial_smoke.SUBSYS_ROMFS_OK
-            + serial_smoke.SUBSYS_PROCESS_OK
+            + b"".join(serial_smoke.SUBSYS_GROUPS[mode])
             + b"KonaOS native monitor\r\n"
             + serial_smoke.SUBSYS_PROMPT
             + serial_smoke.SUBSYS_EXIT
             + b"\r\n"
         )
 
-    def run_main(self, payload, timeout=0.05):
+    def run_main(self, payload, timeout=0.05, mode="subsystem"):
         import serial_smoke
 
         fake = types.ModuleType("serial")
@@ -431,7 +430,7 @@ class TestSubsystemSmokeMode(unittest.TestCase):
             with contextlib.redirect_stdout(out), \
                     contextlib.redirect_stderr(err):
                 code = serial_smoke.main(
-                    ["--mode", "subsystem", "--port", "FAKE",
+                    ["--mode", mode, "--port", "FAKE",
                      "--timeout", str(timeout)])
         finally:
             if previous is None:
@@ -447,12 +446,22 @@ class TestSubsystemSmokeMode(unittest.TestCase):
                          "the tool must send exactly one Q at the prompt")
         self.assertIn("serial_smoke: OK", out)
 
+    def test_each_image_mode_checks_its_own_groups(self):
+        for mode in ("process", "exe2"):
+            code, out, err, _link = self.run_main(self.transcript(mode),
+                                                  mode=mode)
+            self.assertEqual(code, 0, err)
+            self.assertIn("serial_smoke: OK", out)
+        # The exe2 mode wants its v2 outcome line too.
+        code, _out, _err, _link = self.run_main(self.transcript("process"),
+                                                mode="exe2")
+        self.assertEqual(code, 1)
+
     def test_incomplete_boot_log_fails_without_sending_q(self):
         import serial_smoke
 
         payload = (serial_smoke.BANNER
-                   + serial_smoke.CONSOLE_DRIVER_OK
-                   + serial_smoke.SUBSYS_SYSCALL_OK)
+                   + serial_smoke.CONSOLE_DRIVER_OK)
         code, _out, err, link = self.run_main(payload)
         self.assertEqual(code, 1)
         self.assertEqual(link.written, [],

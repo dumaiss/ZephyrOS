@@ -37,8 +37,9 @@ Acceptance images, each with its simulator replay:
 
 | target | image |
 |---|---|
-| `make subsystem-selftest` | the syscall gate, interrupts, the ROMFS reader, processes and the monitor |
-| `make nucleus-selftest` | the fixed core and the upcall shim |
+| `make subsystem-selftest` | the ROMFS reader and the monitor |
+| `make process-selftest` | the process/EXE lifecycle: exec/exit, malformed containers, the allocator |
+| `make exe2-selftest` | the EXE v2 loader outcomes: BSS, DATA segments, large containers, rollback |
 | `make ipc-selftest` | the IPC substrate: copy paths, nesting, driver IRQs |
 | `make ns-selftest` | the namespace, the standard handles and publications |
 | `make fs-selftest` | files on `/fs` and `/system`, nested exec, with and without a card |

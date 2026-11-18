@@ -25,8 +25,9 @@
 #   make mod-test            packed-module tooling tests
 #   make exe-test             packed-program tooling tests
 #   make sdk                  standalone SDK tree + tarball (build/kos-sdk-*)
-#   make subsystem-selftest        current-path and ROMFS acceptance image
-#   make nucleus-selftest          revision-13 window/nucleus acceptance image
+#   make subsystem-selftest        ROMFS-reader acceptance image
+#   make process-selftest          process/EXE lifecycle acceptance image
+#   make exe2-selftest             EXE v2 loader-outcome acceptance image
 #   make console-serial-selftest   serial-console image and its failure store
 #   make fs-selftest               filesystem outcome acceptance image
 #   make xmem-selftest             extended-memory and aperture outcome image
@@ -167,19 +168,20 @@ KOS_REV13_WINDOW_BASE := 0x6000
 # Acceptance images link the shared runner (tests/target/support/) plus the
 # per-subsystem test code under tests/target/; production images link none
 # of it.  KOS_TARGET_TEST_BUILD is the single production-side guard
-# (kernel/main.c holds only the two TEST-ONLY HOOKs).
+# (kernel/main.c calls the runner through one TEST-ONLY HOOK).
 TARGET_TEST_OBJS :=
-SYSTEM_ACCEPTANCE := subsystem fs ipc nucleus
+SYSTEM_ACCEPTANCE := subsystem process exe2 fs ipc
 
 # The image-name suffix of each system: the image targets keep their names
 # and build into their own directory, build-<image>/konaos<PK_SUFFIX>.bin.
 SYSTEM_SUFFIX.subsystem := -subsys-selftest
+SYSTEM_SUFFIX.process := -process-selftest
+SYSTEM_SUFFIX.exe2 := -exe2-selftest
 SYSTEM_SUFFIX.console-serial := -console-serial-selftest
 SYSTEM_SUFFIX.console-serial-missing := -console-serial-fail-selftest
 SYSTEM_SUFFIX.console-init-fail := -driver-init-fail-selftest
 SYSTEM_SUFFIX.fs := -fs-selftest
 SYSTEM_SUFFIX.ipc := -ipc-selftest
-SYSTEM_SUFFIX.nucleus := -nucleus-selftest
 SYSTEM_SUFFIX.ns := -ns-selftest
 SYSTEM_SUFFIX.xmem := -xmem-selftest
 SYSTEM_SUFFIX.helloworld := -helloworld
@@ -189,19 +191,14 @@ SYSTEM_SUFFIX.boot-corrupt := -boot-corrupt-selftest
 # cannot see the rows that follow it.
 PK_SUFFIX := $(SYSTEM_SUFFIX.$(SYSTEM))
 
-# The mechanism-selftest images: the subsystem
-# image carries the syscall gate, the IRQ executive, the ROMFS reader and
-# the process/EXE lifecycle; the nucleus image carries the
-# revision-13 gate and upcall-shim surface.  One image per surface group.
-SYSTEM_TEST_OBJS.subsystem := $(BUILD)/syscall_test.rel \
-                    $(BUILD)/syscall_selftest_asm.rel \
-                    $(BUILD)/irq_test.rel $(BUILD)/irq_selftest_asm.rel \
-                    $(BUILD)/ctc_test.rel \
-                    $(BUILD)/romfs_test.rel \
-                    $(BUILD)/process_test.rel
-SYSTEM_TEST_OBJS.nucleus := $(BUILD)/nucleus_test.rel \
-                    $(BUILD)/nucleus_selftest_asm.rel \
-                    $(BUILD)/ctc_test.rel
+# The mechanism-selftest images: the subsystem image carries the ROMFS
+# reader; the process image the process/EXE lifecycle and the exe2 image
+# the EXE v2 loader outcomes (one suite, process_test.c, split by its
+# flags).  One image per surface group, each with the production kernel's
+# cold half room to spare.
+SYSTEM_TEST_OBJS.subsystem := $(BUILD)/romfs_test.rel
+SYSTEM_TEST_OBJS.process := $(BUILD)/process_test.rel
+SYSTEM_TEST_OBJS.exe2 := $(BUILD)/process_test.rel
 
 # The IPC acceptance image: the gate object needs the
 # generated build include, and the substrate and the loader are
@@ -389,14 +386,14 @@ $(BUILD)/konaos.probe.ihx $(BUILD)/konaos.probe.map: \
 
 .PHONY: all test check check-fast clean sim-core mod-test romfs-test exe-test \
 	monitor-test ioc-test hid-test v9958-test sdk \
-	subsystem-selftest nucleus-selftest \
+	subsystem-selftest process-selftest exe2-selftest \
 	console-serial-selftest \
 	fs-selftest ns-selftest ipc-selftest xmem-selftest helloworld-image \
 	phase-image \
 	hardware-images \
 	smoke-hardware \
 	smoke-hardware-hwtest \
-	smoke-hardware-subsystem \
+	smoke-hardware-subsystem smoke-hardware-process smoke-hardware-exe2 \
 	smoke-hardware-console-serial \
 	smoke-hardware-fs smoke-hardware-shell
 
@@ -883,8 +880,7 @@ $(BUILD)/user/sdk/gfx/font4_builtin.inc: \
 # --- target acceptance objects (tests/target/, acceptance builds only) -------
 
 $(BUILD)/target_test.rel: tests/target/support/target_test.c \
-		kernel/include/kernel.h tests/target/include/syscall_selftest.h \
-		tests/target/include/irq_selftest.h \
+		kernel/include/kernel.h \
 		tests/target/include/romfs_selftest.h \
 		tests/target/include/process_selftest.h \
 		abi/kos/ipc.h \
@@ -898,13 +894,6 @@ $(BUILD)/driver_client.rel: tests/target/support/driver_client.c \
 		kernel/include/kernel.h kernel/include/process.h \
 		abi/kos/protocol.h drivers/include/driver.h \
 		kernel/ipc/ipc.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
-
-# Test-owned CTC0 programming helper (acceptance images only), so no
-# acceptance-only CTC code reaches the production map.
-$(BUILD)/ctc_test.rel: tests/target/support/ctc_test.c \
-		tests/target/include/ctc_test.h \
-		platform/zephyr80/public/hardware.h platform/zephyr80/private/irq.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
 # IPC substrate and driver loader:
@@ -942,35 +931,6 @@ $(BUILD)/driver_loader.rel: kernel/driver/driver_loader.c \
 
 $(BUILD)/driver_boot.rel: kernel/driver/driver_boot.asm \
 		platform/zephyr80/public/hardware.inc $(ASM_MEMORY_INC) | $(BUILD)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
-
-$(BUILD)/syscall_test.rel: tests/target/syscall/syscall_test.c \
-		kernel/include/kernel.h \
-		tests/target/include/syscall_selftest.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
-
-$(BUILD)/syscall_selftest_asm.rel: tests/target/syscall/syscall_entry.asm \
-		tests/target/include/syscall_entry.inc | $(BUILD)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
-
-$(BUILD)/irq_test.rel: tests/target/irq/irq_test.c \
-		kernel/include/irq_types.h kernel/include/kernel.h \
-		kernel/include/platform.h \
-		tests/target/include/irq_selftest.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
-
-$(BUILD)/irq_selftest_asm.rel: tests/target/irq/irq_entry.asm \
-		tests/target/include/irq_entry.inc | $(BUILD)
-	$(SDASZ80) $(ASFLAGS) -o $@ $<
-
-$(BUILD)/nucleus_test.rel: tests/target/nucleus/nucleus_test.c \
-		kernel/include/irq_types.h kernel/include/kernel.h \
-		kernel/include/platform.h abi/kos/diag.h \
-		kernel/memory/upcall.h tests/target/include/nucleus_selftest.h | $(BUILD)
-	$(SDCC) $(CFLAGS) $< -o $@
-
-$(BUILD)/nucleus_selftest_asm.rel: tests/target/nucleus/nucleus_entry.asm \
-		tests/target/include/nucleus_entry.inc | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/romfs_test.rel: tests/target/romfs/romfs_test.c \
@@ -1046,7 +1006,7 @@ $(eval $(call exe_program,exetest,tests/target/process,\
 	INCLUDES=tests/target/include))
 
 # EXE v2 loader-outcome programs (test only): the
-# subsystem process selftest runs them to prove the 4.8 zero-only rule
+# exe2 image's process selftest runs them to prove the 4.8 zero-only rule
 # (BSS zeroed, bank not cleared), the DATA-segment wiring and the
 # container-over-64-KiB path.  exe2seg and exe2big attach DATA segment
 # payloads through SEGMENTS=; the payload files are generated next to the
@@ -1403,7 +1363,7 @@ $(eval $(call exe_program,nschild,tests/ns,\
 	INCLUDES=tests/target/include))
 
 # Deterministic malformed EXE containers (see
-# tests/subsys/gen_exe_fixtures.py) shared by the subsystem acceptance
+# tests/subsys/gen_exe_fixtures.py) of the process acceptance
 # manifest; the stamp makes `make clean && make exe-test` self-contained.
 $(MODULES)/exe-fixtures.stamp: tests/subsys/gen_exe_fixtures.py \
 		tools/exepack.py | $(MODULES)
@@ -1457,8 +1417,8 @@ $(KOS_SDK_TARBALL): $(EXE_SDK_RELEASE_LIB) $(EXE_LIBTUI) $(EXE_LIBTUI_WIDE) \
 # --- ROMFS recovery store (ROM pages 2-7) ------------------------------------
 # Every image packs the store tools/systemgen.py wrote for its system file:
 # the driver images in load order, drivers.man, then the image's own files.
-# The subsystem and nucleus acceptance images carry the loader/ROMFS/EXE
-# fixtures, and tests/test_romfs_sim.py patches the packed subsystem image in
+# The subsystem, process and exe2 acceptance images carry the loader,
+# ROMFS and EXE fixtures, and tests/test_romfs_sim.py patches the packed subsystem image in
 # place to exercise the kernel's validation (the corrupt-store outcome).
 #
 # The store's programs arrive through their own rules (one exe_program line
@@ -1579,7 +1539,7 @@ $(BUILD)/romfs_expect.inc: $(BUILD)/store.json $(MODULES)/sio.mod \
 # objects) generates its linker file from the same object list the link
 # step depends on, so the lists cannot drift apart.
 
-KOS_TEST_LINK := $(filter $(SYSTEM),subsystem nucleus fs)
+KOS_TEST_LINK := $(filter $(SYSTEM),subsystem process exe2 fs)
 ifeq ($(BUILD),build)
 ifneq ($(KOS_TEST_LINK),)
 GENERATED_LK := 1
@@ -1705,13 +1665,14 @@ check:
 	 echo "check: reproducible rebuild ($$after)"
 	@$(MAKE) check-fast
 
-# --- subsystem acceptance image ----------------------------------------------
-# One current-boot-path image carries the mechanism selftests: the syscall
-# gate and the IRQ executive (early hook), then the ROMFS reader and the
-# process/EXE lifecycle (late hook), and finally the launcher's monitor,
+# --- subsystem, process and exe2 acceptance images ---------------------------
+# Three current-boot-path images carry the mechanism selftests, all from
+# the late hook.  The subsystem image: the ROMFS reader.  The process image: the process/EXE lifecycle (late
+# hook) over its EXE fixtures; the exe2 image: the EXE v2 loader outcomes
+# over the three v2 programs.  Each then runs the launcher's monitor,
 # started once the program's own session ends.  The declared boot set is
-# the SIO serial driver plus
-# the console driver that composes it, placed by the resident loader.
+# the SIO serial driver plus the console driver that composes it, placed by
+# the resident loader.
 
 subsystem-selftest:
 	$(MAKE) BUILD=build-subsys-selftest SYSTEM=subsystem \
@@ -1724,6 +1685,28 @@ subsystem-selftest:
 	$(PYTHON) -m unittest discover -s tests -p 'test_subsys_sim.py' -v
 	$(PYTHON) -m unittest discover -s tests -p 'test_romfs_sim.py' -v
 	@echo "subsystem-selftest image: build-subsys-selftest/konaos-subsys-selftest.bin"
+
+process-selftest:
+	$(MAKE) BUILD=build-process-selftest SYSTEM=process \
+		build-process-selftest/konaos-process-selftest.bin \
+		build-process-selftest/zephyr80-process-selftest.bin
+	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
+		build-process-selftest/konaos.map \
+		build-process-selftest/geometry/memory.inc \
+		$(KOS_PLATFORM_IRQ_INC)
+	$(PYTHON) -m unittest discover -s tests -p 'test_process_sim.py' -v
+	@echo "process-selftest image: build-process-selftest/konaos-process-selftest.bin"
+
+exe2-selftest:
+	$(MAKE) BUILD=build-exe2-selftest SYSTEM=exe2 \
+		build-exe2-selftest/konaos-exe2-selftest.bin \
+		build-exe2-selftest/zephyr80-exe2-selftest.bin
+	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
+		build-exe2-selftest/konaos.map \
+		build-exe2-selftest/geometry/memory.inc \
+		$(KOS_PLATFORM_IRQ_INC)
+	$(PYTHON) -m unittest discover -s tests -p 'test_process_sim.py' -v
+	@echo "exe2-selftest image: build-exe2-selftest/konaos-exe2-selftest.bin"
 
 # The SDK's own tests (tests/test_sdk.py) and the generated-manifest
 # checks need the packed demo and the argument test program, so the
@@ -1922,21 +1905,6 @@ ns-selftest: all
 	$(PYTHON) -m unittest discover -s tests -p 'test_ns_selftest*.py' -v
 	@echo "namespace image: build-ns-selftest/konaos-ns-selftest.bin"
 
-# Nucleus-layout acceptance image: the revision-13 gates
-# with P != 0 on entry (syscall, IRQ), the cold-half handler placement and
-# the fixed upcall shim against a stub in bank 6.  SIO-only boot set, so
-# the cold half's slack belongs to the test objects.
-nucleus-selftest: all
-	$(MAKE) BUILD=build-nucleus-selftest SYSTEM=nucleus \
-		build-nucleus-selftest/konaos-nucleus-selftest.bin \
-		build-nucleus-selftest/zephyr80-nucleus-selftest.bin
-	$(PYTHON) tools/mapcheck.py --residency $(RESIDENCY) \
-		build-nucleus-selftest/konaos.map \
-		build-nucleus-selftest/geometry/memory.inc \
-		$(KOS_PLATFORM_IRQ_INC)
-	$(PYTHON) -m unittest discover -s tests -p 'test_nucleus_sim.py' -v
-	@echo "nucleus image: build-nucleus-selftest/konaos-nucleus-selftest.bin"
-
 # Launcher-failure images: boot-missing names a store file it does not
 # carry, boot-corrupt names a malformed EXE container.  Both must report
 # the failed line and end at the monitor.
@@ -1977,6 +1945,10 @@ helloworld-image: all
 #   smoke-hardware-hwtest         build/konaos.bin                          make
 #   smoke-hardware-subsystem      build-subsys-selftest/konaos-subsys-selftest.bin
 #                                                                             make subsystem-selftest
+#   smoke-hardware-process        build-process-selftest/konaos-process-selftest.bin
+#                                                                             make process-selftest
+#   smoke-hardware-exe2           build-exe2-selftest/konaos-exe2-selftest.bin
+#                                                                             make exe2-selftest
 #   smoke-hardware-console-serial      build-console-serial-selftest/konaos-console-serial-selftest.bin  make console-serial-selftest
 #   smoke-hardware-fs             build-fs-selftest/konaos-fs-selftest.bin  make fs-selftest
 #   smoke-hardware-shell          build-console-serial-selftest/konaos-console-serial-selftest.bin  make console-serial-selftest
@@ -2001,7 +1973,7 @@ define smoke_preflight
 if [ ! -f "$(1)" ]; then echo "smoke: $(1) is missing - build it first: make $(2)"; exit 1; fi; printf 'smoke: image to flash: %s\n       sha256: %s\n' "$(1)" "$$(sha256sum '$(1)' | cut -d' ' -f1)"
 endef
 
-hardware-images: all subsystem-selftest \
+hardware-images: all subsystem-selftest process-selftest exe2-selftest \
 		console-serial-selftest \
 		fs-selftest xmem-selftest
 	@echo "hardware-images: every smoke image is built under build*/"
@@ -2017,6 +1989,14 @@ smoke-hardware-hwtest:
 smoke-hardware-subsystem:
 	@$(call smoke_preflight,build-subsys-selftest/konaos-subsys-selftest.bin,subsystem-selftest)
 	$(PYTHON) tools/serial_smoke.py --mode subsystem --port $(or $(SERIAL_PORT),$(KOS_SERIAL_PORT))
+
+smoke-hardware-process:
+	@$(call smoke_preflight,build-process-selftest/konaos-process-selftest.bin,process-selftest)
+	$(PYTHON) tools/serial_smoke.py --mode process --port $(or $(SERIAL_PORT),$(KOS_SERIAL_PORT))
+
+smoke-hardware-exe2:
+	@$(call smoke_preflight,build-exe2-selftest/konaos-exe2-selftest.bin,exe2-selftest)
+	$(PYTHON) tools/serial_smoke.py --mode exe2 --port $(or $(SERIAL_PORT),$(KOS_SERIAL_PORT))
 
 # Console mode: the console-serial variant, whose whole dynamic console
 # is this serial lane.  The host sync is sent while the banner is

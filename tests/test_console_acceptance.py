@@ -152,8 +152,7 @@ class TestProductionImage(ConsoleReplayBase):
         self.assertNotIn(PROMPT, trace)
 
         # The production image links no acceptance symbol at all.
-        for name in ("_kos_target_test_late", "_kos_target_test_early",
-                     "_kos_target_test_syscall"):
+        for name in ("_kos_target_test_late", "_kos_target_test_syscall"):
             self.assertNotIn(name, self.syms)
 
         self.assert_driver_store()

@@ -1,6 +1,6 @@
 /* KonaOS process/EXE acceptance selftest (test artifact).
  *
- *   kos_run_process_selftest()          subsystem image (KOS_SUBSYS_SELFTEST)
+ *   kos_run_process_selftest()          process image (KOS_PROCESS_SELFTEST)
  *     - exetest runs from ROMFS in bank 0 and exits with PASS|0;
  *     - repeated exec/exit cycles leak no slot or bank;
  *     - reserving bank 0 through the tested allocator makes the same
@@ -13,6 +13,11 @@
  *     - bank 7 stays unreachable through the normal process API;
  *     - a truncated container in the store is rejected with
  *       EXE_EXEC_ERR_FILESIZE and the untouched valid entry still runs.
+ *   the same entry in the exe2 image (KOS_EXE2_SELFTEST) runs the EXE v2
+ *   loader outcomes instead: BSS zeroed with the bank left as it was,
+ *   DATA segments, a container over 64 KiB and segment-allocation
+ *   rollback.  The two images split one suite that no single image's cold
+ *   half holds.
  *
  * Runs from the late acceptance hook after the current boot path (SIO
  * loaded from the recovery store through VFS, normal console bound).
@@ -28,11 +33,9 @@
 
 #include "process_selftest.h"
 
-#if KOS_SUBSYS_SELFTEST
+#if KOS_PROCESS_SELFTEST || KOS_EXE2_SELFTEST
 
-#if KOS_SUBSYS_SELFTEST
 #include "process_expect.inc"
-#endif
 
 uint8_t process_selftest_result;
 
@@ -40,6 +43,7 @@ uint8_t process_selftest_result;
  * ROMFS-relative and are prefixed with the mountpoint here. */
 static char process_path[KOS_PATH_MAX];
 
+#if KOS_EXE2_SELFTEST
 /* --- EXE v2 loader-outcome helpers -----------------
  *
  * The loader-outcome tests write into a free application bank through
@@ -108,6 +112,8 @@ static uint8_t exe2_marker_check(uint8_t bank)
 			 kos_user_copy_staging[2] == KOS_PCST_EXE2_MARK_2 &&
 			 kos_user_copy_staging[3] == KOS_PCST_EXE2_MARK_3);
 }
+
+#endif /* KOS_EXE2_SELFTEST */
 
 static const char *process_vfs_path(const char *name)
 {
@@ -197,7 +203,6 @@ static uint8_t process_run_checked(const char *name, uint16_t expected_status,
 	return KOS_PCST_OK;
 }
 
-#if KOS_SUBSYS_SELFTEST
 void kos_run_process_selftest(void)
 {
 	uint16_t detail = 0;
@@ -214,6 +219,7 @@ void kos_run_process_selftest(void)
 		return;
 	}
 
+#if KOS_PROCESS_SELFTEST
 	/* 1. The same ROMFS payload runs in bank 0 (lowest free bank) and
 	 *    exits with PASS|0; every run leaves the table clean. */
 	code = process_run_checked(KOS_PCST_EXETEST_NAME,
@@ -435,6 +441,9 @@ void kos_run_process_selftest(void)
 		}
 	}
 
+#endif /* KOS_PROCESS_SELFTEST */
+
+#if KOS_EXE2_SELFTEST
 	/* 8. EXE v2 loader outcomes.  The v2 loader
 	 *    zeroes only BSS and the startup block (4.8), places DATA
 	 *    segments as process-owned extended-memory objects and handles
@@ -572,6 +581,8 @@ void kos_run_process_selftest(void)
 		}
 	}
 
+#endif /* KOS_EXE2_SELFTEST */
+
 	process_selftest_result = KOS_PCST_OK;
 	{
 		static const char ok[] = "process selftest: OK\r\n";
@@ -582,7 +593,5 @@ void kos_run_process_selftest(void)
 		}
 	}
 }
-#endif /* KOS_SUBSYS_SELFTEST */
 
-
-#endif /* KOS_SUBSYS_SELFTEST */
+#endif /* KOS_PROCESS_SELFTEST || KOS_EXE2_SELFTEST */

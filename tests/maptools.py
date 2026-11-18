@@ -55,17 +55,12 @@ def layout_context(layout_inc, irq_inc):
             setattr(mapcheck, name, value)
 
 PLATFORM_DIR = os.path.join(ROOT, "platform", "zephyr80")
-TARGET_TEST_INC = os.path.join(ROOT, "tests", "target", "include")
 HARDWARE_H = os.path.join(PLATFORM_DIR, "public", "hardware.h")
 HARDWARE_INC = os.path.join(PLATFORM_DIR, "public", "hardware.inc")
 MEMORY_H = os.path.join(PLATFORM_DIR, "private", "memory.h")
 MEMORY_INC = os.path.join(PLATFORM_DIR, "private", "memory.inc")
 IRQ_H = os.path.join(PLATFORM_DIR, "private", "irq.h")
 IRQ_INC = os.path.join(PLATFORM_DIR, "private", "irq.inc")
-SELFTEST_H = os.path.join(TARGET_TEST_INC, "selftest.h")
-SELFTEST_INC = os.path.join(TARGET_TEST_INC, "selftest.inc")
-IRQ_SELFTEST_H = os.path.join(TARGET_TEST_INC, "irq_selftest.h")
-IRQ_SELFTEST_INC = os.path.join(TARGET_TEST_INC, "irq_selftest.inc")
 
 REQUIRED_HARDWARE_CONSTANTS = (
     "KOS_MEMCTL_PORT",

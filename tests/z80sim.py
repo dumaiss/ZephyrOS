@@ -4249,47 +4249,6 @@ class Z80:
             raise SystemExit("sim: unsupported %02X %02X" % (op, op2))
 
 
-class Ctc0Injector:
-    """Host stand-in for the Z80-CTC0 counter (test helper).
-
-    The simulator models no timer, so acceptance replays that include the
-    interrupt-executive group inject the deliveries themselves: while the
-    position-independent smoke caller (mode 10, copied into the caller
-    window) or the mode-11 helper opens an interrupt window with the
-    simulator-only arming cell at FFh, one IM2 interrupt at vector 00h is
-    injected.  Call `watch(cpu)` once per instruction; the cell is the
-    kernel's `_irq_active_source`, which the test assembly arms.
-    """
-
-    def __init__(self, syms, caller_base=0x1000, vector=0x00):
-        self.blob_start = syms["kos_irq_test_blob_start"]
-        self.blob_end = syms["kos_irq_test_blob_end"]
-        self.helper_start = syms["_kos_irq_test_mode11"]
-        self.helper_end = syms["kos_irq_test_mode11_end"]
-        self.source_cell = syms["_irq_active_source"]
-        self.caller_base = caller_base
-        self.vector = vector
-        self.armed = False
-        self.pending = 0
-
-    def __call__(self, cpu):
-        op = cpu.rd(cpu.pc)
-        in_blob = (self.caller_base <= cpu.pc
-                   < self.caller_base + (self.blob_end - self.blob_start))
-        in_helper = self.helper_start <= cpu.pc < self.helper_end
-        if (in_blob or in_helper) and op == 0xFB:  # EI
-            self.pending = 2
-        if self.armed and cpu.iff1 and not cpu.int_pending:
-            if cpu.rd(self.source_cell) == 0xFF:
-                cpu.assert_int(self.vector)
-        if self.pending > 0:
-            self.pending -= 1
-            if self.pending == 0:
-                self.armed = True
-        elif (in_blob or in_helper) and op == 0xF3 and not cpu.halted:
-            self.armed = False
-
-
 # The nucleus mapping (mode 11, page field zero) the serial connect delay
 # is written for; see skip_serial_connect_delay().
 SERIAL_CONNECT_DELAY_LATCH = 0x18
@@ -4358,56 +4317,3 @@ def read_symbols(map_path):
             if m:
                 syms[m.group(2)] = int(m.group(1), 16)
     return syms
-
-
-def main():
-    img_path = sys.argv[1]
-    with open(img_path, "rb") as handle:
-        img = handle.read()
-    page0, page1 = img[:0x10000], img[0x10000:]
-    z = Z80(page0, page1)
-    syms = read_symbols(img_path.replace("konaos-selftest.bin", "konaos.map"))
-
-    # Locate the driver's `call _kos_selftest_run` to find the return site.
-    run = syms["_kos_selftest_run"]
-    driver = syms["_kos_run_syscall_selftest"]
-    code = bytes(page1[a] if a >= 0x2000 and a < 0xE000 else page0[a] for a in range(driver, driver + 0x80))
-    call_bytes = bytes([0xCD, run & 0xFF, (run >> 8) & 0xFF])
-    ret_site = driver + code.index(call_bytes) + 3
-
-    bank = int(sys.argv[3]) if len(sys.argv) > 3 else 0
-    # Boot state: bank 0 populated from page 0, bank 7 from page 1,
-    # mode 11 over bank 0, kernel stack in common.
-    z.latch = 0x18
-    z.sp = 0xFEFE
-    z.pc = run
-    z.a = bank
-    z.push16(ret_site)
-    z.sp = 0xFEFC
-
-    trace = len(sys.argv) > 2 and sys.argv[2] == "trace"
-    limit = 2000000
-    steps = 0
-    while steps < limit:
-        steps += 1
-        if trace and steps < 600:
-            print("%6d PC=%04X SP=%04X A=%02X BC=%02X%02X DE=%02X%02X IX=%04X IY=%04X"
-                  " latch=%02X" % (steps, z.pc, z.sp, z.a, z.b, z.c, z.d, z.e, z.ix, z.iy, z.latch))
-        z.step()
-        if z.halted:
-            print("sim: HALT at step %d, PC=%04X" % (steps, z.pc))
-            break
-        if z.pc == ret_site:
-            print("sim: returned to driver at step %d" % steps)
-            print("sim: result=%02X bank=%02X sp=%04X"
-                  % (z.bank0[syms["_kos_selftest_result"]], z.bank0[syms["_kos_selftest_bank"]], z.sp))
-            break
-        if z.pc > 0x10000 or steps > limit:
-            print("sim: runaway at step %d, PC=%04X" % (steps, z.pc))
-            break
-    else:
-        print("sim: step limit reached, PC=%04X" % z.pc)
-
-
-if __name__ == "__main__":
-    main()

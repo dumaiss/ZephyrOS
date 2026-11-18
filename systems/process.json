@@ -1,6 +1,6 @@
 {
   "schema": "kos-system-1",
-  "name": "nucleus",
+  "name": "process",
   "drivers": [
     "sio",
     "console-serial"
@@ -8,12 +8,8 @@
   "boot": "/system/monitor.exe",
   "after_exit": "monitor",
   "store": [
-    "crosspage.bin",
     "monitor.exe",
     "exetest.exe",
-    "exe2probe.exe",
-    "exe2seg.exe",
-    "exe2big.exe",
     "exe-return.exe",
     "exe-bad-magic.exe",
     "exe-bad-format.exe",
@@ -42,6 +38,6 @@
     "exe-seg-flags.exe"
   ],
   "cflags": [
-    "-DKOS_NUCLEUS_SELFTEST=1"
+    "-DKOS_PROCESS_SELFTEST=1"
   ]
 }

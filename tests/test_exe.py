@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Host-side EXE v2 tooling tests for the subsystem acceptance image.
+"""Host-side EXE v2 tooling tests for the process and exe2 acceptance
+images.
 
 Coverage:
 
 * constant parity: tools/exepack.py format constants, segment constants
   and result codes are value-identical with formats/include/exe.h;
 * one malformed fixture per validation boundary rejects with the exact
-  boundary code, and the fixture set matches the subsystem ROMFS
-  acceptance manifest (names, media types, control files);
+  boundary code, and the fixture set matches the process and exe2 ROMFS
+  acceptance manifests (names, media types, control files);
 * packing a synthetic linked program honors the manifest, rejects
   content outside the declared image, entry/BSS/scratch/geometry drift,
   and produces byte- and report-identical output on repeat runs;
@@ -19,7 +20,7 @@ Coverage:
   8000h and fit the 16 KiB aperture, and the 7.2 rule keeps the primary
   image, BSS and stack outside 8000h-BFFFh;
 * the real exetest/outcome artifacts: the packed containers validate,
-  their reports match the bytes, the subsystem acceptance ROMFS stores
+  their reports match the bytes, the acceptance ROMFS stores
   identical payloads, and the generated layout header matches the
   containers;
 * mapcheck's process/EXE placement rules (common gates/state, bank-7
@@ -52,9 +53,8 @@ from maptools import evaluate, make_map, parse_c_header  # noqa: E402
 EXE_H = os.path.join(ROOT, "formats", "include", "exe.h")
 EXETEST_JSON = os.path.join(ROOT, "build", "user", "exetest",
                              "exetest.json")
-SUBSYS_EXETEST_JSON = os.path.join(ROOT, "build-subsys-selftest", "user",
-                                    "exetest", "exetest.json")
-SUBSYS_SYSTEM = os.path.join(ROOT, "systems", "subsystem.json")
+PROCESS_SYSTEM = os.path.join(ROOT, "systems", "process.json")
+EXE2_SYSTEM = os.path.join(ROOT, "systems", "exe2.json")
 EXEPACK = os.path.join(ROOT, "tools", "exepack.py")
 
 
@@ -119,24 +119,27 @@ class TestFixtureBoundaries(unittest.TestCase):
                          [f["data"] for f in second])
 
     def test_fixture_set_matches_the_system_file(self):
-        system = json.loads(open(SUBSYS_SYSTEM).read())
+        system = json.loads(open(PROCESS_SYSTEM).read())
         store = system["store"]
+        v2 = json.loads(open(EXE2_SYSTEM).read())["store"]
         for fixture in gen_fixtures.build_fixtures():
             self.assertIn(fixture["name"], store,
-                          "%s missing from systems/subsystem.json"
+                          "%s missing from systems/process.json"
                           % fixture["name"])
         # Media types follow from the names (tools/systemgen.py's
         # store_type): the malformed/return EXE files are EXE, the
         # wrong-type control is packed as DATA.
         self.assertEqual(systemgen.store_type("exe-wrong-type.dat"), "DATA")
         for name in ("exetest.exe", "exe-return.exe", "exe-bad-magic.exe",
-                     "exe-seg-kind.exe", "exe2probe.exe", "exe2seg.exe",
-                     "exe2big.exe"):
+                     "exe-seg-kind.exe"):
             self.assertEqual(systemgen.store_type(name), "EXE", name)
             self.assertIn(name, store, name)
+        for name in ("exe2probe.exe", "exe2seg.exe", "exe2big.exe"):
+            self.assertEqual(systemgen.store_type(name), "EXE", name)
+            self.assertIn(name, v2, name)
         self.assertIn("sio", system["drivers"])
         # The corrupt-entry rollback needs no separate failure image: the
-        # subsystem store carries the truncated fixture
+        # process store carries the truncated fixture
         # next to the valid exetest.exe, so the process selftest rolls
         # the bad load back and still runs the valid copy in one boot.
         self.assertEqual(systemgen.store_type("exe-truncated.exe"), "EXE")
@@ -782,21 +785,21 @@ class TestSubsystemArtifacts(unittest.TestCase):
         self.assertGreater(len(big), 0x10000)
 
     def test_generated_expect_header_matches_the_containers(self):
-        _p, text = self._read("build-subsys-selftest/process_expect.inc")
+        _p, text = self._read("build-exe2-selftest/process_expect.inc")
         lines = text.decode("ascii")
-        _p, probe = self._read("build-subsys-selftest/user/exe2probe.exe")
+        _p, probe = self._read("build-exe2-selftest/user/exe2probe.exe")
         fields, _geo = exepack.validate_image(probe)
         self.assertIn("#define EXE2_PROBE_IMAGE_SIZE 0x%04Xu"
                       % fields["image_size"], lines)
         self.assertIn("#define EXE2_PROBE_BSS_START  0x%04Xu"
                       % (exepack.LOAD_BASE + fields["image_size"]), lines)
-        _p, seg = self._read("build-subsys-selftest/user/exe2seg.exe")
+        _p, seg = self._read("build-exe2-selftest/user/exe2seg.exe")
         fields, _geo = exepack.validate_image(seg)
         self.assertIn("#define EXE2_SEG_SEG1_IMAGE 0x%04Xu" % 1024, lines)
         self.assertIn("#define EXE2_SEG_SEG1_BSS   0x%04Xu" % 64, lines)
 
     def test_acceptance_romfs_carries_the_same_exetest_bytes(self):
-        _p, stream = self._read("build-subsys-selftest/recovery.romfs")
+        _p, stream = self._read("build-process-selftest/recovery.romfs")
         _h, entries = romfspack.parse_image(stream)
         names = {entry["name"]: entry for entry in entries}
         _p, data = self._read("build/modules/exetest.exe")
@@ -804,67 +807,71 @@ class TestSubsystemArtifacts(unittest.TestCase):
         self.assertEqual(names["exetest.exe"]["flags"], romfspack.FLAG_EXE)
         # Every malformed fixture and outcome program is present with its
         # generated bytes.
-        outdir = os.path.join(ROOT, "build-subsys-selftest", "modules")
+        outdir = os.path.join(ROOT, "build-process-selftest", "modules")
         for fixture in gen_fixtures.build_fixtures():
             path = os.path.join(outdir, fixture["name"])
             if not os.path.exists(path):
                 continue
             self.assertEqual(names[fixture["name"]]["payload"],
                              open(path, "rb").read())
+        _p, stream = self._read("build-exe2-selftest/recovery.romfs")
+        _h, entries = romfspack.parse_image(stream)
+        names = {entry["name"]: entry for entry in entries}
         for name in ("exe2probe.exe", "exe2seg.exe", "exe2big.exe"):
-            path = os.path.join(ROOT, "build-subsys-selftest", "user", name)
+            path = os.path.join(ROOT, "build-exe2-selftest", "user", name)
             self.assertEqual(names[name]["payload"],
                              open(path, "rb").read())
 
     def test_recovery_store_carries_the_corrupt_entry_fixture(self):
-        # The subsystem image packs the truncated fixture beside the
+        # The process image packs the truncated fixture beside the
         # valid copy, so one boot proves
         # the corrupt-entry rollback and the valid re-run.
-        _p, stream = self._read("build-subsys-selftest/recovery.romfs")
+        _p, stream = self._read("build-process-selftest/recovery.romfs")
         _h, entries = romfspack.parse_image(stream)
         names = {entry["name"]: entry for entry in entries}
         _p, valid = self._read("build/modules/exetest.exe")
         _q, truncated = self._read(
-            "build-subsys-selftest/modules/exe-truncated.exe")
+            "build-process-selftest/modules/exe-truncated.exe")
         self.assertEqual(names["exetest.exe"]["payload"], valid)
         self.assertEqual(names["exe-truncated.exe"]["payload"], truncated)
 
     def test_images_contain_the_acceptance_markers(self):
-        _p, image = self._read("build-subsys-selftest/"
-                               "konaos-subsys-selftest.bin")
-        for marker in (b"syscall selftest: OK\r\n",
-                       b"irq selftest: OK\r\n",
-                       b"romfs selftest: OK\r\n",
-                       b"process selftest: OK\r\n",
+        _p, image = self._read("build-process-selftest/"
+                               "konaos-process-selftest.bin")
+        for marker in (b"process selftest: OK\r\n",
                        b"exetest: OK\r\n",
                        b"process selftest: two-bank OK\r\n",
+                       b"process selftest: corrupt entry rolled back\r\n"):
+            self.assertIn(marker, image)
+        _p, image = self._read("build-exe2-selftest/"
+                               "konaos-exe2-selftest.bin")
+        for marker in (b"process selftest: OK\r\n",
                        b"process selftest: exe2 BSS/bank OK\r\n",
                        b"process selftest: exe2 segment OK\r\n",
                        b"process selftest: exe2 big container OK\r\n",
                        b"process selftest: exe2 rollback OK\r\n"):
             self.assertIn(marker, image)
-        # The corrupt-entry rollback runs in the same image.
-        self.assertIn(b"process selftest: corrupt entry rolled back\r\n",
-                      image)
 
     def test_serial_smoke_expectations_exist_verbatim(self):
         import serial_smoke
-        _p, image = self._read("build-subsys-selftest/"
-                               "konaos-subsys-selftest.bin")
-        for const in (b"KonaOS 0.0\r\n", b"platform: Zephyr-80\r\n",
-                      b"kernel entry: OK\r\n", b"serial: OK\r\n",
-                      serial_smoke.CONSOLE_DRIVER_OK,
-                      serial_smoke.SUBSYS_SYSCALL_OK,
-                      serial_smoke.SUBSYS_IRQ_OK,
-                      serial_smoke.SUBSYS_ROMFS_OK,
-                      serial_smoke.SUBSYS_PROCESS_OK,
-                      serial_smoke.SUBSYS_FAIL,
-                      serial_smoke.SUBSYS_PROMPT,
-                      serial_smoke.SUBSYS_EXIT):
-            self.assertIn(const, image,
-                          "serial_smoke expectation %r is not in the "
-                          "subsystem image" % const)
-
+        # The launcher's exit line is composed at run time; the replays
+        # (tests/test_subsys_sim.py, test_process_sim.py) check it.
+        for mode, image_path in (
+                ("subsystem", "build-subsys-selftest/"
+                              "konaos-subsys-selftest.bin"),
+                ("process", "build-process-selftest/"
+                            "konaos-process-selftest.bin"),
+                ("exe2", "build-exe2-selftest/konaos-exe2-selftest.bin")):
+            _p, image = self._read(image_path)
+            for const in ((b"KonaOS 0.0\r\n", b"platform: Zephyr-80\r\n",
+                           b"kernel entry: OK\r\n", b"serial: OK\r\n",
+                           serial_smoke.CONSOLE_DRIVER_OK,
+                           serial_smoke.SUBSYS_FAIL,
+                           serial_smoke.SUBSYS_PROMPT) +
+                          serial_smoke.SUBSYS_GROUPS[mode]):
+                self.assertIn(const, image,
+                              "serial_smoke expectation %r is not in the "
+                              "%s image" % (const, mode))
 
 if __name__ == "__main__":
     unittest.main()

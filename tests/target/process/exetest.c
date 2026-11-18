@@ -1,7 +1,7 @@
 /* KonaOS process acceptance program: exetest.
  *
  * Built as tests/subsys/exetest.exe (user/sdk/src/crt0.asm
- * + this file + user/sdk/src/console.asm), stored in the subsystem
+ * + this file + user/sdk/src/console.asm), stored in the process
  * recovery image, and executed by the kernel as the child of the process
  * acceptance test.  It verifies, on target and in the host replay:
  *

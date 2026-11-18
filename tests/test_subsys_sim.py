@@ -7,25 +7,14 @@ Coverage (all executing the real linked bytes, on the current boot path):
 * the machine boots the production path -- `vfs_init()`, the SIO and
   console driver images placed from the ROMFS recovery store by
   `driver_load_all` -- and the console driver binds before the
-  acceptance hooks run;
-* the early hook runs the syscall gate and the interrupt executive
-  selftests: `syscall selftest: OK` and `irq selftest: OK`;
-* the late hook runs the ROMFS-reader and process/EXE selftests:
-  `romfs selftest: OK` and `process selftest: OK`;
-* every target result word is zero (no FAIL marker): the assembly-owned
-  status words live in the common window, the C-owned ones in bank-7
-  data;
-* the interrupt-executive replay injects one CTC0 interrupt (IM2 vector
-  00h) per arming window the smoke caller opens, so the IRQ group is exercised rather than
-  merely linked;
+  acceptance hook runs;
+* the late hook runs the ROMFS-reader selftest: `romfs selftest: OK`
+  (the process/EXE lifecycle has its own images, tests/test_process_sim.py);
+* the target result word is zero (no FAIL marker);
 * the launcher then runs the recovery-store monitor as the boot program
-  through the same process path; the scripted session ends with the
+  through the process path; the scripted session ends with the
   launcher's `boot: /system/monitor.exe exit 0` line and the monitor
-  starts again (a second banner and prompt), exactly as the subsystem
-  acceptance records.
-
-The nucleus-layout group stays its own image: its
-common-memory state cannot fit the subsystem image's ledger.
+  starts again (a second banner and prompt).
 
 Skipped when the subsystem image has not been built.
 """
@@ -42,12 +31,8 @@ from replay import Replay  # noqa: E402
 
 STEP_LIMIT = 400000000
 
-# Acceptance markers, in boot order.  The early hook runs before the boot
-# module load, so the syscall/IRQ lines precede the console-binding line.
-SYSCALL_OK = "syscall selftest: OK"
-IRQ_OK = "irq selftest: OK"
+# Acceptance markers, in boot order.
 ROMFS_OK = "romfs selftest: OK"
-PROCESS_OK = "process selftest: OK"
 BOOT_EXIT = "boot: /system/monitor.exe exit 0"
 MONITOR_BANNER = "KonaOS native monitor"
 MONITOR_PROMPT = "Z80> "
@@ -58,10 +43,7 @@ FAIL_MARKER = b"FAIL"
 # Target result words: the acceptance tests publish one byte each; a
 # non-zero value is a precise failure code.
 RESULT_SYMBOLS = (
-    "_kos_selftest_result",       # syscall gate (common window)
-    "_kos_irq_test_result",       # interrupt executive (common window)
     "_romfs_selftest_result",     # ROMFS reader (bank-7 data)
-    "_process_selftest_result",   # process/EXE lifecycle (bank-7 data)
 )
 
 
@@ -72,19 +54,11 @@ class SubsystemSimBase(Replay, unittest.TestCase):
     def setUp(self):
         self.load_image()
         self.entries = self.romfs_entries()
-        self.watch = None
-
-    def start_kernel(self, z, host_sync=b"", ctc0=False):
-        super().start_kernel(z, host_sync, ctc0)
-        self.watch = self.injector(z)
-        return z
 
     def run_to(self, z, marker, limit=STEP_LIMIT, since=0):
         """Step until `marker` (bytes or str) appears in the serial
-        output, with the host CTC0 injector armed until `run_to` is
-        called with `watch=None`."""
-        return self.run_until(z, [marker], limit=limit, since=since,
-                              on_step=self.watch if self.watch else None)
+        output."""
+        return self.run_until(z, [marker], limit=limit, since=since)
 
 
 class TestSubsystemBoot(SubsystemSimBase):
@@ -102,22 +76,14 @@ class TestSubsystemBoot(SubsystemSimBase):
         cls.entries = base.entries
         z = base.make_cpu()
         base.start_kernel(z)
-        # Early hook: syscall gate, then the interrupt executive with the
-        # host standing in for CTC0.  The injector is disabled as soon as
-        # the IRQ group reports, so no later group can be disturbed.
-        base.run_to(z, SYSCALL_OK)
-        base.run_to(z, "irq selftest: ")
-        base.watch = None
         base.run_to(z, CONSOLE_BOUND)
         base.run_to(z, ROMFS_OK)
-        base.run_to(z, PROCESS_OK)
         cls.boot_base = base
         cls.z = z
         cls.out = bytes(z.sio_tx)
 
     def test_acceptance_groups_pass_on_the_current_boot_path(self):
-        for marker in (SYSCALL_OK, IRQ_OK, CONSOLE_BOUND, ROMFS_OK,
-                       PROCESS_OK):
+        for marker in (CONSOLE_BOUND, ROMFS_OK):
             self.assertIn(marker.encode("ascii"), self.out)
         self.assertNotIn(FAIL_MARKER, self.out)
 
@@ -152,10 +118,7 @@ class TestSubsystemBoot(SubsystemSimBase):
 class TestSubsystemManifest(SubsystemSimBase):
     def test_manifest_carries_the_current_boot_set_and_fixtures(self):
         for name in ("sio.mod", "console-serial.mod", "drivers.man",
-                     "monitor.exe", "crosspage.bin",
-                     "exetest.exe", "exe-return.exe", "exe-truncated.exe",
-                     "exe-wrong-type.dat",
-                     "exe2probe.exe", "exe2seg.exe", "exe2big.exe"):
+                     "monitor.exe", "crosspage.bin"):
             self.assertIn(name, self.entries)
 
 

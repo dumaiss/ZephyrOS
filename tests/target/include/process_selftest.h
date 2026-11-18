@@ -45,7 +45,7 @@
 
 /* --- EXE v2 loader-outcome programs ----------------
  *
- * Three SDK programs in the subsystem store that exercise the loader
+ * Three SDK programs in the process store that exercise the loader
  * outcomes the v2 contract names: the primary BSS is zeroed after the
  * whole-bank clear was removed, the bank outside image/BSS/stack is NOT
  * cleared, a DATA segment's contents and BSS are placed correctly, and a
@@ -100,7 +100,7 @@
 #define KOS_PCST_BIG2_MUL   13u
 #define KOS_PCST_BIG2_ADD   0x5Bu
 
-/* Acceptance-store names (systems/subsystem.json). */
+/* Acceptance-store names (systems/process.json). */
 #define KOS_PCST_EXETEST_NAME "exetest.exe"
 #define KOS_PCST_RETURN_NAME  "exe-return.exe"
 /* A deliberately corrupted container and the untouched valid copy:
@@ -117,7 +117,7 @@ struct exe_fixture_desc {
 	int code;         /* exact process_exec result */
 };
 
-#if KOS_SUBSYS_SELFTEST
+#if KOS_PROCESS_SELFTEST || KOS_EXE2_SELFTEST
 void kos_run_process_selftest(void);
 #endif
 

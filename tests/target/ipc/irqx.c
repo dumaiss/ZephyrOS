@@ -43,8 +43,7 @@ static uint8_t irqx_buffer[IRQX_COPY_BYTES];
 static uint16_t irqx_buffer_address;
 
 /* The test-owned CTC0 programming sequence (vector base, control word,
- * time constant) and its reset, mirroring tests/target/support/ctc_test.c.
- * A real timer driver would own this programming; here it is the
+ * time constant) and its reset.  A real timer driver would own this programming; here it is the
  * synthetic IRQ source the suite needs. */
 static __sfr __at KOS_CTC0_PORT ipc_ctc0;
 

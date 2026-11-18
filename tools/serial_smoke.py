@@ -8,13 +8,13 @@ captures output with a bounded timeout, and verifies the expected output:
                      console-driver line, the monitor banner and its
                      prompt (optional-module diagnostics tolerated)
     --mode subsystem  the subsystem acceptance image: the banner, the
-                     console-driver line, the four mechanism groups
-                     (`syscall selftest: OK`, `irq selftest: OK`,
-                     `romfs selftest: OK`, `process selftest: OK`) and
-                     no FAIL/PANIC marker, then the interactive monitor
+    --mode process    console-driver line, the image's mechanism group
+    --mode exe2       (`romfs selftest: OK`; `process selftest: OK`; the
+                     EXE v2 outcomes and `process selftest: OK`) and no
+                     FAIL/PANIC marker, then the interactive monitor
                      step: when `Z80> ` appears the tool sends `Q` over
-                     the link and the mode finishes on `monitor: exit
-                     status 0x`.  The boot log is printed once, so start
+                     the link and the mode finishes on the launcher's
+                     exit line.  The boot log is printed once, so start
                      this tool first and reset the board.
     --mode console-serial  the console-serial variant image: the
                      production driver set with the SERIAL
@@ -60,7 +60,7 @@ before they print anything, so those modes send that sequence once the
 port is open and repeat it until the first byte arrives.
 
 Usage:
-    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|subsystem|console-serial|fs|hwtest|shell]
+    serial_smoke.py --port /dev/ttyUSB0 [--mode normal|subsystem|process|exe2|console-serial|fs|hwtest|shell]
                    [--baud 115200] [--timeout 15]
 
 Exit status: 0 success, 1 output mismatch/incomplete, 2 device unavailable.
@@ -80,16 +80,20 @@ BANNER = (
 )
 CONSOLE_DRIVER_OK = b"console: driver OK\r\n"
 
-# --- subsystem acceptance image ---------------------------------------------
-# The subsystem image exercises every retained mechanism group on the
-# current VFS/ROMFS boot path in one pass.  The transcript constants are
-# the group markers the target code prints; the process markers are
-# emitted by tests/target/process/ (process_test.c and the exetest EXE
-# program it runs).
-SUBSYS_SYSCALL_OK = b"syscall selftest: OK\r\n"
-SUBSYS_IRQ_OK = b"irq selftest: OK\r\n"
+# --- subsystem, process and exe2 acceptance images --------------------------
+# Each image exercises its mechanism group on the current VFS/ROMFS boot
+# path.  The transcript constants are the group markers the target code
+# prints; the process markers are emitted by tests/target/process/
+# (process_test.c and the programs it runs).
 SUBSYS_ROMFS_OK = b"romfs selftest: OK\r\n"
 SUBSYS_PROCESS_OK = b"process selftest: OK\r\n"
+SUBSYS_EXE2_OK = b"process selftest: exe v2 outcomes OK\r\n"
+# Each mode's group markers.
+SUBSYS_GROUPS = {
+    "subsystem": (SUBSYS_ROMFS_OK,),
+    "process": (SUBSYS_PROCESS_OK,),
+    "exe2": (SUBSYS_EXE2_OK, SUBSYS_PROCESS_OK),
+}
 SUBSYS_FAIL = b"selftest: FAIL"
 SUBSYS_PROMPT = b"Z80> "
 MONITOR_BANNER = b"KonaOS native monitor"
@@ -167,23 +171,22 @@ def _production_result(data, quiet_elapsed):
 IOC_HOST_SYNC = b"\xaa\x55"
 
 
-def _subsys_result(data):
-    """True when the subsystem image's serial sections completed: the
-    banner, the console-driver line and the four mechanism-group
-    markers, with no FAIL/PANIC marker anywhere in the transcript."""
+def _subsys_result(data, mode):
+    """True when the acceptance image's serial sections completed: the
+    banner, the console-driver line and the mode's group markers, with no
+    FAIL/PANIC marker anywhere in the transcript."""
     if SUBSYS_FAIL in data or b"PANIC" in data:
         return False
-    for needle in (BANNER, CONSOLE_DRIVER_OK, SUBSYS_SYSCALL_OK,
-                   SUBSYS_IRQ_OK, SUBSYS_ROMFS_OK, SUBSYS_PROCESS_OK):
+    for needle in (BANNER, CONSOLE_DRIVER_OK) + SUBSYS_GROUPS[mode]:
         if needle not in data:
             return False
     return True
 
 
-def _subsys_complete(data):
+def _subsys_complete(data, mode):
     """The serial portion plus the interactive monitor step: the mode
     sends `Q` at the prompt and waits for the launcher's exit line."""
-    return _subsys_result(data) and SUBSYS_EXIT in data
+    return _subsys_result(data, mode) and SUBSYS_EXIT in data
 
 
 
@@ -524,6 +527,7 @@ def main(argv):
         "--baud", type=int, default=int(os.environ.get("KOS_SERIAL_BAUD", "115200"))
     )
     parser.add_argument("--mode", choices=("normal", "subsystem",
+                                           "process", "exe2",
                                            "console-serial",
                                            "fs", "hwtest", "shell"),
                         default="normal")
@@ -581,12 +585,12 @@ def main(argv):
 
     print("serial_smoke: listening on %s at %d 8N1 (mode=%s, timeout=%gs)"
           % (args.port, args.baud, args.mode, args.timeout))
-    if args.mode == "subsystem":
-        print("serial_smoke: mode subsystem checks the boot log and the "
+    if args.mode in SUBSYS_GROUPS:
+        print("serial_smoke: mode %s checks the boot log and the "
               "interactive monitor step; power-cycle the board or press "
               "RESET now so the boot is captured; the tool sends Q once "
               "the Z80> prompt appears and finishes on the launcher's "
-              "exit line")
+              "exit line" % args.mode)
     if args.mode == "console-serial":
         print("serial_smoke: mode console-serial checks the console-serial "
               "variant boot log; power-cycle the board or press RESET now "
@@ -677,7 +681,7 @@ def main(argv):
                 continue
             if chunk:
                 data += chunk
-                if args.mode == "subsystem":
+                if args.mode in SUBSYS_GROUPS:
                     # The monitor step is interactive: send Q once the
                     # prompt appears, then finish on the exit line (the
                     # launcher relaunches the monitor after a normal exit,
@@ -687,7 +691,7 @@ def main(argv):
                         link.flush()
                         rx_byte_sent = True
                         print("serial_smoke: sent Q at the monitor prompt")
-                    if _subsys_complete(data):
+                    if _subsys_complete(data, args.mode):
                         break
                 elif args.mode == "fs":
                     # Read past the verdict: the monitor prompt is part of
@@ -783,11 +787,12 @@ def main(argv):
             print("serial_smoke: operator step: confirm on the V9958 the "
                   "monitor banner, the status line and the 'Z80>' prompt, "
                   "then type a key")
-    elif args.mode == "subsystem":
-        ok = _subsys_complete(data)
-        expected = ("the banner, the console-driver line, the four "
-                    "mechanism groups (syscall/irq/romfs/process "
-                    "selftest: OK) with no FAIL/PANIC marker, and one "
+    elif args.mode in SUBSYS_GROUPS:
+        ok = _subsys_complete(data, args.mode)
+        expected = ("the banner, the console-driver line, the image's "
+                    "group markers (%s) with no FAIL/PANIC marker, and one "
+                    % b", ".join(m.strip() for m in
+                                 SUBSYS_GROUPS[args.mode]).decode() +
                     "interactive monitor step ending on the launcher's "
                     "'boot: /system/monitor.exe exit 0' line")
     elif args.mode == "fs":
@@ -864,14 +869,14 @@ def _explain_wrong_image(mode, data):
     --mode otherwise fails with an unexplained timeout on the wrong
     transcript.
     """
-    if mode == "subsystem":
+    if mode in SUBSYS_GROUPS:
         if not BANNER in data:
             print("serial_smoke: hint: no boot log was captured.  The "
                   "boot lines (banner and group markers) print once at "
                   "boot; start this tool first, then power-cycle the "
                   "board or press RESET while it waits, and rerun",
                   file=sys.stderr)
-        elif not _subsys_result(data):
+        elif not _subsys_result(data, mode):
             print("serial_smoke: hint: the captured boot log is "
                   "incomplete (one or more mechanism groups did not "
                   "report OK); the capture may have started mid-boot or "

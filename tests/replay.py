@@ -29,7 +29,7 @@ if os.path.join(ROOT, "tools") not in sys.path:
 
 import fontpack  # noqa: E402
 import romfspack  # noqa: E402
-from z80sim import (Ctc, Ctc0Injector, IocCommandPeer, V9958Peer,  # noqa: E402
+from z80sim import (Ctc, IocCommandPeer, V9958Peer,  # noqa: E402
                     SERIAL_CONNECT_DELAY_LATCH, StopSet, Z80, read_symbols,
                     skip_serial_connect_delay)
 
@@ -259,16 +259,13 @@ class Replay:
             return
         raise AssertionError("C runtime init did not return")
 
-    def start_kernel(self, z, host_sync=b"", ctc0=False):
+    def start_kernel(self, z, host_sync=b""):
         """Run the C runtime entry, then start `_kernel_main`.
-        `host_sync` preloads the serial input the smoke images wait for;
-        `ctc0` arms the host CTC0 injector (see `injector`)."""
+        `host_sync` preloads the serial input the smoke images wait for."""
         self.crt0(z)
         z.push16(RET)
         if host_sync:
             z.sio_rx.extend(host_sync)
-        if ctc0:
-            z.wr(self.syms["_irq_active_source"], 0x00)
         z.pc = self.syms["_kernel_main"]
         return z
 
@@ -276,13 +273,6 @@ class Replay:
         """Call the attached input driver for this step, if any."""
         if self.input_driver is not None:
             self.input_driver(z)
-
-    def injector(self, z):
-        """Host stand-in for CTC0 (the simulator models no timer): arm
-        the kernel's source cell, then call the returned injector once
-        per step."""
-        z.wr(self.syms["_irq_active_source"], 0x00)
-        return Ctc0Injector(self.syms)
 
     def run_until(self, z, stops=(), limit=STEP_LIMIT, on_step=None,
                   since=0, halt_ok=False, panic=b"PANIC"):

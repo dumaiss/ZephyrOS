@@ -323,8 +323,8 @@ reservation, the child's CWD slot, every descriptor it opened and every
 segment object it created, and closes the source before returning the
 result code, so a rejected program leaves the process table, the bank
 allocator, the object table, the caller bank, and the parent context
-unchanged (the subsystem image's loader-outcome programs and the
-simulator tests check this).
+unchanged (the process and exe2 acceptance images' loader-outcome
+programs and the simulator tests check this).
 
 A child started by `SYS_EXEC` is a full ordinary process: a fresh
 application bank, its own page zero, its own extended-memory segments,

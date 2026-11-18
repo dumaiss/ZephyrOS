@@ -1,6 +1,6 @@
 /* KonaOS EXE v2 DATA-segment outcome program (test only).
  *
- * Run by the subsystem process selftest after it has dirtied the
+ * Run by the process selftest after it has dirtied the
  * auxiliary bank's BSS area.  The program proves the container's segment
  * wiring from inside the child:
  *

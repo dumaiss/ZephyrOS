@@ -165,21 +165,11 @@ class RomfsSimBase(Replay, unittest.TestCase):
 
         `stop_at` names a byte string in the serial transcript; the
         current boot path ends in the monitor's input loop rather than a
-        halt, so acceptance replays stop when their group reports.  The
-        interrupt-executive group needs the host to stand in for CTC0
-        (the simulator has no timer model), so the injector runs until
-        the caller's marker stops the replay."""
-        inject = self.injector(z)
-
-        def watch(cpu):
-            inject(cpu)
-            if on_step is not None:
-                on_step(cpu)
-
+        halt, so acceptance replays stop when their group reports."""
         self.start_kernel(z)
         if stop_at is None:
-            return self.run_until(z, (), on_step=watch)
-        return self.run_until(z, [stop_at], on_step=watch)
+            return self.run_until(z, (), on_step=on_step)
+        return self.run_until(z, [stop_at], on_step=on_step)
 
     def patch_rom(self, z, logical, data):
         """Overwrite logical ROMFS stream bytes in the simulated ROM."""
@@ -194,6 +184,10 @@ class RomfsSimBase(Replay, unittest.TestCase):
         return z.rom[page][logical % ROMFS_PAGE_WINDOW]
 
     def init_romfs(self, z):
+        # The boot's idle RT vector (kos_rt_boot): with the vector routed
+        # the reader refuses the ROM mode (architecture 4.12).
+        for i, byte in enumerate((0xC3, 0x0B, 0xEF, 0xED, 0x45)):
+            z.wr(0xEF08 + i, byte)
         z.push16(RET)
         z.pc = self.syms["_romfs_init"]
         for _ in range(STEP_LIMIT):
@@ -278,7 +272,7 @@ class TestSubsystemRomfsReplay(RomfsSimBase):
         z = self.make_cpu()
         watcher = RomWindowWatcher(self.syms["rom_access_sync"],
                                    self.syms["rom_access_sync_end"])
-        self.boot_kernel(z, on_step=watcher, stop_at=b"process selftest: OK")
+        self.boot_kernel(z, on_step=watcher, stop_at=b"romfs selftest: OK")
 
         tx = bytes(z.sio_tx)
         self.assertIn(b"KonaOS 0.0\r\n", tx)
@@ -304,8 +298,8 @@ class TestSubsystemRomfsReplay(RomfsSimBase):
         # Every observed window must be one of the configured recovery
         # pages, and the boot module's own pages must have been read
         # through the mapping transition (the module really came from
-        # ROM).  The acceptance groups deliberately touch further entries
-        # (fixtures and EXE programs), which is why the set is a superset.
+        # ROM).  The ROMFS group deliberately touches further entries (its
+        # cross-page fixture), which is why the set is a superset.
         configured = {page << 5
                       for page in range(ROMFS_FIRST_PAGE,
                                         ROMFS_FIRST_PAGE + 6)}
