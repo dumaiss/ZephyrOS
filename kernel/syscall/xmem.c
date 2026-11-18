@@ -34,6 +34,7 @@
 #include "kos/syscall.h"
 #include "kos/xmem.h"
 #include "kos/seg.h"
+#include "kernel/syscall/rt.h"
 #include "kos/errno.h"
 #include "platform.h"
 #include "process.h"
@@ -125,10 +126,7 @@ static uint8_t xmem_object_move(const struct xmem_object *obj, uint16_t addr,
 	req.addr = addr;
 	req.buffer = kos_user_copy_staging;
 	req.length = length;
-	if (addr >= XMEM_WINDOW_BASE) {
-		return kos_window_copy(&req);
-	}
-	return kos_bank_copy(&req);
+	return kos_aux_copy(&req);
 }
 
 /* A chunk that stays inside one copy region. */

@@ -14,6 +14,7 @@
  * VFS and the drivers and runs the boot launcher.  It does not return.
  */
 
+#include "kernel/syscall/rt.h"
 #include "kernel.h"
 #include "irq_types.h"
 #include "romfs.h"
@@ -486,6 +487,9 @@ void kernel_main(void)
 	 * this order is the warranty; the warm reboot stops the CTC channels
 	 * before it jumps to the reset vector (syscall_reboot). */
 	kos_event_init();
+	/* The real-time interrupt's vectors before anything can raise an
+	 * NMI that is ours to serve (4.12). */
+	kos_rt_boot();
 	irq_init();
 
 	early_console_puts("KonaOS 0.0\r\n");

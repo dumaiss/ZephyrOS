@@ -29,6 +29,7 @@
 #include "kos/protocol.h"
 
 #include "ioc_driver.h"
+#include "ioc_proto.h"
 
 /* The staged reply frame: TYPE, STATUS, LENGTH, DATA[26]. */
 static uint8_t ioc_reply_frame[KIOC_PROTOCOL_FRAME_SIZE];
@@ -48,7 +49,8 @@ static uint16_t ioc_phases_address;
  * pending; KIOC_OP_READY is the console-side composition probe. */
 static uint8_t ioc_link_ready;
 
-static int16_t ioc_driver_command(struct kos_ipc_frame *frame)
+
+int16_t ioc_driver_command(struct kos_ipc_frame *frame)
 {
 	struct ioc_request request;
 	/* The staged reply frame is the native frame's layout, so the
@@ -224,6 +226,10 @@ static int16_t ioc_driver_command_read(struct kos_ipc_frame *frame)
 	return (int16_t)length;
 }
 
+/* The RT clock's three operations (KIOC_OP_RT_CLOCK, KOS_OP_ACQUIRE,
+ * KOS_OP_RELEASE), in ioc_io.asm; anything else is -KOS_EINVAL. */
+extern int16_t ioc_driver_rt(struct kos_ipc_frame *frame);
+
 int16_t ioc_driver_dispatch(struct kos_ipc_frame *frame)
 {
 	switch (frame->op) {
@@ -242,7 +248,7 @@ int16_t ioc_driver_dispatch(struct kos_ipc_frame *frame)
 	case KIOC_OP_COMMAND_READ:
 		return ioc_driver_command_read(frame);
 	default:
-		return (int16_t)-KOS_EINVAL;
+		return ioc_driver_rt(frame);
 	}
 }
 

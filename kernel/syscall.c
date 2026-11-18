@@ -27,6 +27,9 @@
  * damaged by a failed operation.
  */
 
+#include "kos/rt.h"
+#include "memory.h"
+#include "kernel/syscall/rt.h"
 #include "kernel.h"
 #include "kos/syscall.h"
 #include "kos/ipc.h"
@@ -221,6 +224,12 @@ static void syscall_getinfo(uint16_t block)
  * never returns and no caller block is read. */
 static void syscall_reboot(void)
 {
+	/* The reset path runs the ROM mode, which serves no NMI: a program
+	 * holding the real-time interrupt must release it first. */
+	if (KOS_RT_ROUTED()) {
+		syscall_error(KOS_EBUSY);
+		return;
+	}
 	__asm__("di");
 	platform_ctc_quiesce_all();
 	platform_reboot_now();
@@ -365,6 +374,15 @@ void kernel_syscall_dispatch(void)
 		break;
 	case KOS_SYSCALL_DIAG_SYSTEM_INFO:
 		kos_diag_system_info(kos_syscall_args);
+		break;
+	case KOS_SYSCALL_RT_REGISTER:
+		kos_rt_register(kos_syscall_args);
+		break;
+	case KOS_SYSCALL_RT_RELEASE:
+		kos_rt_release();
+		break;
+	case KOS_SYSCALL_RT_INFO:
+		kos_rt_info(kos_syscall_args);
 		break;
 	default:
 		break;

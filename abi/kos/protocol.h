@@ -445,6 +445,23 @@
  *                            when no bulk phase was admitted, or a
  *                            negative KIOC_E*.
  *
+ *   KIOC_OP_RT_CLOCK    (7)  arg1 = rate in Hz (KOS_RT_RATE_MIN..
+ *                            KOS_RT_RATE_MAX, abi/kos/rt.h), or 0 to
+ *                            stop; arg0 = the lane gap in microseconds,
+ *                            0 for KIOC_RT_GAP_US.  Starts the
+ *                            controller's RT clock: an NMI at that rate,
+ *                            with both lanes' byte streams held from a
+ *                            guard before each one (KIOC_RT_GUARD_US: the
+ *                            host's receive FIFO drains) to the gap after
+ *                            it, timed in the controller's hardware, so a
+ *                            handler that finishes inside the gap never
+ *                            overruns a receive FIFO.  Only the exclusive holder of
+ *                            `/dev/rtclock` (object KIOC_RT_OBJECT) may
+ *                            run it, and that hold's release stops it.
+ *                            0, -KOS_EINVAL (no hold, a rate out of
+ *                            range), -KOS_ENOTSUP (firmware without the
+ *                            RT clock) or a negative KIOC_E*.
+ *
  * The direct form (no descriptor) is the resident-domain convention:
  * every resident driver is mapped together in bank 6's hot tier
  * (6000h-DFFFh), so a driver client names a buffer of its own and the
@@ -458,6 +475,14 @@
 #define KIOC_OP_STATUS     4u
 #define KIOC_OP_READY      5u
 #define KIOC_OP_COMMAND_READ 6u
+#define KIOC_OP_RT_CLOCK   7u
+/* `/dev/rtclock`: the IOC endpoint's object 1, bound exclusively to own
+ * the RT clock. */
+#define KIOC_RT_OBJECT     1u
+/* The default lane hold after each RT clock tick, and the fixed hold
+ * before it, microseconds. */
+#define KIOC_RT_GAP_US     16u
+#define KIOC_RT_GUARD_US   10u
 /* KIOC_OP_COMMAND_READ: the buffer word's payload offset, below it the
  * request DATA. */
 #define KIOC_COMMAND_READ_BUFFER 22u

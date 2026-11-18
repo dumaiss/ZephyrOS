@@ -131,7 +131,7 @@ VFS_OBJS := $(BUILD)/vfs_path.rel \
 C_OBJS    := $(BUILD)/early_console.rel $(BUILD)/panic.rel $(BUILD)/main.rel \
              $(BUILD)/syscall.rel $(BUILD)/diag.rel \
              $(BUILD)/event.rel $(BUILD)/event_syscall.rel \
-             $(BUILD)/xmem.rel \
+             $(BUILD)/xmem.rel $(BUILD)/rt.rel \
              $(BUILD)/irq.rel \
              $(BUILD)/irq_sources.rel \
              $(BUILD)/romfs.rel $(BUILD)/process.rel $(BUILD)/process_exec.rel \
@@ -540,6 +540,14 @@ $(BUILD)/xmem.rel: kernel/syscall/xmem.c kernel/syscall/xmem.h \
 		abi/kos/errno.h kernel/ipc/ipc.h | $(BUILD)
 	$(SDCC) $(CFLAGS) $< -o $@
 
+
+# Real-time interrupt: the RT syscall bodies, the boot-time NMI vectors
+# and the release hooks (architecture 4.11).  Cold code like the rest of
+# the syscall dispatcher.
+$(BUILD)/rt.rel: kernel/syscall/rt.c kernel/syscall/rt.h abi/kos/rt.h \
+		abi/kos/errno.h kernel/include/process.h \
+		platform/zephyr80/private/memory.h kernel/syscall/diag.h | $(BUILD)
+	$(SDCC) $(CFLAGS) $< -o $@
 
 # --- ROMFS objects (bank-7 reader + common ROM-access primitive) -------------
 
@@ -1128,6 +1136,13 @@ $(eval $(call exe_program,sound,tests/sound,\
 
 all: $(EXE_USER_ROOT)/sound.exe
 
+# The real-time interrupt outcome program: a card program the production
+# replay runs from the shell (tests/test_rt.py), in no store.
+$(eval $(call exe_program,rt,tests/rt,\
+	rt.c rt_handler.asm,STACK=384,STAGE=1))
+
+all: $(EXE_USER_ROOT)/rt.exe
+
 # The serial-hold outcome program: a card program the production replay
 # runs from the shell (tests/test_serial.py), in no store.
 $(eval $(call exe_program,serial,tests/serial,\
@@ -1150,6 +1165,11 @@ $(eval $(call exe_program,sndtest,tests/snd,\
 	sndtest.c sndtest_put.asm,STACK=384,LIBS=snd,INCLUDES=user/sdk/snd/src))
 
 all: $(EXE_USER_ROOT)/sndtest.exe
+
+# The libsnd PCM outcome program (tests/test_snd_pcm.py).
+$(eval $(call exe_program,sndpcm,tests/snd,sndpcm.c,STACK=384,LIBS=snd))
+
+all: $(EXE_USER_ROOT)/sndpcm.exe
 
 $(eval $(call exe_program,ztrkres,tests/snd,\
 	ztrloadkres.c,STACK=384,LIBS=snd:kres,INCLUDES=user/sdk/snd/src))
@@ -1413,7 +1433,7 @@ SDK_INPUTS := $(wildcard abi/kos/*.h) \
 	docs/sdk.md docs/tui.md docs/exe-format.md mk/kos.mk \
 	formats/include/exe.h \
 	tools/exepack.py tools/exemanifest.py tools/exeplace.py tools/ihx.py tools/kimg.py \
-	tools/exerun.py tools/sdkpack.py
+	tools/exerun.py tools/pcmconv.py tools/sdkpack.py
 
 sdk: $(KOS_SDK_TARBALL)
 	@echo "sdk: $(KOS_SDK_DIR)"

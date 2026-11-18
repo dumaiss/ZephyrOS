@@ -548,7 +548,7 @@ returns the result or `-errno`.
 
 ```c
 void exit(int status);                                  /* does not return */
-void reboot(void);                                      /* does not return */
+int  reboot(void);       /* does not return; -KOS_EBUSY while the RT interrupt is held */
 int  getinfo(struct kos_info_record *record);
 int  console_write(const char *buf, unsigned int len);  /* CONSOLE WRITE   */
 int  console_render(const void *stream, unsigned int len); /* one render txn */
@@ -1111,6 +1111,52 @@ demand, so a graphics program or a game reads keys without libtui; libtui's
   members a placed program may move out of the resident zone; the rest of
   libkos stays resident with the runtime.
 
+### 6.16 The real-time interrupt (`kos/rt.h`, included by `kos.h`)
+
+```c
+int rt_open(const void *handler, unsigned int rate_hz); /* 1000..32000 Hz */
+int rt_gap(unsigned int us);            /* lane gap per tick, 0 = 16 us */
+int rt_close(void);
+int rt_info(struct kos_rt_info *out);   /* region base/size, held 0/1/2 */
+```
+
+One program at a time owns a handler that the IO controller's RT clock
+runs through the NMI at a fixed rate (architecture 4.12). Nothing masked
+anywhere in the system can delay or drop a tick. The handler and the data it
+touches live in the RT region (`KOS_RT_REGION_BASE`, `KOS_RT_REGION_SIZE`:
+`F000h-FCFFh`), common memory every mapping shows: the program copies
+its handler there and points `rt_open` at it.
+
+```c
+memcpy((void *)KOS_RT_REGION_BASE, handler_image, handler_size);
+rt_open((void *)KOS_RT_REGION_BASE, 16000u);
+...
+rt_close();
+```
+
+- **The handler** is position-independent assembly ending in `RETN`. It
+  preserves every register it uses, pushes at most `KOS_RT_STACK_MAX` (2)
+  bytes, makes no syscall, changes no mapping and finishes well inside one
+  period.
+- **The lane gap.** The IO controller stops its serial lanes shortly
+  before each tick and resumes them a gap after it, so the bytes it
+  streams cannot overrun the Z80's three-byte receive FIFO while the
+  handler runs. The gap must cover the handler's whole time on the board,
+  from the NMI to its `RETN`, wait states included; `rt_gap` sets it for
+  the next `rt_open` (default 16 us). A gap that is too short shows as `-KOS_EIO` on reads while the
+  clock runs.
+- **Errors:** `-KOS_EBUSY` (another program holds it, or this one already
+  does), `-KOS_EINVAL` (a handler outside the region, a rate out of
+  range), `-KOS_ENOTSUP` (IO controller firmware without the RT clock).
+- **While it is open,** `/system` and `reboot` answer `-KOS_EBUSY`: both
+  need the ROM mode, which serves no NMI.
+- **Exit closes it:** the registration and the RT clock's hold go with the
+  process, so a program that stops without `rt_close` leaves nothing
+  running.
+- **Example:** libsnd's PCM player (`snd_pcm_*`, snd-sdk.md section 12)
+  plays 16 kHz samples from the card through the Afternoon Blend DAC with a
+  107 T-state handler; `UserSoftware/PCMPlay` is its client.
+
 ## 7. Memory layout
 
 ```text
@@ -1354,7 +1400,8 @@ kos-sdk-<version>/
   tools/           exepack.py, exemanifest.py, exeplace.py, ihx.py,
                    exerun.py (Python standard library only), kimg.py
                    (Pillow for convert and preview; pack and info need only
-                   the standard library);
+                   the standard library), pcmconv.py (KonaOS PCM for
+                   libsnd: FFmpeg for MP3 and resampling);
                    kres, the KRES container tool (§13), an executable
                    built for the machine that built the SDK
   mk/kos.mk        the program rule

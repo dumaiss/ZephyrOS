@@ -327,7 +327,7 @@ class TestJoyArtifacts(unittest.TestCase):
         endpoint_max = int(re.search(r"#define IPC_ENDPOINT_MAX (\d+)u",
                                      read(IPC_C)).group(1))
         self.assertLessEqual(endpoints + 1, endpoint_max)
-        self.assertEqual(len(rows), 13)
+        self.assertEqual(len(rows), 14)
         self.assertTrue({"/input/joy", "/input/joy/0",
                          "/input/joy/1"} <= rows)
         self.assertLessEqual(len(rows), value(VFS_H, "VFS_NS_PUB_MAX"))

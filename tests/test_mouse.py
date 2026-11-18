@@ -225,7 +225,8 @@ class TestMouseArtifacts(unittest.TestCase):
         self.assertEqual(sorted(rows),
                          ["/console", "/input", "/input/joy", "/input/joy/0",
                           "/input/joy/1", "/input/keyboard",
-                          "/input/mouse", "/ioc", "/serial", "/serial/0",
+                          "/input/mouse", "/ioc", "/rtclock", "/serial",
+                          "/serial/0",
                           "/sound", "/timer", "/video"])
         self.assertLessEqual(len(rows), value(VFS_H, "VFS_NS_PUB_MAX"))
 

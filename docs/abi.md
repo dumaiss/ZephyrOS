@@ -105,9 +105,12 @@ part of the ABI:
 | `09h` | `NS_ENUM` | `{path:u16, length:u16, cookie:u16 in/out, out:u16, out_size:u16, count:u16 out}` | `HL` = entries written |
 | `0Ah` | `CHDIR` | `{path:u16, length:u16}` | `HL` = 0 |
 | `0Bh` | `GETCWD` | `{buffer:u16, length:u16}` | `HL` = length without the NUL |
-| `0Ch` | `REBOOT` | none | does not return |
+| `0Ch` | `REBOOT` | none | does not return; `KOS_EBUSY` while a program holds the real-time interrupt |
 | `0Dh` | `NOTIFY` | `{handle:u8, reserved:u8, handler:u16, trampoline:u16}` | `HL` = 0 |
 | `0Eh` | `EVENT_RETURN` | none | does not return |
+| `10h` | `RT_REGISTER` | `{handler:u16}` | `HL` = 0; the handler must lie in the RT region (`KOS_EINVAL`), `KOS_EBUSY` while another program holds it |
+| `11h` | `RT_RELEASE` | none | `HL` = 0 |
+| `12h` | `RT_INFO` | `{buffer:u16}` | 8-byte record at `buffer`: region base, size, held (0 free, 1 the caller, 2 another program) |
 | `20h` | `XMEM_ALLOC` | `{size:u16, flags:u16}` | `HL` = object handle |
 | `21h` | `XMEM_FREE` | `{handle:u16}` | `HL` = 0 |
 | `22h` | `XMEM_READ` | `{handle:u16, offset:u16, buffer:u16, length:u16}` | `HL` = bytes moved |

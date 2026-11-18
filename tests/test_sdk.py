@@ -415,7 +415,8 @@ class TestSdkBoundary(unittest.TestCase):
         # direct-text measurement program a card copy carries
         # (`tests/test_textbench.py`); `sndprobe` and `sndtest` are the
         # sound-series card programs the production replays run
-        # (`tests/test_snd.py`); `ztrkres` is the KRES-backed ZTR loader
+        # (`tests/test_snd.py`), `sndpcm` libsnd's PCM player's
+        # (`tests/test_snd_pcm.py`); `ztrkres` is the KRES-backed ZTR loader
         # exercised there; `readertest` and `readermap` are the reader
         # outcome programs (`tests/test_reader.py`); `mouse` is the mouse
         # outcome program (`tests/test_mouse.py`); `tui_mplaced` and
@@ -435,8 +436,8 @@ class TestSdkBoundary(unittest.TestCase):
                           "iostream", "ipc", "ipccopy", "joy",
                           "kresread", "krestest", "monitor", "mouse", "ns",
                           "nschild", "placetest", "readermap", "readertest",
-                          "readphase", "serial",
-                          "shell", "sndprobe", "sndtest", "sound",
+                          "readphase", "rt", "serial",
+                          "shell", "sndpcm", "sndprobe", "sndtest", "sound",
                           "textbench", "timer",
                           "tui_core_probe", "tui_demo", "tui_dialog",
                           "tui_keys", "tui_mdeclared", "tui_mouse",

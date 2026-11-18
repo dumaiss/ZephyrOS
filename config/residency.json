@@ -53,6 +53,11 @@
       "reason": "extended-memory syscall bodies, the object table and the aperture token: reached only through the syscall dispatcher, which the gate runs with P = 0"
     },
     {
+      "object": "rt",
+      "tier": "cold",
+      "reason": "real-time interrupt syscall bodies, boot-time NMI vectors and release hooks: reached only through the syscall dispatcher, boot and process exit, all with P = 0; the tick itself never enters it (the vector jumps straight to the handler)"
+    },
+    {
       "object": "diag_io",
       "tier": "cold",
       "reason": "diagnostic port primitives reached only from the diagnostic syscall bodies (P = 0)"
@@ -243,6 +248,7 @@
     "object",
     "diag",
     "xmem",
+    "rt",
     "diag_io",
     "main",
     "process",

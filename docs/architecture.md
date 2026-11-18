@@ -201,7 +201,10 @@ stay reachable while the mapping changes:
 
 | range | contents |
 |---|---|
-| `E000h-FCFFh` | transition code, the syscall and IRQ gates, the copy stubs, the ROM-access stub (at `EF00h`), common state, the 384-byte gate stack |
+| `E000h-EBFFh` | transition code, the syscall and IRQ gates, the copy stubs, common state, the 384-byte gate stack (the packed run, under the ceiling below) |
+| `EEFEh-EF07h` | the ROM-access stub (at `EF00h`) |
+| `EF08h-EF0Ch` | the real-time interrupt's vector: `JP` to the owner's handler or to the idle `RETN` after it (4.12) |
+| `F000h-FCFFh` | the RT region, lent to the real-time interrupt's owner (4.12) |
 | `FD00h-FE00h` | the IM2 vector page and its `FFh`-vector guard byte |
 | `FE01h-FE08h` | IRQ transition state (saved latch, saved SP, common SP, active source) |
 | `FE08h-FE88h` | the 128-byte IRQ transition stack, directly above the state cells |
@@ -501,7 +504,8 @@ how `call` adds a second result channel.
   program's.
 - **Handlers** are bounded, service their own device condition, never
   busy-wait, never call IPC, and return to the executive. Nested maskable
-  interrupts are not allowed.
+  interrupts are not allowed.  The real-time interrupt is not maskable
+  and needs none of this machinery (4.12).
 - **Reading the interrupt state:** every place that captures it (the
   syscall gate, the copy primitives, ROM access, `irq_arch_lock`, the
   driver helpers) reads IFF2 with `LD A,I` up to three times and takes any
@@ -647,6 +651,10 @@ slot  6     C000h-DFFFh   data; window-speed copies
 
 - `ALLOC(size, flags)` returns an opaque handle; the size rounds up to whole
   slots; an object is contiguous in one bank; placement is never visible.
+- An object's run may start at slot 0, so its first bytes lie in the
+  bank's page zero. The NMI entry there (`0066h-0068h`, 4.12) stays in
+  place: the object's own three bytes are kept aside by the nucleus
+  (`kos_aux_copy`), which serves every copy of a slot 0-2 run.
 - A plain object is at most 32 KiB; a `MAPPABLE` object at most 16 KiB and
   always in the aperture slice. These are per-object limits. At most 32
   objects exist system-wide, counting every process's runtime objects and
@@ -822,6 +830,69 @@ component to one of three static nucleus providers:
   in the store; a `/fs` file is judged by its header alone. A container
   built for another `abi_version` is refused.
 
+### 4.12 The real-time interrupt
+
+One program at a time may own a handler that runs at a fixed rate with no
+masked section able to delay it: playing PCM samples is the first user.
+The IO controller is the clock (its RT clock, `CMD_RT_CLOCK`), and it
+drives the Z80's NMI (the IOC's `/NMI` pin, wired to the CPU), so a tick
+is never deferred or lost, whatever the kernel, a driver or a copy holds
+masked.
+
+```text
+IOC RT clock --NMI--> 0066h (every bank)  JP EF08h
+                      EF08h  JP handler | JP EF0Bh
+                      EF0Bh  RETN                     (idle: nobody owns it)
+```
+
+- **Ownership.** `SYS_RT_REGISTER` routes the vector to a handler in the
+  RT region and refuses a second program with `KOS_EBUSY`; the nucleus
+  switches the target with one 16-bit store, so a tick always finds a whole
+  address. The rate is the IO controller's: the exclusive holder of
+  `/dev/rtclock` (the IOC endpoint's object 1) starts it with
+  `KIOC_OP_RT_CLOCK`. The SDK's `rt_open` does both, and `rt_close` undoes
+  them clock first. A process exit releases the registration with its
+  other resources, and the exclusive handle's release stops the clock
+  (5.6), so a program that stops without closing leaves nothing running.
+- **The RT region** (`F000h-FCFFh`, 3,328 bytes) is common memory above
+  the packed ceiling, lent to the owner. The handler and everything it
+  touches live there, because a tick can arrive in any mapping: the
+  program's code, a syscall body (only `0000h-1FFFh` of its bank mapped), a
+  driver's bulk-map span (bank 6 at `0000h`), a copy gate over another
+  bank. The program copies its handler there and reads file data straight
+  into the region (the IPC copy resolver serves a common buffer
+  directly).
+- **The vector in every bank.** An NMI fetches from `0066h` of whatever
+  bank is mapped at `0000h`. Boot writes `JP KOS_RT_VECTOR` into banks
+  0-6 and exec rewrites it into each child's page zero. An auxiliary
+  bank is mapped at `0000h` only by the copy gate for slots 0-2, and that
+  path (`kos_aux_copy`) never writes those three bytes: an object that
+  covers them keeps its bytes there in an 18-byte nucleus store (three per
+  bank 0-5). Slot-0 objects are reached only through kernel copies, so
+  objects still start at `0000h` and keep their full size.
+- **The handler contract.** It is entered with the interrupted code's
+  registers, stack, mapping and interrupt state. It preserves what it
+  uses, pushes at most `KOS_RT_STACK_MAX` (2) bytes, makes no syscall,
+  changes no mapping and returns with `RETN`. It must also finish well
+  inside one period, since an NMI that lands in a running handler re-enters it.
+- **What the system gives up while it is held.** The ROM mode serves no
+  NMI (every read comes from ROM, so neither the vector nor a stack
+  exists), so the recovery store (`/system`) and `SYS_REBOOT` answer
+  `KOS_EBUSY` until it is released.
+- **What every kernel path keeps.** An NMI pushes where SP points, at
+  any instruction. Code never relies on memory below SP. The process
+  resume restores the parent's gate frame with SP already at the frame's
+  base, not inside it. The smallest stacks hold a maskable interrupt's stub
+  push and a tick on top of it: the aperture copy's reservation runs on
+  into its request block, which is dead once loaded.
+- **Cost.** One `JP` per tick in the vector. The IO controller holds both
+  lanes' byte streams from `KIOC_RT_GUARD_US` (10 us) before each pulse,
+  so the SIO's three-byte receive FIFO has drained when the NMI takes the
+  CPU, to the gap after it (`rt_gap`, default `KIOC_RT_GAP_US`, 16 us),
+  which covers the handler, so a tick that lands in a masked receive loop
+  cannot overrun that FIFO. A 16 kHz PCM handler takes about 110 T-states
+  a tick, a sixth of the CPU.
+
 ---
 
 ## 5. Resident drivers
@@ -941,7 +1012,7 @@ console it selected. Programs cannot tell which implementation answers.
 | driver | protocols | notes |
 |---|---|---|
 | `sio` | `SERIAL` | SIO0/B, polled, with an exclusive hold for direct I/O; publishes `/dev/serial/0` |
-| `ioc` | `IOC` | the Z80-to-MCU transport (below) |
+| `ioc` | `IOC` | the Z80-to-MCU transport (below); `/dev/ioc`, and `/dev/rtclock`, the RT clock's hold (4.12) |
 | `hid` | `INPUT`, `MOUSE` | keyboard input and the mouse over IOC; `/dev/input/keyboard`, `/dev/input/mouse` |
 | `v9958` | `VIDEO` | 85×26 terminal renderer (6×8 font); `/dev/video` |
 | `console-v9958-hid`, `console-serial` | `CONSOLE` | the per-build console |

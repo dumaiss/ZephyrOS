@@ -91,6 +91,7 @@
 	.globl _ioc_io_rx
 	.globl _ioc_io_bulk_init
 	.globl _ioc_io_bulk_read
+	.globl _ioc_driver_rt, _ioc_driver_command
 	.globl _ioc_io_run_read
 	.globl _ioc_io_bulk_write
 	.globl _ioc_io_status_sample
@@ -1508,6 +1509,128 @@ ioc_bulk_irq_restore:
 	jp	_ioc_io_irq_restore
 
 ; ---------------------------------------------------------------------------
+; int16_t ioc_driver_rt(struct kos_ipc_frame *frame);  HL = frame, DE = result.
+;   The RT clock's operations (abi/kos/protocol.h):
+;     KIOC_OP_RT_CLOCK  arg1 = rate Hz (0 stops), arg0 = the lane gap in
+;                       microseconds (0: the controller's KIOC_RT_GAP_US);
+;                       only while `/dev/rtclock`
+;                       is held.  The frame becomes a CMD_RT_CLOCK request
+;                       for ioc_driver_command; an older controller's
+;                       other reply class is -KOS_ENOTSUP, a refused rate
+;                       (non-zero status) -KOS_EINVAL.
+;     KOS_OP_ACQUIRE    object KIOC_RT_OBJECT only: one holder.
+;     KOS_OP_RELEASE    the exclusive hold of KIOC_RT_OBJECT ending (an
+;                       unbind or the holder's exit) stops the clock.
+;   Anything else is -KOS_EINVAL.  The frame: op 0, flags 1, desc 2,
+;   arg0 3, arg1 4-5, payload 6- (abi/kos/ipc.h).
+; ---------------------------------------------------------------------------
+IOC_RT_OP_CLOCK   = 7             ; KIOC_OP_RT_CLOCK
+IOC_RT_OP_ACQUIRE = 0xFE          ; KOS_OP_ACQUIRE
+IOC_RT_OP_RELEASE = 0xFF          ; KOS_OP_RELEASE
+IOC_RT_OBJECT     = 1             ; KIOC_RT_OBJECT
+IOC_RT_CMD        = 0x50          ; IOC_CMD_RT_CLOCK
+IOC_RT_RSP        = 0xD0          ; IOC_RSP_RT_CLOCK
+IOC_RT_EINVAL     = 0xFFFE        ; -KOS_EINVAL
+IOC_RT_EBUSY      = 0xFFFC        ; -KOS_EBUSY
+IOC_RT_ENOTSUP    = 0xFFF9        ; -KOS_ENOTSUP
+
+_ioc_driver_rt::
+	ld	a,(hl)
+	cp	#IOC_RT_OP_CLOCK
+	jr	z,ioc_rt_clock
+	inc	hl
+	inc	hl
+	inc	hl
+	cp	#IOC_RT_OP_ACQUIRE
+	jr	z,ioc_rt_acquire
+	cp	#IOC_RT_OP_RELEASE
+	jr	nz,ioc_rt_einval
+	; RELEASE: arg0 = the object, arg1 = 1 for the exclusive handle.
+	ld	a,(hl)
+	cp	#IOC_RT_OBJECT
+	jr	nz,ioc_rt_zero
+	inc	hl
+	ld	a,(hl)
+	or	a
+	jr	z,ioc_rt_zero
+	dec	hl
+	dec	hl
+	dec	hl
+	dec	hl			; the frame again
+	xor	a
+	ld	(_ioc_rt_held),a
+	ld	de,#0			; rate 0: stop
+	ld	b,d			; gap 0
+	jr	ioc_rt_send
+ioc_rt_acquire:
+	ld	a,(hl)
+	cp	#IOC_RT_OBJECT
+	jr	nz,ioc_rt_einval
+	ld	a,(_ioc_rt_held)
+	or	a
+	ld	de,#IOC_RT_EBUSY
+	ret	nz
+	inc	a
+	ld	(_ioc_rt_held),a
+ioc_rt_zero:
+	ld	de,#0
+	ret
+ioc_rt_einval:
+	ld	de,#IOC_RT_EINVAL
+	ret
+ioc_rt_clock:
+	ld	a,(_ioc_rt_held)
+	or	a
+	jr	z,ioc_rt_einval
+	push	hl
+	ld	de,#3
+	add	hl,de
+	ld	b,(hl)			; B = arg0, the lane gap (0: default)
+	inc	hl
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)			; DE = arg1, the rate
+	pop	hl
+	; HL = frame, DE = rate, B = gap: the CMD_RT_CLOCK request in the frame.
+ioc_rt_send:
+	push	hl
+	inc	hl
+	inc	hl
+	inc	hl
+	ld	(hl),#IOC_RT_CMD	; arg0: the request type
+	inc	hl
+	ld	(hl),#3			; arg1: three DATA bytes
+	inc	hl
+	ld	(hl),#0
+	inc	hl
+	ld	(hl),e			; payload: rate low, high, gap
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	ld	(hl),b
+	pop	hl
+	push	hl
+	call	_ioc_driver_command
+	pop	hl
+	bit	7,d
+	ret	nz			; a transport error passes through
+	inc	hl
+	inc	hl
+	inc	hl
+	ld	a,(hl)			; arg0: the reply type
+	cp	#IOC_RT_RSP
+	ld	de,#IOC_RT_ENOTSUP
+	ret	nz
+	ld	de,#5
+	add	hl,de
+	ld	a,(hl)			; payload[2]: the reply status
+	or	a
+	ld	de,#0
+	ret	z
+	ld	de,#IOC_RT_EINVAL
+	ret
+
+; ---------------------------------------------------------------------------
 ; Bulk-transport scratch.  Module BSS (_DATA): zeroed by the loader and
 ; relocated with the module image.  Single IOC instance, single foreground
 ; transfer, so these are not re-entrant by design (the C busy guard and the
@@ -1530,5 +1653,6 @@ _ioc_bulk_count:	.ds 1
 _ioc_bulk_blocks:	.ds 1
 _ioc_bulk_dst:		.ds 2
 _ioc_bulk_save:		.ds 5
+_ioc_rt_held:		.ds 1		; `/dev/rtclock` held
 _ioc_bulk_hunt:		.ds 1
 _ioc_bulk_token:	.ds 1

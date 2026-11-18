@@ -40,7 +40,8 @@ int splitargs(char *tail, char **argv, int max);
  * card picks it up).  Events are delivered at the interrupt's return as
  * usual.  It halts only where an interrupt is sure to come - the system
  * has the timer (`/dev/timer`, asked once) and interrupts are enabled -
- * and returns at once otherwise. */
+ * and returns at once otherwise.  The RT clock's ticks (kos/rt.h) do not
+ * end the wait: an NMI's wake halts again until an interrupt arrives. */
 void idle(void);
 
 /* An input wait's pacing: call idle_input() between empty input polls
@@ -59,7 +60,9 @@ int run(const char *path, const char *args);
 
 /* Warm reboot: the kernel masks interrupts, quiesces the interrupt sources
  * and writes the reset latch, so the ROM reset vector re-copies the OS
- * exactly as at power-on.  Does not return. */
-void reboot(void);
+ * exactly as at power-on.  Does not return - except -KOS_EBUSY while a
+ * program holds the real-time interrupt (kos/rt.h), whose NMI the reset
+ * path cannot serve. */
+int reboot(void);
 
 #endif /* KOS_SDK_PROCESS_H */

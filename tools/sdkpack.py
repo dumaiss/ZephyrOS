@@ -13,7 +13,8 @@
                        libtui_128x35.lib, libtui_widgets.lib, libgfx.lib,
                        crt0.rel
       tools/           exepack.py, exemanifest.py, exeplace.py, ihx.py,
-                       kimg.py, exerun.py (make run); kres, the KRES
+                       kimg.py, exerun.py (make run), pcmconv.py (KonaOS
+                       PCM, libsnd's snd_pcm_*); kres, the KRES
                        container tool, an executable for the build host
       mk/kos.mk        the standalone build rules
       template/        Makefile + hello.c
@@ -48,7 +49,7 @@ import tarfile
 from pathlib import Path
 
 TOOL_FILES = ("exepack.py", "exemanifest.py", "exeplace.py", "ihx.py", "kimg.py",
-              "exerun.py")
+              "exerun.py", "pcmconv.py")
 DOC_FILES = ("sdk.md", "tui.md", "exe-format.md")
 SDK_INCLUDE = "user/sdk/include"
 SDK_TEMPLATE = "user/sdk/template"

@@ -46,7 +46,7 @@ The sound card has four SN76489 PSGs (three tone and one noise voice each) and a
 - Implementing the tracker/editor, ZTR writer, conversion from VGM/Furnace, or general song construction in C.
 - Automatic SFX/voice stealing over a song; automatic song mixing or multi-song playback.
 - Dynamic voice allocation for ZTR. Channels are specified by ZTR and map directly to hardware.
-- PCM streaming, DAC samples, background audio daemon, kernel scheduler, or IRQ-rate DAC playback.
+- A background audio daemon or kernel scheduler. (PCM samples through the DAC are section 12: they ride the real-time interrupt, not a daemon.)
 - A second generic file/stream API hidden within `libsnd`.
 - A separate `libztr` package. All ZTR **playback** belongs inside `libsnd`; editor serialization stays application-owned unless separately justified.
 
@@ -655,5 +655,63 @@ Host tests should use an output-capture backend with **deterministic per-tick tr
 5. **Catch-up and underrun limits:** choose measurable bounded values via simulator fault tests and an audible hardware trial.
 6. **Audibly equivalent write deduplication:** preserve reference traces first; optimize only with regression evidence.
 7. **The ZTR tick's cost and pre-rendered playback.** The target for ordinary game music is about 10% of a 60 Hz frame on average (about 16,700 T-states) with peaks at or below 20% (33,300). Night Market is the ordinary case: its median is 10% and its worst tick 36%, at rows that start many notes. RunawayCircuit is an adversarial stress test (all four PSGs, many voices starting at once): it must play correctly, and its figures (median 7%, worst 65%) are reported, not held to the target. The work is decided after the tracker program measures ZTR in real use; the candidates, in order: optimize the ZTR engine (precomputed instrument start state, the macro-step fast path); pre-rendered playback for games, a ZVG that drives all four PSGs (a chip-select command and a loop point, v1/v2 files unchanged), produced by a `ztr2zvg` host tool, as an output of `csmc.py` and `fur2ztr.py`, and eventually by an on-target `ZTR2ZVG.EXE`, so a song composed and saved as ZTR in the tracker compiles to the ZVG a game ships; rendering orders ahead on the target. The ZTR open's start time (the order-sizing scan, per-byte reads) is in the same review.
+
+## 12. PCM samples through the DAC
+
+`snd_pcm_*` (kos/snd.h) plays a KonaOS PCM stream - 8-bit mono samples - through the card's DAC at the stream's rate. The samples reach the DAC from a handler that the real-time interrupt runs (sdk.md 6.16, architecture 4.12): the IO controller's RT clock pulses the NMI at the sample rate, so no masked section of the system delays a sample. The program owns the RT interrupt and the card session (`snd_open`) while it plays.
+
+### 12.1 The player
+
+| Call | Does |
+|---|---|
+| `snd_pcm_open(reader, buffer, size)` | validates the header through a borrowed `kos_reader_t`, takes the caller's staging buffer (at least `SND_PCM_STAGE_MIN`, 1 KiB; 4 KiB suits 16 kHz) |
+| `snd_pcm_get_info` | codec, rate, samples, stored bytes, the CP850 name |
+| `snd_pcm_set_gap(us)` | the lane gap the next play asks for (default `SND_PCM_GAP_US`, 20 us) |
+| `snd_pcm_prepare` | installs the handler in the RT region and fills the ring (play does it too) |
+| `snd_pcm_play(flags)` | `rt_open` at the stream's rate; `SND_PCM_LOOP` restarts at the end forever |
+| `snd_pcm_service` | the foreground's share: at most one source read, then every page that fits decoded into the ring; returns the state |
+| `snd_pcm_stop`, `snd_pcm_close` | stop the RT interrupt and glide the DAC to its midpoint; close forgets the stream (`snd_close` closes an open stream too) |
+| `snd_pcm_get_status` | state, samples played, underrun ticks, loops, reads, the read error |
+
+The program calls `snd_pcm_service` often - every 100 ms is plenty, and `idle()` between calls is the intended pacing (its wait ends on a maskable interrupt, never on an RT tick). States: `IDLE`, `OPEN`, `READY` (the ring is full), `PLAYING`, `DONE` (played out or stopped; a finished stream stops the RT interrupt itself), `ERROR` (a read failed; the stream is stopped).
+
+### 12.2 The stream: KPCM v1
+
+A fixed 512-byte header, then the payload. Multibyte integers are little-endian.
+
+| Offset | Size | Field | Value |
+|---|---|---|---|
+| 0 | 4 | magic | `KPCM` |
+| 4 | 1 | version | 1 |
+| 5 | 1 | codec | 0 = u8, 1 = dpcm4 |
+| 6 | 1 | channels | 1 |
+| 7 | 1 | bits per sample | 8 |
+| 8 | 4 | sample rate, Hz | 4,000-24,000 for the player |
+| 12 | 4 | sample count | |
+| 16 | 4 | payload size, bytes | = sample count for codec 0 |
+| 20 | 4 | payload offset | 512 |
+| 24 | 2 | header size | 512 |
+| 26 | 2 | flags | 0 |
+| 28 | 4 | reserved | 0 |
+| 32 | 64 | name | NUL-terminated, CP850 |
+| 96 | 416 | reserved | zero |
+
+A sample is unsigned: `00h` minimum, `80h` the midpoint (silence), `FFh` maximum.
+
+- **Codec 0 (u8):** the samples, one byte each.
+- **Codec 1 (dpcm4):** lossless 4-bit deltas in blocks of 256 samples; the last block is padded with its final sample. A block is kind `00h` and the 256 samples (raw), or kind `01h`, the body length less one, and the body: nibbles, high first. A nibble *n* other than 8 adds (*n* XOR 8) - 8 (-7..+7) to the predictor; 8 is an escape, and the next two nibbles (high, low) are the sample itself. The predictor starts at `80h` and carries across blocks (a raw block leaves its last sample). The encoder stores a block raw when its body would not be shorter. Music converts to about half its size.
+
+`tools/pcmconv.py` (shipped in the SDK) converts WAV/MP3 (through FFmpeg) to either codec, re-encodes a `.pcm` exactly (`IN.pcm -o OUT.pcm --codec dpcm4`), prints a header (`--info`) and exports WAV (`--to-wav`).
+
+### 12.3 The real-time path
+
+- **The RT region** (`F000h-FCFFh`): the ring, 12 pages of 256 samples at `F000h-FBFFh`; the underrun and drain counters at `FC03h-FC07h`; the handler at `FC10h` (snd_pcm_rt.asm, copied there by prepare). The handler's code holds the ring state: its `LD A,(nn)` operand is the read pointer and its `CP n` operand the first page the foreground has not filled.
+- **The handler:** 107 T-states a sample (NMI acknowledge included), 175 at a page's end, where it checks the ring. When the next page is not filled it plays the page it finished again (an underrun, counted); after the stream's closing page of silence that replay is the drain, and service stops the interrupt.
+- **The lane gap** must cover the handler's longest path with the NMI's latency: the IO controller holds both lanes from its guard (10 us) before each tick to the gap after it, so a 175 T-state page end needs about 20 us (`SND_PCM_GAP_US`). A gap below it overruns the host's receive FIFO during a card read (an I/O error, or a read cut short).
+- **Loops** restart at the next page: a stream whose length is not a whole number of pages holds its final sample until the page ends (at most 255 samples).
+
+### 12.4 Feeding it
+
+The foreground's cost is the card reads and, for codec 1, the decode. Each read pays a fixed cost (a command, the card's access, the FAT), so the staging buffer takes large reads (whole 512-byte units, up to the buffer) and the ring is filled from it a page at a time; the buffer is a second tier of buffering behind the ring's 176 ms. The codec 1 decoder (snd_pcm_dec.asm) costs about 80 T-states a sample and halves the bytes read. Measured at 16 kHz with a 4 KiB buffer (MAME, the RT clock's own ticks as the clock): service takes 46% of the playback time for codec 0 (118 reads per 30 s) and 42% for codec 1 (70 reads).
 
 **Final rule:** `libsnd` is the single userland sound SDK. **ZTR is the sophisticated path; manual notes are the intentionally small path.** Both reuse one SOUND card interface and existing storage libraries, and neither introduces higher-level musical behavior into KonaOS banks 6/7.

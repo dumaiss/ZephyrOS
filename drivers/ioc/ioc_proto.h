@@ -35,6 +35,12 @@
 #define IOC_CMD_XFER_STATUS     0x06u
 #define IOC_RSP_XFER_STATUS     0x86u
 
+/* CMD_RT_CLOCK: DATA = rate in Hz (u16 LE; 0 stops the clock), then the
+ * lane pause after each tick in microseconds.  A controller without the
+ * RT clock answers RSP_UNKNOWN_COMMAND. */
+#define IOC_CMD_RT_CLOCK        0x50u
+#define IOC_RSP_RT_CLOCK        0xD0u
+
 #define IOC_READY_PAYLOAD_LEN   8u
 #define IOC_OFF_READY_XFER_ID   0u
 #define IOC_OFF_READY_DIRECTION 1u

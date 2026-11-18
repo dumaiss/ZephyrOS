@@ -369,6 +369,14 @@ void core_clock(struct core *c, int64_t tstates)
 {
 	c->tstates += tstates;
 	if (c->ctc != NULL) ctc_advance(c, tstates);
+	if (c->rt_hz > 0) {
+		c->rt_acc += tstates * c->rt_hz;
+		while (c->rt_acc >= CTC_CLOCK_HZ) {
+			c->rt_acc -= CTC_CLOCK_HZ;
+			c->rt_ticks += 1;
+			c->nmi_pending = 1;
+		}
+	}
 	if (c->py_clock && c->clock(tstates) < 0 && !c->err)
 		c->err = CORE_PYERR;
 }
@@ -442,6 +450,21 @@ int core_accept(struct core *c)
 }
 
 /* An acceptance: the instance's override when one is installed. */
+/* The NMI: IFF1 cleared, IFF2 kept (RETN restores IFF1 from it), the
+ * restart at 0066h; it wakes a HALT and is never masked. */
+static void take_nmi(struct core *c)
+{
+	c->nmi_pending = 0;
+	c->nmi_count += 1;
+	c->iff1 = 0;
+	core_clock(c, 11);
+	CK;
+	push16(c, c->pc);
+	CK;
+	c->pc = 0x0066;
+	c->halted = 0;
+}
+
 static void take_interrupt(struct core *c)
 {
 	if (c->py_accept) {
@@ -1309,12 +1332,66 @@ static void step_op(struct core *c, int op)
 	}
 }
 
+/* One iteration of a repeating block instruction, as a real Z80 runs it:
+ * the count set to 1 for the step, then the rest restored and the PC
+ * moved back to the instruction (21 T-states instead of 16).  Only while
+ * the RT clock runs: an NMI must be able to land between iterations, and
+ * every other replay keeps the whole-block step it was calibrated with.
+ * Returns 1 when it ran the iteration, 0 when the normal step applies. */
+static int block_slice(struct core *c)
+{
+	int second;
+	int64_t n;
+	int op;
+	int64_t cost;
+	int word;
+
+	if (c->rt_hz <= 0 || rd(c, c->pc) != 0xED) return 0;
+	second = rd(c, (c->pc + 1) & 0xFFFF);
+	word = second == 0xB0 || second == 0xB8;
+	if (!word && second != 0xB2 && second != 0xB3 && second != 0xBA &&
+	    second != 0xBB) return 0;
+	n = word ? ((c->b << 8) | c->c) : c->b;
+	if (n == 0) n = word ? 0x10000 : 0x100;
+	if (n <= 1) return 0;
+	if (word) {
+		c->b = 0;
+		c->c = 1;
+	} else {
+		c->b = 1;
+	}
+	c->cycles += 1;
+	cost = opcode_cost(c);
+	CKV(1);
+	core_clock(c, cost + 5);
+	CKV(1);
+	op = fetch(c);
+	CKV(1);
+	step_op(c, op);
+	CKV(1);
+	n -= 1;
+	if (word) {
+		c->b = (int)((n >> 8) & 0xFF);
+		c->c = (int)(n & 0xFF);
+		sf(c, 0x04, 1);
+	} else {
+		c->b = (int)(n & 0xFF);
+		SET_ZF(0);
+	}
+	c->pc = (c->pc - 2) & 0xFFFF;
+	return 1;
+}
+
 int core_step(struct core *c)
 {
 	int op;
 	int64_t cost;
 
 	c->err = CORE_OK;
+	if (c->nmi_pending) {
+		take_nmi(c);
+		return c->err;
+	}
 	if (c->halted) {
 		if (c->int_pending && c->iff1) take_interrupt(c);
 		else core_clock(c, 4);
@@ -1322,6 +1399,10 @@ int core_step(struct core *c)
 	}
 	if (c->int_pending && c->iff1 && !c->ei_delay && c->im == 2) {
 		take_interrupt(c);
+		return c->err;
+	}
+	if (block_slice(c)) {
+		if (c->ei_delay) c->ei_delay -= 1;
 		return c->err;
 	}
 	c->cycles += 1;

@@ -36,7 +36,8 @@
       "instance": 0,
       "version": 1,
       "dispatch": "ioc_driver_dispatch",
-      "flags": 0
+      "flags": 0,
+      "release": true
     }
   ],
   "publishes": [
@@ -48,6 +49,15 @@
         "instance": 0
       },
       "object": 0
+    },
+    {
+      "path": "/dev/rtclock",
+      "type": "IOC",
+      "endpoint": {
+        "class": 5,
+        "instance": 0
+      },
+      "object": 1
     }
   ],
   "depends": []

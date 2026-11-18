@@ -117,3 +117,8 @@ KOS_ROMFS_CAPACITY      = 0x48000
 KOS_ROMFS_STAGING_SIZE    = 128
 KOS_ROM_ACCESS_BASE       = 0xEF00
 KOS_ROM_ACCESS_SIZE       = 8
+
+; The real-time interrupt (memory.h): JP vector and its idle RETN.
+KOS_NMI_ENTRY             = 0x0066
+KOS_RT_VECTOR             = 0xEF08
+KOS_RT_IDLE               = 0xEF0B

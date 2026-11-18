@@ -13,6 +13,7 @@
 #include "kos/fs.h"
 #include "kos/ipc.h"
 #include "kos/process.h"
+#include "kos/rt.h"
 #include "kos/seg.h"
 #include "kos/stream.h"
 #include "kos/xmem.h"

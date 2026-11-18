@@ -20,6 +20,7 @@
  * subtraction) so the freestanding build needs no runtime library.
  */
 
+#include "kernel/syscall/rt.h"
 #include "romfs.h"
 
 #include "kernel/lib/name.h"
@@ -66,6 +67,11 @@ static int romfs_window(uint32_t logical, uint8_t *page, uint16_t *offset)
  * ROM-access primitive is never asked for an out-of-window request. */
 static int romfs_copy_logical(uint32_t logical, uint8_t *dst, uint16_t length)
 {
+	/* The ROM mode serves no NMI: while a program holds the real-time
+	 * interrupt (architecture 4.12) the store is busy. */
+	if (KOS_RT_ROUTED()) {
+		return -KOS_EBUSY;
+	}
 	while (length > 0) {
 		struct rom_access_req req;
 		uint16_t chunk = length;

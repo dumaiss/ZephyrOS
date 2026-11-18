@@ -50,9 +50,9 @@ import romfspack  # noqa: E402
 # The packed monitor artifact (pinned by user/monitor/ and the tooling
 # tests; the store must deliver these exact bytes).  The identity moves
 # with every relink of the monitor or of the libkos members it links.
-MONITOR_SIZE = 6313
+MONITOR_SIZE = 6322
 MONITOR_SHA256 = (
-    "bd4762cadb5f3f7f57c69d925cfdc599dd7ba1ba1a61246ae2724c3407970c5e")
+    "2981de27a2e35bca1f657eeda4898fdaae825128c1075048d108b793b282950f")
 
 # The monitor's visible rows, decoded from the V9958 trace.
 PROMPT = "Z80> "

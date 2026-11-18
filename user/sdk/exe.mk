@@ -59,7 +59,7 @@ $(EXE_RUNTIME): $(KOS_SDK_SRC)/runtime.asm
 	$(SDASZ80) $(EXE_ASFLAGS) -o $@ $<
 
 KOS_SDK_C_SRC := args.c fs.c truncate.c ipc.c exec.c console_io.c console_line.c key.c key_get.c \
-    xmem.c seg.c xload.c event.c \
+    xmem.c seg.c xload.c event.c rt.c \
     console_proto.c console_render.c console_info.c timer.c mouse.c sound.c serial.c joy.c joy_decode.c idle.c idle_input.c stream.c \
     stdio.c fread.c fwrite.c fseek.c feof.c \
     reader.c reader_full.c reader_handle.c reader_stdio.c \
@@ -269,9 +269,10 @@ $(EXE_LIBKRES): $(EXE_KRES_OBJS) $(KOS_RULES)
 # flush.  Setup is C: the lifecycle and the note compiler.
 KOS_SND_SRC     := $(KOS_SDK_ROOT)/snd/src
 KOS_SND_PRIVATE := $(KOS_SND_SRC)/snd_private.h
-KOS_SND_C_SRC   := snd.c snd_manual.c snd_tables.c snd_zvg.c snd_ztr.c snd_service.c
+KOS_SND_C_SRC   := snd.c snd_manual.c snd_tables.c snd_zvg.c snd_ztr.c snd_service.c \
+	snd_pcm.c
 KOS_SND_ASM_SRC := snd_tick.asm snd_tick_ztr.asm snd_voice.asm snd_out.asm \
-	snd_zvg_dec.asm snd_ztr_dec.asm
+	snd_zvg_dec.asm snd_ztr_dec.asm snd_pcm_rt.asm snd_pcm_dec.asm
 EXE_SND_OBJS    := $(addprefix $(EXE_SDK_BUILD)/snd/,\
 	$(patsubst %.c,%.rel,$(KOS_SND_C_SRC)) \
 	$(patsubst %.asm,%.rel,$(KOS_SND_ASM_SRC)))

@@ -62,6 +62,10 @@ class IocCommandPeer:
 
     CMD_LINK_SYNC = 0x0C
     CMD_PING = 0x01
+    CMD_RT_CLOCK = 0x50
+    RSP_RT_CLOCK = 0xD0
+    RT_GAP_DEFAULT_US = 16      # src/rt_clock.h RT_CLOCK_GAP_DEFAULT_US
+    RT_GUARD_DEFAULT_US = 10    # src/rt_clock.h RT_CLOCK_GUARD_DEFAULT_US
     CMD_XFER_STATUS = 0x06
     CMD_FS_OPEN = 0x22
     CMD_FS_READ = 0x23
@@ -137,7 +141,7 @@ class IocCommandPeer:
 
     def __init__(self, leading=(0xFF,), reply_delay=8, ready_delay=0,
                  never_ready=False, stall=False, fault=None,
-                 link_faults=None, doorbell=False, level=0x4B,
+                 link_faults=None, doorbell=False, level=0x4C,
                  echo_len=16, ping_len=26, reply_tail=b"\xff",
                  fs_files=None, read_fault=None, write_fault=None,
                  dcd_delay=2, cts_delay=2, commit_delay=1,
@@ -165,6 +169,19 @@ class IocCommandPeer:
         self.reply_tail = reply_tail
         self.leading = tuple(leading)
         self.reply_delay = reply_delay
+        # CMD_RT_CLOCK (firmware's RT clock): the CPU the NMI goes to (set
+        # by the CPU's SIO1 port dispatch), the rate, the lane pause after
+        # each tick in T-states, and the tick count the bulk stream has
+        # already paused for.  rt_clock_supported False answers the
+        # command as an older controller does (RSP_UNKNOWN_COMMAND).
+        self.cpu = None
+        self.rt_clock_supported = True
+        self.rt_hz = 0
+        self.rt_gap_t = 0
+        self.rt_guard_t = 0
+        self.rt_t0 = 0
+        self.rt_last_k = 0
+        self.rt_requests = []
         self.reply_countdown = 0
         self.reply_pending = None
         self.reply_queued = False
@@ -436,6 +453,8 @@ class IocCommandPeer:
             entry = self.arbitrary_ready[rtype]
             status = entry[2] if len(entry) > 2 else self.ST_OK
             return self._ready_reply(rtype, seq, entry[0], entry[1], status)
+        if rtype == self.CMD_RT_CLOCK and self.rt_clock_supported:
+            return self._build_rt_clock_reply(seq, data)
         if rtype == self.CMD_HID_INPUT:
             return self._build_hid_reply(seq, data)
         if rtype == self.CMD_HID_MOUSE:
@@ -448,6 +467,53 @@ class IocCommandPeer:
                      self.CMD_XFER_STATUS):
             return self._build_fs_reply(rtype, seq, data)
         return self._build_reply(rtype, seq, data)
+
+    def _build_rt_clock_reply(self, seq, data):
+        """CMD_RT_CLOCK: DATA = rate Hz (u16 LE, 0 stops), gap us, guard
+        us.  The CPU's RT clock (Z80.rt_hz) delivers the NMIs; the bulk
+        stream holds from `guard` before each one to `gap` after it
+        (bulk_pump, _rt_hold)."""
+        data = bytes(data) + b"\x00\x00\x00"
+        hz = data[0] | (data[1] << 8)
+        gap = data[2] or self.RT_GAP_DEFAULT_US
+        guard = (data[3] if len(data) > 3 else 0) or self.RT_GUARD_DEFAULT_US
+        self.rt_requests.append((hz, gap))
+        if hz != 0 and not 1000 <= hz <= 32000:
+            return self._wrap(self.RSP_RT_CLOCK, seq, 0x01, b"")
+        self.rt_hz = hz
+        self.rt_gap_t = gap * 10
+        self.rt_guard_t = guard * 10
+        if self.cpu is not None:
+            self.rt_t0 = self.cpu.tstates
+            self.cpu.rt_acc = 0
+            self.cpu.rt_hz = hz
+        self.rt_last_k = 0
+        return self._wrap(self.RSP_RT_CLOCK, seq, self.ST_OK,
+                          bytes([hz & 0xFF, hz >> 8]))
+
+    def _rt_hold(self, tstates):
+        """The controller's lane hold around each RT tick (Zephyr-80
+        `src/rt_clock.c`): no byte starts from `guard` before a tick to
+        `gap` after it.  The time the next byte may start."""
+        if not self.rt_hz:
+            return tstates
+        period = 10000000
+
+        def tick(k):
+            return self.rt_t0 + (k * period + self.rt_hz - 1) // self.rt_hz
+
+        k = ((tstates - self.rt_t0) * self.rt_hz) // period
+        if k >= 1 and tstates < tick(k) + self.rt_gap_t:
+            return tick(k) + self.rt_gap_t
+        if tstates >= tick(k + 1) - self.rt_guard_t:
+            return tick(k + 1) + self.rt_gap_t
+        return tstates
+
+    def _rt_ticks_at(self, tstates):
+        """RT clock ticks since it started, at `tstates`."""
+        if not self.rt_hz:
+            return 0
+        return ((tstates - self.rt_t0) * self.rt_hz) // 10000000
 
     def _hid_take(self):
         """One byte from the MCU queue, or a synthetic fill byte when a
@@ -1213,6 +1279,13 @@ class IocCommandPeer:
             self.a_next_at = (tstates + self.BULK_ADMISSION_TSTATES +
                               self.BULK_FIXED_BYTE_TSTATES)
         while self.a_pending and tstates >= self.a_next_at:
+            # The RT clock: the controller holds the byte it would send
+            # next for the gap after every tick that fell before it.
+            if self.rt_hz:
+                held = self._rt_hold(self.a_next_at)
+                if held != self.a_next_at:
+                    self.a_next_at = held
+                    continue
             if len(self.a_rx) >= self.BULK_FIFO_DEPTH:
                 # The receiver's shift register has nowhere to put the
                 # byte: the deployed part drops the rest of the packet and
@@ -3007,6 +3080,14 @@ class Z80:
         self.tstates = 0
         # An attached CTC model (None until a replay installs one).
         self.ctc = None
+        # The NMI line and the IO controller's RT clock (IocCommandPeer's
+        # CMD_RT_CLOCK sets rt_hz): an NMI every 10 MHz / rt_hz T-states,
+        # exact in integers (rt_acc counts T-states * rt_hz).
+        self.nmi_pending = False
+        self.rt_hz = 0
+        self.rt_acc = 0
+        self.rt_ticks = 0
+        self.nmi_count = 0
         self.halted = False
         self.interrupts = False
         self.iff1 = False
@@ -3092,6 +3173,7 @@ class Z80:
         if port >= ControllerLatch.FIRST_PORT:
             return self.controller_latch.read(port)
         if self.ioc_peer is not None:
+            self.ioc_peer.cpu = self
             if port == 0x32:
                 return self.ioc_peer.data_read()
             if port == 0x33:
@@ -3322,10 +3404,69 @@ class Z80:
         self.tstates += tstates
         if self.ctc is not None:
             self.ctc.advance(tstates)
+        if self.rt_hz:
+            self.rt_acc += tstates * self.rt_hz
+            while self.rt_acc >= 10000000:
+                self.rt_acc -= 10000000
+                self.rt_ticks += 1
+                self.nmi_pending = True
         if self.vdp_peer is not None and self.vdp_peer.frame_period:
             self.vdp_peer.advance(tstates, self)
 
+    BLOCK_WORD = (0xB0, 0xB8)               # ldir, lddr: BC counts
+    BLOCK_BYTE = (0xB2, 0xB3, 0xBA, 0xBB)   # inir, otir, indr, otdr: B
+
+    def _block_slice(self):
+        """One iteration of a repeating block instruction, as a real Z80
+        runs it: the count set to 1 for the step, then the rest restored
+        and the PC moved back to the instruction (21 T-states instead of
+        16).  Only while the RT clock runs: an NMI must be able to land
+        between iterations, and every other replay keeps the whole-block
+        step it was calibrated with.  True when it ran the iteration."""
+        if not self.rt_hz or self.rd(self.pc) != 0xED:
+            return False
+        second = self.rd((self.pc + 1) & 0xFFFF)
+        word = second in self.BLOCK_WORD
+        if not word and second not in self.BLOCK_BYTE:
+            return False
+        n = ((self.b << 8) | self.c) if word else self.b
+        if n == 0:
+            n = 0x10000 if word else 0x100
+        if n <= 1:
+            return False
+        if word:
+            self.b, self.c = 0, 1
+        else:
+            self.b = 1
+        self.cycles += 1
+        self._clock(opcode_cost(self) + 5)
+        self.fetch()                        # the ED prefix
+        self.step_ed()
+        n -= 1
+        if word:
+            self.b, self.c = (n >> 8) & 0xFF, n & 0xFF
+            self._sf(0x04, 1)
+        else:
+            self.b = n & 0xFF
+            self.ZF = 0
+        self.pc = (self.pc - 2) & 0xFFFF
+        return True
+
+    def _accept_nmi(self):
+        """The NMI: IFF1 cleared, IFF2 kept (RETN restores IFF1 from it),
+        the restart at 0066h; it wakes a HALT and is never masked."""
+        self.nmi_pending = False
+        self.nmi_count += 1
+        self.iff1 = False
+        self._clock(11)
+        self.push16(self.pc)
+        self.pc = 0x0066
+        self.halted = False
+
     def step(self):
+        if self.nmi_pending:
+            self._accept_nmi()
+            return
         # HALT: only an accepted interrupt wakes the CPU; the clock keeps
         # running, so an attached CTC keeps counting through the halt.
         if self.halted:
@@ -3337,6 +3478,10 @@ class Z80:
         # IM2 acceptance before the next instruction (blocked for exactly
         # one instruction after EI).
         if self._interrupt_check():
+            return
+        if self._block_slice():
+            if self.ei_delay:
+                self.ei_delay -= 1
             return
         self.cycles += 1
         self._clock(opcode_cost(self))

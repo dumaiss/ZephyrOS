@@ -354,4 +354,101 @@ struct snd_ztr_tables {
 };
 int snd_ztr_tables(struct snd_ztr_tables *out);
 
+/* --- PCM samples through the DAC (docs/snd-sdk.md section 12) ----------
+ *
+ * A KonaOS PCM (`.PCM`, KPCM v1) stream played through the card's DAC at
+ * its own rate by the real-time interrupt (kos/rt.h): the samples reach
+ * the DAC from a handler in the RT region, so nothing the program or the
+ * system masks can delay one.  The program keeps the ring fed by calling
+ * snd_pcm_service often (every 100 ms is plenty; the ring holds 176 ms
+ * and the staging buffer more).  One PCM stream at a time; it needs the
+ * session (snd_open) and the RT interrupt, so no other program can hold
+ * either while it plays.
+ *
+ * Codecs: SND_PCM_CODEC_U8 (8-bit unsigned samples) and
+ * SND_PCM_CODEC_DPCM4 (lossless 4-bit deltas, about half the size).  The
+ * converter is the SDK's tools/pcmconv.py. */
+
+#define SND_PCM_CODEC_U8     0u
+#define SND_PCM_CODEC_DPCM4  1u
+
+/* Rates the player accepts, Hz. */
+#define SND_PCM_RATE_MIN     4000u
+#define SND_PCM_RATE_MAX     24000u
+
+/* The lane gap snd_pcm_play asks for (rt_gap): the handler's longest path,
+ * a page's end, with the NMI's latency, on the board. */
+#define SND_PCM_GAP_US       20u
+
+/* The staging buffer's smallest size, bytes. */
+#define SND_PCM_STAGE_MIN    1024u
+
+/* snd_pcm_play flags. */
+#define SND_PCM_LOOP         0x01u /* restart at the end, forever */
+
+/* snd_pcm_get_status states. */
+#define SND_PCM_IDLE      0u /* no stream (also after close)            */
+#define SND_PCM_OPEN      1u /* header validated; nothing read yet      */
+#define SND_PCM_READY     2u /* the ring is full: play starts at once   */
+#define SND_PCM_PLAYING   3u /* the RT interrupt is consuming           */
+#define SND_PCM_DONE      4u /* played to the end (or stopped)          */
+#define SND_PCM_ERROR     5u /* a read failed; the stream is stopped    */
+
+#define SND_PCM_NAME_SIZE 64u
+
+struct snd_pcm_info {
+	uint8_t codec;          /* SND_PCM_CODEC_*                       */
+	uint16_t rate;          /* Hz                                    */
+	uint32_t samples;       /* samples in the stream                 */
+	uint32_t payload;       /* stored bytes                          */
+	char name[SND_PCM_NAME_SIZE]; /* NUL-terminated, CP850           */
+};
+
+struct snd_pcm_status {
+	uint8_t state;          /* SND_PCM_*                             */
+	uint32_t played;        /* samples the DAC has played            */
+	uint32_t underruns;     /* ticks replayed from an empty ring     */
+	uint16_t loops;         /* restarts (SND_PCM_LOOP)               */
+	uint16_t reads;         /* source reads since open               */
+	int last_error;         /* the read error, or 0                  */
+};
+
+/* Validate a KPCM v1 header through the borrowed reader and take the
+ * caller's staging buffer (`size` >= SND_PCM_STAGE_MIN; larger means
+ * fewer, larger reads and more buffering: 4 KiB suits 16 kHz).  The
+ * reader and the buffer stay the caller's until snd_pcm_close.  0, or
+ * -KOS_ENODEV (no session), -KOS_EBUSY (a stream is open), -KOS_EINVAL
+ * (not a valid KPCM v1 stream for this player), -KOS_ENOTSUP (an unknown
+ * codec, or a card without a DAC) or the reader's error. */
+int snd_pcm_open(const kos_reader_t *source, void *buffer, uint16_t size);
+
+/* The open stream's header. */
+int snd_pcm_get_info(struct snd_pcm_info *out);
+
+/* Fill the ring before play (play does it too): reads and decodes until
+ * the ring is full.  0, or the reader's error. */
+int snd_pcm_prepare(void);
+
+/* The lane gap the next play asks for, microseconds (default
+ * SND_PCM_GAP_US).  0, or -KOS_EINVAL for 0. */
+int snd_pcm_set_gap(uint8_t us);
+
+/* Start the RT interrupt at the stream's rate, with the lane gap of
+ * snd_pcm_set_gap.  0, or rt_open's error. */
+int snd_pcm_play(uint8_t flags);
+
+/* The foreground's share: at most one source read, then as many pages
+ * decoded into the ring as fit.  Returns the state (SND_PCM_*), or the
+ * reader's error once (the stream then stops: SND_PCM_ERROR). */
+int snd_pcm_service(void);
+
+/* Stop the RT interrupt and bring the DAC to its midpoint.  0. */
+int snd_pcm_stop(void);
+
+/* Stop and forget the stream; the reader and buffer go back to the
+ * caller. */
+void snd_pcm_close(void);
+
+int snd_pcm_get_status(struct snd_pcm_status *out);
+
 #endif /* KOS_SND_H */

@@ -10,7 +10,7 @@ Mode 11 (the nucleus's view) with the window on bank 7:
 
 | region | content |
 |---|---|
-| `0000h-00FFh` | the caller's page zero: the reset copier (`0000h-0026h`, in the boot image) and the `RST 30h` vector at `0030h-0032h` (`JP kos_syscall_entry`) |
+| `0000h-00FFh` | the caller's page zero: the reset copier (`0000h-0026h`, in the boot image), the `RST 30h` vector at `0030h-0032h` (`JP kos_syscall_entry`) and the NMI entry at `0066h-0068h` (`JP KOS_RT_VECTOR`, in every bank; architecture 4.12) |
 | `0100h-1FFFh` | the caller window; syscall argument blocks must lie here |
 | `2000h`-fixed code end | **fixed core** loadable code: `_CODE`, `_HOME`, `_INITIALIZER`, `_GSINIT`, `_GSFINAL` |
 | fixed data base-`5CFFh` | fixed-core runtime data (`_DATA`, `_INITIALIZED`), zeroed at boot, never loaded from ROM |
@@ -20,6 +20,8 @@ Mode 11 (the nucleus's view) with the window on bank 7:
 | cold data base-`DFFFh` | cold-half runtime data (`_WINDOW_DATA`), zeroed at boot |
 | `E000h-FCFFh` | common code and data (`_COMMON`, `_COMMON_DATA`) |
 | `EEFEh-EF07h` | the ROM-access transition block, inside the common range |
+| `EF08h-EF0Ch` | the real-time interrupt vector: `JP` to the owner's handler or to the idle `RETN` at `EF0Bh` (written at boot) |
+| `F000h-FCFFh` | the RT region, lent to the real-time interrupt's owner |
 | `FD00h-FDFFh` | the IM2 vector page (`I = FDh`) |
 | `FE00h` | the vector-`FFh` guard byte |
 | `FE01h-FE07h` | IRQ transition state |

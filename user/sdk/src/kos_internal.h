@@ -15,6 +15,7 @@
 #include "kos/syscall.h"
 #include "kos/seg.h"
 #include "kos/xmem.h"
+#include "kos/rt.h"
 
 union kos_syscall_block {
 	struct kfs_path_args    path;
@@ -35,6 +36,8 @@ union kos_syscall_block {
 	struct kos_xmem_map_args   xmem_map;
 	struct kos_seg_info_args   seg_info;
 	struct kos_seg_map_args    seg_map;
+	struct kos_rt_register_args rt_register;
+	struct kos_rt_info_args     rt_info;
 };
 
 extern union kos_syscall_block kos_scratch;

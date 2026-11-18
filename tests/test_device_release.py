@@ -155,7 +155,7 @@ class DeviceReleaseHost(unittest.TestCase):
         self.assertIn("_reboot", gate)
         header = read_text(
             os.path.join(ROOT, "user", "sdk", "include", "kos", "process.h"))
-        self.assertIn("void reboot(void);", header)
+        self.assertIn("int reboot(void);", header)
 
     def test_manifest_release_declaration(self):
         manifest = json.loads(read_text(V9958_JSON))

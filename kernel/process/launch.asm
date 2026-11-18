@@ -344,7 +344,10 @@ _kos_process_resume::
 
 	; Restore the gate frame for a user parent (index >= 1).  The LDIR
 	; begins the stackless window: nothing below touches the stack until
-	; SP is restored.
+	; SP is restored.  SP moves to the frame's base first: an NMI (the
+	; real-time interrupt, 4.12) is not masked and pushes wherever SP
+	; points, so it must point below the bytes being restored - into the
+	; gate stack's free part - never inside them.
 	ld	a,(kos_proc_index)
 	or	a
 	jr	z,004$
@@ -376,6 +379,7 @@ _kos_process_resume::
 	pop	hl			; HL = source
 	push	ix
 	pop	de			; DE = destination (saved SP)
+	ld	sp,ix			; below the frame (see above)
 	ldir
 
 004$:

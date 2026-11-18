@@ -89,8 +89,14 @@ int vfs_ns_file_bind(uint8_t pid, const char *name, uint16_t flags,
 	if (name[0] != '/') {
 		return -KOS_EINVAL;
 	}
-	if (romfs_lookup_ci(&name[1], &romfs) != 0) {
-		return -KOS_ENOENT;
+	{
+		int found = romfs_lookup_ci(&name[1], &romfs);
+
+		if (found != 0) {
+			/* Busy (the real-time interrupt holds the ROM mode)
+			 * is not absence. */
+			return found == -KOS_EBUSY ? -KOS_EBUSY : -KOS_ENOENT;
+		}
 	}
 	entry = vfs_handle_alloc(pid, KOS_HANDLE_FIRST_BOUND);
 	if (entry == (struct vfs_handle_entry *)0) {
@@ -221,8 +227,13 @@ int vfs_ns_file_meta(const char *rel, struct kos_ipc_frame *frame)
 		if (rel[0] != '/' || rel[1] == '\0') {
 			return -KOS_EINVAL;
 		}
-		if (romfs_lookup_ci(&rel[1], &romfs) != 0) {
-			return -KOS_ENOENT;
+		{
+			int found = romfs_lookup_ci(&rel[1], &romfs);
+
+			if (found != 0) {
+				return found == -KOS_EBUSY ? -KOS_EBUSY
+							   : -KOS_ENOENT;
+			}
 		}
 		st.type = KFS_TYPE_FILE;
 		st.attributes = 0u;

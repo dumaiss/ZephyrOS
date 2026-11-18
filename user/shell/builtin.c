@@ -177,8 +177,10 @@ static int builtin_reboot(int argc, char **argv)
 	if (argc > 1) {
 		return builtin_usage("reboot");
 	}
-	reboot();
-	return 0;
+	/* Returns only when refused: a program holds the real-time
+	 * interrupt. */
+	printf("reboot: refused (%d)\r\n", reboot());
+	return 1;
 }
 
 static int builtin_exit(int argc, char **argv)

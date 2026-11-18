@@ -71,7 +71,7 @@ SHELL_EXIT = "boot: /system/shell.exe exit %d\n"
 SHELL_BANNER_RE = (
     r"KonaOS v1\.0 \(build date: \d{4}-\d{2}-\d{2}\)\n"
     r"ABI version 1\n"
-    r"IOC version 75\n"
+    r"IOC version 76\n"
     r"Copyright \(C\) Sebastien Dumais 2026\n")
 
 
@@ -144,7 +144,8 @@ def file_session():
         ("ls //", "fs/\nsystem/\ndev/\n/> ", "/> ", False),
         ("ls /", "KEEP.TXT  19\nSUB/\n/> ", "/> ", False),
         ("ls /system", store_listing() + "/> ", "/> ", False),
-        ("ls /dev", "serial/\nioc\ninput/\nvideo\nconsole\ntimer\nsound\n/> ",
+        ("ls /dev", "serial/\nioc\nrtclock\ninput/\nvideo\nconsole\ntimer\n"
+         "sound\n/> ",
          "/> ", False),
         ("ls /dev/input", "keyboard\nmouse\njoy/\n/> ", "/> ", False),
         ("ls /SUB/ORIG.TXT", "ORIG.TXT  4\n/> ", "/> ", False),

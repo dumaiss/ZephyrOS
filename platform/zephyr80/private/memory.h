@@ -105,4 +105,14 @@
 #define KOS_ROM_ACCESS_BASE         0xEF00u
 #define KOS_ROM_ACCESS_SIZE         8u
 
+/* The real-time interrupt (architecture 4.12).  Every bank's 0066h holds
+ * JP KOS_RT_VECTOR; the vector is a JP to the owner's handler or to
+ * KOS_RT_IDLE, a lone RETN, directly after it.  Both sit in common
+ * memory above the packed ceiling, just after the ROM-access stub, and
+ * are written at boot.  The RT region (abi/kos/rt.h) is lent to the
+ * interrupt's owner. */
+#define KOS_NMI_ENTRY               0x0066u
+#define KOS_RT_VECTOR               0xEF08u
+#define KOS_RT_IDLE                 0xEF0Bu
+
 #endif /* ZEPHYR80_MEMORY_H */

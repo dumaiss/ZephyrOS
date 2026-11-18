@@ -15,6 +15,7 @@
  * suspended at once.
  */
 
+#include "kernel/syscall/rt.h"
 #include "process.h"
 #include "kernel.h"
 #include "kernel/vfs/vfs.h"
@@ -302,6 +303,7 @@ void process_slot_release(uint8_t pid)
 	 * allocated for it.  Idempotent. */
 	vfs_process_exit(pid);
 	kos_xmem_release_process(pid);
+	kos_rt_release_process(pid);
 	process_table[pid].state = PROCESS_FREE;
 	process_table[pid].bank = PROCESS_NO_PROCESS;
 	process_table[pid].exit_status = 0;
@@ -446,6 +448,7 @@ void process_exit(uint16_t status)
 	 * after the handles are unbound). */
 	vfs_process_exit(pid);
 	kos_xmem_release_process(pid);
+	kos_rt_release_process(pid);
 	/* After the child is released the active count is the parent's
 	 * depth, which is also the continuation index saved at its launch. */
 	req.status = status;

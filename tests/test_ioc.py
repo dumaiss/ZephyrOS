@@ -374,7 +374,8 @@ class TestIocDriverArtifact(unittest.TestCase):
                           "ioc_boot.rel", "sdcc_indirect_calls.rel"])
         self.assertEqual(manifest["endpoints"],
                          [{"class": 5, "instance": 0, "version": 1,
-                           "dispatch": "ioc_driver_dispatch", "flags": 0}])
+                           "dispatch": "ioc_driver_dispatch", "flags": 0,
+                           "release": True}])
         self.assertEqual(manifest["depends"], [])
 
     def test_system_file_and_boot_order(self):

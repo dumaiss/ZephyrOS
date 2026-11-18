@@ -192,6 +192,21 @@ guard refuses overlapping use with `KOS_EBUSY`.
 | `KIOC_OP_BULK_WRITE` | 3 | `arg1` length (1-512); desc in, or `payload[0..1]` a hot-tier buffer of the caller's | the length |
 | `KIOC_OP_STATUS` | 4 | — | the semantic status word (`KIOC_STATUS_*`) |
 | `KIOC_OP_READY` | 5 | — | 1 when the link is up and no recovery is pending |
+| `KIOC_OP_RT_CLOCK` | 7 | `arg1` rate in Hz, 0 stops | 0; `-KOS_EINVAL` without the `/dev/rtclock` hold or for a rate the controller refuses, `-KOS_ENOTSUP` for firmware without the RT clock |
+
+**The RT clock** (architecture 4.12). The driver publishes a second object,
+`/dev/rtclock` (object 1, type `IOC`), the RT clock's hold: `KOS_OP_ACQUIRE`
+grants it to one exclusive bind and refuses any other object, and the
+exclusive hold's `KOS_OP_RELEASE` (an unbind or the holder's exit) stops
+the clock. `KIOC_OP_RT_CLOCK` sends `CMD_RT_CLOCK` (50h, reply D0h) with
+the rate and the lane gap (arg0, 0 for `KIOC_RT_GAP_US`, 16 us): the
+controller pulses the Z80's `/NMI` at that rate and holds both lanes from
+`KIOC_RT_GUARD_US` (10 us) before each pulse to the gap after it, timed by
+a second PWM running in phase, so the host's receive FIFO is empty when
+the NMI arrives. A controller without it answers the unknown class. The
+three operations are one assembly routine (`ioc_driver_rt`) that builds
+the request in the caller's frame and reuses the command path, so the
+driver's hot image pays 133 bytes for them.
 
 `KIOC_STATUS_HID_PENDING` is sampled from `/CTSB`; raw SIO status never
 leaves the driver. Transport errors are the negative `KIOC_E*` codes

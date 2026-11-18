@@ -45,16 +45,26 @@ _exit::
 	halt
 	jr	001$
 
-; void reboot(void);  does not return.
+; int reboot(void);  does not return unless the kernel refuses (a program
+; holds the real-time interrupt): then DE = -errno.
 _reboot::
 	ld	hl,#_kos_scratch
 	ld	a,#SYS_REBOOT
 	rst	0x30
-	; SYS_REBOOT never returns; trap a kernel contract violation.
+	jr	c,002$
+	; SYS_REBOOT accepted never returns; trap a kernel contract violation.
 	di
 001$:
 	halt
 	jr	001$
+002$:
+	ld	e,a
+	xor	a
+	sub	e
+	ld	e,a
+	sbc	a,a
+	ld	d,a
+	ret
 
 ; int getinfo(struct kos_info_record *record);  HL = record.
 _getinfo::

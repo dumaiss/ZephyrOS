@@ -23,6 +23,7 @@ build/syscall.rel
 build/diag.rel
 build/diag_io.rel
 build/xmem.rel
+build/rt.rel
 build/irq.rel
 build/irq_sources.rel
 build/romfs.rel

@@ -6,12 +6,13 @@
  * card picks it up).  A HALT needs an interrupt to end it: the one source
  * every system that has it keeps running is the timer driver's tick, so
  * idle() halts only where `/dev/timer` exists (asked once) and returns at
- * once elsewhere.
+ * once elsewhere.  The RT clock's NMIs end a HALT too; the halt waits on
+ * through them for a maskable interrupt (kos/rt.h, KOS_IRQ_LAST_SOURCE).
  */
 
 #include "kos.h"
 
-void kos_idle_halt(void);
+void kos_idle_halt(volatile uint8_t *last);
 
 static unsigned char idle_mode; /* 0 = not asked yet, 1 = halt, 2 = never */
 
@@ -30,6 +31,6 @@ void idle(void)
 		}
 	}
 	if (idle_mode == 1u) {
-		kos_idle_halt();
+		kos_idle_halt((volatile uint8_t *)KOS_IRQ_LAST_SOURCE);
 	}
 }

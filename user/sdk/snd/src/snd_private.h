@@ -99,6 +99,10 @@ extern uint8_t snd_dirty;
 
 /* Assembly entry points the C members use. */
 void snd_load_ports(const void *info);
+
+/* snd_close's call into an open PCM stream (snd_pcm.c sets it at open), so
+ * a program that plays no PCM links none of it. */
+extern void (*snd_pcm_closer)(void);
 void snd_voice_init(void);
 void snd_shadow_invalidate(void);
 void snd_output_flush(void);

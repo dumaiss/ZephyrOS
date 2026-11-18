@@ -83,7 +83,13 @@ class CoreState(ctypes.Structure):
                  ("out_hit", ctypes.c_int32),
                  ("py_accept", ctypes.c_int32),
                  ("pad1", ctypes.c_int32),
-                 ("accept", ACCEPT)])
+                 ("accept", ACCEPT),
+                 ("nmi_pending", ctypes.c_int32),
+                 ("pad2", ctypes.c_int32),
+                 ("rt_hz", ctypes.c_int64),
+                 ("rt_acc", ctypes.c_int64),
+                 ("rt_ticks", ctypes.c_int64),
+                 ("nmi_count", ctypes.c_int64)])
 
 
 _lib = None
@@ -376,6 +382,7 @@ def make_core_class(Z80, Ctc, tables):
         setattr(CZ80, name, _register(name))
     for name in FLAGS:
         setattr(CZ80, name, _flag(name))
-    for name in ("cycles", "tstates"):
+    for name in ("cycles", "tstates", "nmi_pending", "rt_hz", "rt_acc",
+                 "rt_ticks", "nmi_count"):
         setattr(CZ80, name, _register(name))
     return CZ80

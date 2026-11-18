@@ -87,6 +87,15 @@ struct core {
 	int32_t py_accept;
 	int32_t pad1;
 	core_accept_fn accept;
+	/* the NMI line (edge already taken) and the IO controller's RT
+	 * clock: an NMI every CLOCK_HZ / rt_hz T-states, kept exact in
+	 * integers (rt_acc counts T-states * rt_hz); 0 = stopped */
+	int32_t nmi_pending;
+	int32_t pad2;
+	int64_t rt_hz;
+	int64_t rt_acc;
+	int64_t rt_ticks;
+	int64_t nmi_count;
 };
 
 int core_step(struct core *c);

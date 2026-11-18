@@ -33,6 +33,7 @@
  * streams exactly like a `/system` one.
  */
 
+#include "kernel/syscall/rt.h"
 #include "process.h"
 #include "kos/syscall.h"
 #include "kos/object.h"
@@ -108,10 +109,7 @@ static uint8_t exec_seg_write(uint8_t bank, uint16_t addr,
 	req.addr = addr;
 	req.buffer = (uint8_t *)src;
 	req.length = length;
-	if (addr >= EXEC_WINDOW_BASE) {
-		return kos_window_copy(&req);
-	}
-	return kos_bank_copy(&req);
+	return kos_aux_copy(&req);
 }
 
 /* Zero `length` bytes of a segment object.  The mode-10 gate has a ZERO
@@ -138,8 +136,17 @@ static uint8_t exec_seg_zero(uint8_t bank, uint16_t addr, uint16_t length)
 					   chunk) != 0) {
 				return 1;
 			}
-		} else if (exec_bank_zero(bank, at, chunk) != 0) {
-			return 1;
+		} else {
+			struct kos_bank_copy_req req;
+
+			req.bank = bank;
+			req.op = KOS_BANK_OP_ZERO;
+			req.addr = at;
+			req.buffer = (uint8_t *)0;
+			req.length = chunk;
+			if (kos_aux_copy(&req) != 0) {
+				return 1;
+			}
 		}
 		done = (uint16_t)(done + chunk);
 	}
@@ -737,6 +744,11 @@ int process_prepare(const char *path, uint8_t parent_pid, uint16_t args,
 	if (error == EXE_EXEC_OK &&
 	    exec_bank_write(bank, 0x0030, kos_process_page_zero_vector,
 			    3) != 0) {
+		error = EXE_EXEC_ERR_READ;
+	}
+	/* The NMI entry (4.12): a page zero the previous owner of the bank
+	 * may have changed is rebuilt with it before the child can run. */
+	if (error == EXE_EXEC_OK && kos_rt_page_zero(bank) != 0) {
 		error = EXE_EXEC_ERR_READ;
 	}
 	if (error == EXE_EXEC_OK) {

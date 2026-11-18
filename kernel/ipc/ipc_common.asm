@@ -67,12 +67,13 @@ _ipc_ap_copy::
 	ld	hl,(_ipc_ap_req+1)	; the copy moves (HL) -> (DE)
 	ld	de,(_ipc_ap_req+3)
 	ld	bc,(_ipc_ap_req+5)
+	push	bc			; the length, kept for the return
 	out	(KOS_MEMCTL_PORT),a	; aperture opens: bank 6 at 8000h
 	KOS_FASTCOPY			; in place: this stack has no room
 	ld	a,(_ipc_ap_saved_latch)
 	out	(KOS_MEMCTL_PORT),a	; restore before SP leaves common
+	pop	de			; DE = the length
 	ld	sp,(_ipc_ap_saved_sp)
-	ld	de,(_ipc_ap_req+5)
 	ret
 
 ipc_common_end::
@@ -80,15 +81,20 @@ ipc_common_end::
 ; ---------------------------------------------------------------------------
 ; Common state.  Fixed for the whole copy, and all of it must be common:
 ; the saved latch and the request are read while mode 10 is in force, and
-; the reservation below is where an interrupt taken in that window pushes.
+; the reservation is where an interrupt taken in that window pushes.  The
+; saved cells sit above it and the request below: the request is dead once
+; its four loads are done (the length rides on the reservation), so an
+; interrupt's pushes may run on into it.  That depth matters: a maskable
+; interrupt's stub pushes four bytes before it leaves this stack, and the
+; real-time NMI (4.12) can land inside that stub and push four more.
 ; ---------------------------------------------------------------------------
 	.area _COMMON_DATA
 _ipc_ap_req::
 	.ds	7
+_ipc_ap_stack::
+	.ds	KOS_IPC_APERTURE_STACK_SIZE
+_ipc_ap_stack_top::
 _ipc_ap_saved_latch::
 	.ds	1
 _ipc_ap_saved_sp::
 	.ds	2
-_ipc_ap_stack::
-	.ds	KOS_IPC_APERTURE_STACK_SIZE
-_ipc_ap_stack_top::

@@ -22,6 +22,7 @@ const uint16_t *snd_custom_table;
 uint16_t snd_reserved_voices;
 uint16_t snd_active_rate;
 unsigned int snd_overruns;
+void (*snd_pcm_closer)(void);
 
 int snd_open(void)
 {
@@ -76,6 +77,10 @@ void snd_close(void)
 
 	if (snd_handle == 0) {
 		return;
+	}
+	if (snd_pcm_closer != (void (*)(void))0) {
+		snd_pcm_closer();
+		snd_pcm_closer = (void (*)(void))0;
 	}
 	/* Silence every voice before the release (the release resets the
 	 * card whatever was left, but the silence is the library's own
