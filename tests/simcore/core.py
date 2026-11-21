@@ -96,7 +96,7 @@ class CoreState(ctypes.Structure):
                  ("board", ctypes.c_int32),
                  ("dat_bank", ctypes.c_int32),
                  ("map_enable", ctypes.c_int32),
-                 ("pad3", ctypes.c_int32),
+                 ("dat_strict", ctypes.c_int32),
                  ("dat", ctypes.c_int32 * 16),
                  ("phys", ctypes.c_void_p),
                  ("phys_len", ctypes.c_int64)])
@@ -279,10 +279,10 @@ def make_core_class(Machine, Ctc, tables):
         translation runs there; reset, I/O decode and the entry pattern
         are the Python reference's."""
 
-        def __init__(self, cpu, seed):
+        def __init__(self, cpu, seed, strict):
             object.__setattr__(self, "_cpu", cpu)
             object.__setattr__(self, "_s", cpu._c)
-            super().__init__(seed)
+            super().__init__(seed, strict)
 
         def _make_entries(self):
             return _EntryView(self._s.dat)
@@ -303,6 +303,14 @@ def make_core_class(Machine, Ctc, tables):
         def map_enable(self, value):
             self._s.map_enable = int(value)
 
+        @property
+        def strict(self):
+            return bool(self._s.dat_strict)
+
+        @strict.setter
+        def strict(self, value):
+            self._s.dat_strict = 1 if value else 0
+
         def physical(self, la):
             return lib.core_translate(ctypes.byref(self._s), int(la))
 
@@ -312,7 +320,8 @@ def make_core_class(Machine, Ctc, tables):
         CORE = "c"
 
         def __init__(self, page0, page1, rom_pages=None,
-                     decoder_revision=13, board="mk1", mapper_seed=1):
+                     decoder_revision=13, board="mk1", mapper_seed=1,
+                     mapper_strict=True):
             c = CoreState()
             c.board = 1 if board == "mk2" else 0
             object.__setattr__(self, "_c", c)
@@ -364,11 +373,11 @@ def make_core_class(Machine, Ctc, tables):
             object.__setattr__(self, "_callbacks", callbacks)
             c.io_in, c.io_out, c.clock, c.accept = callbacks
             super().__init__(page0, page1, rom_pages, decoder_revision,
-                             board, mapper_seed)
+                             board, mapper_seed, mapper_strict)
             self._bind_memory()
 
-        def _make_mapper(self, seed):
-            return MapperView(self, seed)
+        def _make_mapper(self, seed, strict):
+            return MapperView(self, seed, strict)
 
         def _rd_mk2(self, addr):
             value = lib.core_rd(ctypes.byref(self._c), int(addr) & 0xFFFF)

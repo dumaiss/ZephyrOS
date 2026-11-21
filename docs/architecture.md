@@ -83,7 +83,8 @@ kernel/               the nucleus
   ipc/                endpoints, frames, descriptors, copy paths
   irq/                the interrupt executive and its platform quiesce
   lib/                small shared helpers
-  memory/             banking, window and gate copies, upcall shims
+  memory/             banking, window and gate copies, upcall shims;
+                      mk2/: the Mk2 mapping operations and DAT state
   process/            the process table, exec, launch
   romfs/              the ROM store reader and the ROM-access stub
   runtime/            compiler helper routines
@@ -96,6 +97,7 @@ formats/include/      on-media formats: ROMFS, EXE, MOD
 abi/kos/              the public native ABI (one copy of every header)
 platform/zephyr80/    machine description: public/ (drivers may use),
                       private/ (nucleus only), config.mk
+platform/zephyr80mk2/ the Mk2 CPU board's description (2.7), same shape
 systems/              one system file per image
 config/               residency and SDK configuration
 linker/               the link script
@@ -110,7 +112,8 @@ tests/                host tests, simulator replays, target test code
 
 Ownership rules:
 
-- `platform/zephyr80/` holds **constants and configuration only**: port
+- `platform/zephyr80/` and `platform/zephyr80mk2/` hold **constants and
+  configuration only**: port
   numbers, register masks, memory regions, mode values, IRQ wiring, build
   variables. It contains no `.c` or `.asm` file and no instruction-emitting
   macro. A file that emits bytes that run on the Z80 does not belong there.
@@ -133,7 +136,10 @@ Ownership rules:
   | drivers | `abi`, `drivers/include`, `platform/zephyr80/public`, the driver's own directory |
   | programs | `abi` and the SDK include root only |
 
-  A driver cannot include a nucleus header.
+  A driver cannot include a nucleus header. The nucleus's assembly adds
+  its board's mapping operations: `kernel/memory` for Mk1;
+  `BOARD=mk2` uses `platform/zephyr80mk2/`'s platform roots instead
+  and adds `kernel/memory/mk2`.
 
 ### 1.4 Toolchain
 
@@ -158,8 +164,11 @@ window, open the IPC aperture, enter the ROM view). In user space only the
 SDK's mapping members write it: `xmemgate.asm` opens and closes the far
 aperture and `vcall.asm` closes it for the home zone and restores the
 caller's latch (section 7). These are the Mk1 implementation of the
-mapping operations; a board with another mapper supplies its own (2.7.6).
-`tests/test_source_layout.py` rejects a latch write anywhere else.
+mapping operations; `kernel/memory/mk2/map_ops.inc` is the Mk2 one
+(2.7.6), and a source written with the operations both define assembles
+for either board, the build's `BOARD` choosing the file by include path.
+`tests/test_source_layout.py` rejects a latch or mapper write anywhere
+else.
 
 ```text
 D0-D2   Q   SRAM bank
@@ -352,11 +361,13 @@ valid low entry stubs (or an equivalent verified safe-entry mechanism).
 Simply fixing the entire low 8 KiB to one kernel page would remove that
 process workspace.
 
-The existing syscall path relies on access to a caller's low page while
-the kernel executes. A plausible Mk2 implementation maps that caller
-page into the system DAT's logical page 0 when required; whether the
-final port does so, or copies arguments through the common area, is
-decided with a measurement in the transitions package. The system DAT is
+The syscall path reaches a caller's low page while the kernel executes:
+the gate maps the caller's page 0 as **system entry 0** for the call and
+puts the system page-0 image back on return, so argument blocks keep the
+Mk1 rule (they lie in `0100h-1FFFh`) and a body reads and writes them in
+place. The mapping costs about 100 T-states a call (save, remap and
+restore one entry); copying a 16-byte block through common memory and
+back costs about 820, and could not serve a buffer. The system DAT is
 **resident**, but not necessarily immutable in every entry.
 
 **Page 0 after boot:** ROM page 00h is the reset and boot view only. The
@@ -488,6 +499,26 @@ from sections 4.3–4.5 still apply.
 so it writes the mirror after its `OUT`s. This is safe only because of the
 IOC invariant (2.7.5: no NMI before the bootstrap has a RAM stack); after
 the handoff the mirror is always valid and the rule below holds.
+
+**The transitions** (the syscall gate, the IRQ executive, the event core)
+are the Mk1 sources, assembled for Mk2 through the Mk2 mapping
+operations. The byte Mk1 keeps as the latch is the **mapping value**:
+`00h` while the system bank is active, otherwise the page of the working
+bank's logical page 0, the program's page-0 image, which also names the
+program (the event core's owner check uses it where Mk1 uses the bank).
+The DAT state in common memory holds the mirrors of both banks and of the
+control register and the identity of the 8-byte image the working bank
+holds (none once an entry is remapped). The gate saves the caller's
+mapping value, system entry 0 and that identity (copying the working
+mirror into its own image when an entry was remapped), maps the caller's
+page 0 as system entry 0 and selects the system bank. Restoring a program
+context closes the crossing: the caller's image is loaded back if a body
+replaced it, the working bank selected and system entry 0 put back. An
+IRQ saves and restores the mapping value only: it never changes an
+entry, so an interrupt in a body returns to the body's exact DAT. An
+event frame carries the mapping value where Mk1 keeps the latch. A Mk2
+syscall round trip costs about 1,520 T-states without the body, against
+1,130 for Mk1's gate on the same harness (`tests/test_mk2_transitions.py`).
 
 **NMI rule** (the Mk2 counterpart of "an NMI never changes the latch"):
 an NMI handler never changes `DAT_BANK`, a DAT entry or a software

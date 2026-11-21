@@ -94,10 +94,13 @@ def device_of(pa):
     return "sram" if pa >= SRAM_BASE else "rom"
 
 
-def make(code, cls=None, seed=1):
+def make(code, cls=None, seed=1, strict=True):
+    """A Mk2 board running `code` from ROM 0000h.  `strict=False` for
+    a program that deliberately writes an entry with another B."""
     rom = bytearray(ROM_IMAGE)
     rom[0:len(code)] = bytes(code)
-    return (cls or Z80)(bytes(rom), b"", board="mk2", mapper_seed=seed)
+    return (cls or Z80)(bytes(rom), b"", board="mk2", mapper_seed=seed,
+                        mapper_strict=strict)
 
 
 def go(z, stop=None):
@@ -375,7 +378,7 @@ class TestPortDecode(unittest.TestCase):
     def test_out_c_a_uses_b_for_the_high_byte(self):
         z = make(self.prologue() + ld_bc(0x0003) + ld_a(0x33) + OUT_C_A +
                  ld_bc(0x8004) + ld_a(0x34) + OUT_C_A +
-                 ld_bc(0x2A05) + ld_a(0xC5) + OUT_C_A + HALT)
+                 ld_bc(0x2A05) + ld_a(0xC5) + OUT_C_A + HALT, strict=False)
         go(z)
         expect = list(self.BASE)
         expect[3] = 0x33
@@ -414,7 +417,7 @@ class TestPortDecode(unittest.TestCase):
                       (0x7F0F, 0x00)):    # A15 clear: entry 15
             code += ld_bc(bc) + ld_a(a) + OUT_C_A
             ends.append(len(code))
-        z = make(code + HALT)
+        z = make(code + HALT, strict=False)
         go(z, stop=ends[0])
         self.assertEqual((z.mapper.dat_bank, z.mapper.map_enable), (1, 1))
         go(z, stop=ends[2])
@@ -429,7 +432,8 @@ class TestPortDecode(unittest.TestCase):
     def test_block_output_counts_b_down_before_the_address(self):
         # OUTI and OTIR drive the decremented B on A8-A15.
         z = make(self.prologue() + ld_hl(0x0300) + ld_bc(0x8002) + OUTI +
-                 ld_bc(0x8103) + OUTI + ld_bc(0x0204) + OTIR + HALT)
+                 ld_bc(0x8103) + OUTI + ld_bc(0x0204) + OTIR + HALT,
+                 strict=False)
         z.phys[0x300] = 0x2B
         z.phys[0x303] = 0x6C
         go(z)
@@ -446,6 +450,52 @@ class TestPortDecode(unittest.TestCase):
                  [0x4F] + HALT)
         go(z)
         self.assertEqual((z.b, z.c), (0xFF, 0xFF))
+
+
+class TestStrictEntryWrites(unittest.TestCase):
+    """Wiring-agnostic entry writes (2.7.4): the page on D0-D6 and on
+    A8-A14.  The strict mapper, the default, stops on a write whose data
+    byte and A8-A14 disagree."""
+
+    def test_agreeing_writes_pass(self):
+        z = make(ld_a(0x45) + out_n(0x03) +              # OUT (n),A
+                 ld_a(0x46) + [0x47] + [0x0E, 0x04] +    # LD B,A; LD C,4
+                 OUT_C_A + control(0x02) + HALT)
+        self.assertTrue(z.mapper.strict)
+        go(z)
+        self.assertEqual(z.mapper.entries[3:5], [0x45, 0x46])
+        self.assertEqual(z.mapper.map_enable, 1)
+
+    def test_a_disagreeing_write_stops_the_run(self):
+        for code in (ld_bc(0x0003) + ld_a(0x33) + OUT_C_A,
+                     ld_hl(0x0300) + ld_bc(0x0102) + OUTI):
+            z = make(code + HALT)
+            z.phys[0x300] = 0x2B
+            before = list(z.mapper.entries)
+            with self.assertRaises(SystemExit) as ctx:
+                go(z)
+            self.assertIn("A8-A14", str(ctx.exception))
+            self.assertEqual(list(z.mapper.entries), before)
+
+    def test_the_control_register_is_not_an_entry_write(self):
+        z = make(control(0x01) + HALT)          # 800Fh: B = 80h, A = 01h
+        go(z)
+        self.assertEqual((z.mapper.dat_bank, z.mapper.map_enable), (1, 0))
+
+    def test_non_strict_takes_the_write(self):
+        z = make(ld_bc(0x0003) + ld_a(0x33) + OUT_C_A + HALT, strict=False)
+        go(z)
+        self.assertEqual(z.mapper.entries[3], 0x33)
+
+    def test_the_reference_mapper_agrees(self):
+        mapper = z80sim.Mk2Mapper(1)
+        self.assertTrue(mapper.io_write(0x4505, 0x45))
+        with self.assertRaises(SystemExit):
+            mapper.io_write(0x0005, 0x45)
+        self.assertTrue(mapper.io_write(0x800F, 0x02))
+        loose = z80sim.Mk2Mapper(1, strict=False)
+        self.assertTrue(loose.io_write(0x0005, 0x45))
+        self.assertEqual(loose.entries[5], 0x45)
 
 
 class TestBoardSelection(unittest.TestCase):

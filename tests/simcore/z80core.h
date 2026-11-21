@@ -104,7 +104,7 @@ struct core {
 	int32_t board;
 	int32_t dat_bank;
 	int32_t map_enable;
-	int32_t pad3;
+	int32_t dat_strict;  /* nonzero: an entry write's data must be A8-A14 */
 	int32_t dat[16];
 	uint8_t *phys;
 	int64_t phys_len;

@@ -349,9 +349,11 @@ the instructions they stand for.
   code, the stack and gate-stack sizes, the ROM-access placement, the IM2
   page, guard and state addresses, page zero, and the common ceiling.
 - `tests/test_source_layout.py`: constant parity between the C and assembly
-  descriptions of the platform, that `platform/zephyr80/` holds no
-  executable code, and that nothing outside `kernel/memory/map_ops.inc` and
-  the SDK's `xmemgate.asm` and `vcall.asm` writes the latch.
+  descriptions of the platform, that `platform/zephyr80/` (and the Mk2
+  board's `platform/zephyr80mk2/`) holds no executable code, and that
+  nothing outside `kernel/memory/map_ops.inc` (Mk2:
+  `kernel/memory/mk2/map_ops.inc`) and the SDK's `xmemgate.asm` and
+  `vcall.asm` writes the latch or the Mk2 mapper.
 - At boot the kernel checks that it runs in mode 11 over bank 0 (an
   assembly read-back and a C check in `kernel_main()`); a failure prints on
   the early console and halts.

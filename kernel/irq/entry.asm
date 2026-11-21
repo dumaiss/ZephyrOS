@@ -1,9 +1,10 @@
 ; Common IM2 source stubs and the non-nested mode-crossing, P-normalizing
-; gate (revision 13).
+; gate (revision 13).  Assembled for Mk2, the gate saves the mapping value
+; and runs the dispatcher in the system DAT bank (architecture 2.7.6).
 	.module irq_entry
 	.include "hardware.inc"
 	.include "memory.inc"
-	.include "kernel/memory/map_ops.inc"
+	.include "map_ops.inc"
 	.include "irq.inc"
 
 	.globl _irq_dispatch

@@ -6,6 +6,10 @@
 ; the memory latch (tests/test_source_layout.py enforces it).  A board with
 ; another mapper supplies its own implementation of the same operations.
 ;
+; kernel/memory/mk2/map_ops.inc is the Zephyr-80 Mk2 implementation; a
+; source that uses only operations both define assembles for either board,
+; the include path choosing the file.
+;
 ; On Mk1 a mapping value is the latch byte (architecture 2.1):
 ; (P << 5) | mode | Q.  The operations expand in place: no call, no stack,
 ; no memory access, so each runs on any stack, including none, and adds
@@ -20,6 +24,8 @@
 ;                          Flags kept.  2 bytes, 11 T.
 ;   KOS_MAP_BANK_OF        A = mapping -> A = its SRAM bank (the caller
 ;                          bank).  F.  2 bytes, 7 T.
+;   KOS_MAP_IS_PROGRAM     A = mapping -> Z set when it names a program
+;                          context (mode 10).  A, F.  4 bytes, 14 T.
 ;   KOS_MAP_NO_PAGE        A = mapping -> A = the same mapping with the
 ;                          window/aperture page closed (mode and bank
 ;                          kept).  F.  2 bytes, 7 T.
@@ -61,6 +67,12 @@
 ;                          view.  The next fetch comes from the ROM page,
 ;                          so the code after it is mirrored there.
 ;                          Registers and flags kept.  2 bytes, 11 T.
+;   KOS_MAP_GATE_ENTER slot, fault
+;                          the syscall gate's entry: slot = the caller's
+;                          exact mapping; anything but mode 10 over bank
+;                          0-6 jumps to fault; then the system mapping
+;                          over the caller's bank (the caller window).
+;                          A, F.  31 bytes, 123 T.
 ;   KOS_MAP_ROM_AT p,b     the ROM view of the constant page p with writes
 ;                          to the constant bank b (the reset copier and
 ;                          the warm reboot).  A.  4 bytes, 18 T.
@@ -72,6 +84,11 @@
 
 	.macro	KOS_MAP_BANK_OF
 	and	#KOS_BANK_MASK
+	.endm
+
+	.macro	KOS_MAP_IS_PROGRAM
+	and	#KOS_MODE_MASK
+	cp	#KOS_MODE_APPLICATION
 	.endm
 
 	.macro	KOS_MAP_NO_PAGE
@@ -141,6 +158,20 @@
 
 	.macro	KOS_MAP_ENTER_ROM
 	out	(KOS_MEMCTL_PORT),a
+	.endm
+
+	.macro	KOS_MAP_GATE_ENTER slot, fault
+	KOS_MAP_CURRENT
+	ld	(slot),a
+	KOS_MAP_IS_PROGRAM
+	jp	nz,fault
+	ld	a,(slot)
+	KOS_MAP_BANK_OF
+	cp	#KOS_BANK_MASK		; bank 7 is not an application bank
+	jp	z,fault
+	ld	a,(slot)
+	KOS_MAP_BANK_OF
+	KOS_MAP_SYSTEM
 	.endm
 
 	.macro	KOS_MAP_ROM_AT page, bank

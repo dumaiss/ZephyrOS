@@ -6,8 +6,10 @@
 ;
 ;   ROM page 0, pass mode (logical = physical ROM 0000h-FFFFh, no RAM):
 ;     1. DI; program all sixteen DAT entries from `dat_image` with
-;        OUT (C),A, B = 00h (I/O A15 = 0).  No stack exists yet: nothing
-;        here pushes, calls or writes memory.
+;        OUT (C),A and B = A: the page on D0-D6 and A8-A14 (I/O A15 = 0,
+;        pages are below 80h), whichever the entry inputs are wired to.
+;        No stack exists yet: nothing here pushes, calls or writes
+;        memory.
 ;     2. MAP_ENABLE with DAT_BANK = 0.  Entry 0 maps ROM page 00h, so the
 ;        bytes at 0000h-1FFFh are the same in both views and the
 ;        instruction after the OUT is fetched from the same ROM byte.
@@ -82,9 +84,10 @@ nmi:					; the IOC starts no RT clock here
 	.org	0x0100
 boot:
 	ld	hl,#dat_image
-	ld	bc,#0x0000		; B = 00h: A15 = 0; C = entry 0
+	ld	c,#0			; C = entry 0
 boot_entry:
 	ld	a,(hl)
+	ld	b,a			; B = A: wiring-agnostic, A15 = 0
 	out	(c),a
 	inc	hl
 	inc	c

@@ -136,13 +136,24 @@ static void mk2_wr(struct core *c, int addr, int v)
 	if (pa >= 0x80000) c->phys[pa] = (uint8_t)(v & 0xFF);
 }
 
-/* Mk2Mapper.io_write: 1 when the mapper took the write. */
+/* Mk2Mapper.io_write: 1 when the mapper took the write.  Strict mode
+ * (architecture 2.7.4, wiring-agnostic writes): an entry write whose data
+ * byte and A8-A14 disagree stops the run. */
 static int mk2_io_write(struct core *c, int port, int value)
 {
 	int low = port & 0xFF;
+	char msg[96];
 
 	if (low > 0x0F) return 0;
 	if (!(port & 0x8000)) {
+		if (c->dat_strict && (value & 0x7F) != ((port >> 8) & 0x7F)) {
+			snprintf(msg, sizeof(msg),
+				 "sim: mk2 entry %d write %02Xh at port %04Xh: "
+				 "data and A8-A14 disagree", low, value & 0xFF,
+				 port & 0xFFFF);
+			core_exit(c, msg);
+			return 1;
+		}
 		c->dat[low] = value & 0x7F;
 		return 1;
 	}

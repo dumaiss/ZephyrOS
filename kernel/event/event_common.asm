@@ -29,6 +29,10 @@
 ; 8000h-BFFFh aperture (docs/sdk.md; the SDK's stack reservation and the far
 ; link rule keep it below it).
 ;
+; On Mk2 the latch is the mapping value (architecture 2.7.6): the frame's
+; first byte, the owner check (the program's page 0) and the restore all
+; go through the mapping operations, which the build selects per board.
+;
 ; Three entry points:
 ;
 ;   kos_event_irq_exit()      IRQ exit, after the interrupted latch is
@@ -48,7 +52,7 @@
 	.module event_common
 	.include "hardware.inc"
 	.include "memory.inc"
-	.include "kernel/memory/map_ops.inc"
+	.include "map_ops.inc"
 
 	.globl _kos_event_irq_exit
 	.globl _kos_event_syscall_exit
@@ -127,8 +131,7 @@ _kos_event_pick_keep::
 ; Clobbers: AF, BC, DE, HL, IX.
 _kos_event_pick_core::
 	ld	a,(_kos_event_latch)
-	and	#KOS_MODE_MASK
-	cp	#KOS_MODE_APPLICATION
+	KOS_MAP_IS_PROGRAM
 	jr	nz,event_pick_none
 	ld	a,(_kos_event_maybe)
 	or	a
@@ -136,7 +139,7 @@ _kos_event_pick_core::
 	xor	a
 	ld	(_kos_event_maybe),a
 	ld	a,(_kos_event_latch)
-	and	#KOS_BANK_MASK
+	KOS_MAP_BANK_OF
 	ld	c,a
 	ld	ix,#_kos_event_table
 	ld	b,#EVENT_MAX
@@ -270,15 +273,14 @@ _kos_event_post_bank::
 	or	a
 	jr	z,event_post_bank_gate
 	ld	a,(irq_saved_latch)
-	and	#KOS_MODE_MASK
-	cp	#KOS_MODE_APPLICATION
+	KOS_MAP_IS_PROGRAM
 	jr	nz,event_post_bank_gate
 	ld	a,(irq_saved_latch)
 	jr	event_post_bank_have
 event_post_bank_gate:
 	ld	a,(kos_gate_saved_latch)
 event_post_bank_have:
-	and	#KOS_BANK_MASK
+	KOS_MAP_BANK_OF
 	ld	l,a
 	ret
 

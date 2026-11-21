@@ -35,6 +35,7 @@
 #   make ipc-selftest              resident-driver IPC acceptance image
 #   make helloworld-image          SDK demo image (no kernel change)
 #   make mk2boot                   Zephyr-80 Mk2 boot proof image (test-only)
+#   make mk2trans                  Zephyr-80 Mk2 transitions image (test-only)
 #   make clean    remove all generated files
 #
 # Builds are parallel by default (KOS_JOBS defaults to nproc); use
@@ -93,11 +94,29 @@ include $(SYSTEM_MK)
 # Zephyr-80 platform build configuration (include paths and the
 # declarative constant files consumed by the build and layout tools).
 include platform/zephyr80/config.mk
+include platform/zephyr80mk2/config.mk
+
+# --- board selection --------------------------------------
+# BOARD names the CPU board the kernel's assembly sources build for: mk1
+# (the banking latch, the production board) or mk2 (the LS612 DAT mapper,
+# architecture 2.7).  A board is its platform include roots plus its
+# mapping operations (kernel/memory/map_ops.inc or kernel/memory/mk2/),
+# which the sources include as "map_ops.inc".  The Mk2 images are the
+# test images mk2boot and mk2trans; `make BOARD=mk2` builds mk2trans.
+BOARD ?= mk1
+KOS_BOARD_ASFLAGS.mk1 := $(KOS_PLATFORM_ASFLAGS) -Ikernel/memory
+KOS_BOARD_ASFLAGS.mk2 := $(KOS_MK2_PLATFORM_ASFLAGS) -Ikernel/memory/mk2
+ifeq ($(filter $(BOARD),mk1 mk2),)
+$(error BOARD must be mk1 or mk2, not "$(BOARD)")
+endif
+ifeq ($(BOARD),mk2)
+.DEFAULT_GOAL := mk2trans
+endif
 
 # The standalone SDK release version (`make sdk`).
 include config/sdk.mk
 
-ASFLAGS   := $(KOS_PLATFORM_ASFLAGS) -Itests/target/include
+ASFLAGS   := $(KOS_BOARD_ASFLAGS.$(BOARD)) -Itests/target/include
 # Kernel and acceptance sources include their private interfaces by
 # explicit owning path (kernel/...), so the nucleus build keeps `-I .`
 #; the module/driver build (DRV_CFLAGS, MOD_CFLAGS)
@@ -392,7 +411,7 @@ $(BUILD)/konaos.probe.ihx $(BUILD)/konaos.probe.map: \
 	subsystem-selftest process-selftest exe2-selftest \
 	console-serial-selftest \
 	fs-selftest ns-selftest ipc-selftest xmem-selftest helloworld-image \
-	phase-image mk2boot \
+	phase-image mk2boot mk2trans \
 	hardware-images \
 	smoke-hardware \
 	smoke-hardware-hwtest \
@@ -1949,6 +1968,71 @@ $(MK2BOOT_DIR)/mk2boot.bin: tests/target/mk2boot/mk2boot.asm \
 		-o $(MK2BOOT_DIR)/mk2boot.rel $<
 	$(SDLDZ80) -m -w -i $(MK2BOOT_DIR)/mk2boot.ihx $(MK2BOOT_DIR)/mk2boot.rel
 	makebin -s 524288 $(MK2BOOT_DIR)/mk2boot.ihx $@
+
+# Zephyr-80 Mk2 transitions image (test-only, BOARD=mk2): the kernel's
+# transition sources assembled for Mk2 - the syscall gate, page zero, the
+# IRQ executive, its vectors, init and code end, the event core and the
+# Mk2 mapping state - around a bootstrap, stub dispatchers and a process in the working
+# bank (tests/test_mk2_transitions.py).  The image is the whole 512 KiB
+# flash.  mk1gate is the Mk1 gate on the same harness: the same kernel
+# sources assembled for Mk1, with a null dispatcher, for the gate
+# measurement.
+
+MK2TRANS_DIR := build-mk2trans
+MK2TRANS_ASFLAGS := $(KOS_BOARD_ASFLAGS.mk2)
+MK2TRANS_INC := $(wildcard platform/zephyr80mk2/*/*.inc) \
+	kernel/memory/mk2/map_ops.inc platform/zephyr80/public/hardware.inc
+MK2TRANS_KERNEL := kernel/syscall/page_zero.asm kernel/syscall/entry.asm \
+	kernel/irq/entry.asm kernel/irq/vectors.asm kernel/irq/init.asm \
+	kernel/event/event_common.asm kernel/memory/mk2/banking.asm \
+	kernel/irq/code_end.asm
+MK2TRANS_RELS := $(MK2TRANS_DIR)/mk2trans.rel \
+	$(foreach src,$(MK2TRANS_KERNEL),$(MK2TRANS_DIR)/$(subst /,_,$(basename $(src))).rel)
+MK1GATE_KERNEL := kernel/syscall/page_zero.asm kernel/syscall/entry.asm \
+	kernel/memory/banking.asm kernel/event/event_common.asm \
+	kernel/irq/entry.asm kernel/irq/code_end.asm
+MK1GATE_RELS := $(MK2TRANS_DIR)/mk1gate.rel \
+	$(foreach src,$(MK1GATE_KERNEL),$(MK2TRANS_DIR)/mk1/$(subst /,_,$(basename $(src))).rel)
+MK2TRANS_LINK := -b _CODE=0x2000 -b _DATA=0x4000 -b _PROC=0x6000 \
+	-b _COMMON=0xE000
+
+mk2trans: $(MK2TRANS_DIR)/mk2trans.bin $(MK2TRANS_DIR)/mk1gate.ihx \
+		$(SIM_CORE_LIB)
+	@echo "mk2trans image: $(MK2TRANS_DIR)/mk2trans.bin"
+
+$(MK2TRANS_DIR)/mk2trans.rel: tests/target/mk2trans/mk2trans.asm \
+		$(MK2TRANS_INC)
+	@mkdir -p $(MK2TRANS_DIR)
+	$(SDASZ80) -plosgff $(MK2TRANS_ASFLAGS) -o $@ $<
+
+define MK2TRANS_RULE
+$(MK2TRANS_DIR)/$(subst /,_,$(basename $(1))).rel: $(1) $(MK2TRANS_INC)
+	@mkdir -p $(MK2TRANS_DIR)
+	$(SDASZ80) -plosgff $(MK2TRANS_ASFLAGS) -o $$@ $$<
+endef
+$(foreach src,$(MK2TRANS_KERNEL),$(eval $(call MK2TRANS_RULE,$(src))))
+
+define MK1GATE_RULE
+$(MK2TRANS_DIR)/mk1/$(subst /,_,$(basename $(1))).rel: $(1) \
+		$(KOS_PLATFORM_DIR)/public/hardware.inc $(ASM_MEMORY_INC) \
+		$(KOS_PLATFORM_IRQ_INC) $(MAP_OPS_INC)
+	@mkdir -p $(MK2TRANS_DIR)/mk1
+	$(SDASZ80) $(KOS_BOARD_ASFLAGS.mk1) -o $$@ $$<
+endef
+$(foreach src,$(MK1GATE_KERNEL),$(eval $(call MK1GATE_RULE,$(src))))
+
+$(MK2TRANS_DIR)/mk2trans.bin: $(MK2TRANS_RELS)
+	$(SDLDZ80) -m -w -i $(MK2TRANS_DIR)/mk2trans.ihx $(MK2TRANS_LINK) \
+		$(MK2TRANS_RELS)
+	makebin -s 524288 $(MK2TRANS_DIR)/mk2trans.ihx $@
+
+$(MK2TRANS_DIR)/mk1gate.rel: tests/target/mk2trans/mk1gate.asm
+	@mkdir -p $(MK2TRANS_DIR)
+	$(SDASZ80) -plosgff -o $@ $<
+
+$(MK2TRANS_DIR)/mk1gate.ihx: $(MK1GATE_RELS)
+	$(SDLDZ80) -m -w -i $@ -b _CODE=0x2000 -b _DATA=0x4000 \
+		-b _PROC=0x0100 -b _COMMON=0xE000 $(MK1GATE_RELS)
 
 # --- physical-hardware serial smoke checks ----------------------------------
 # Requires the board connected at 115200 8N1 on SIO0/B and the matching image

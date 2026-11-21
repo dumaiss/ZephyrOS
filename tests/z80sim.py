@@ -2626,6 +2626,12 @@ class Mk2Mapper:
     Reset selects DAT_BANK = 0 and pass mode and fills the entries from
     a seeded generator, a different pattern on every reset, standing in
     for the undefined LS612 power-on contents.
+
+    Strict mode (`strict`, the default) checks the wiring-agnostic rule
+    of 2.7.4: the entry inputs' wiring (data bus or A8-A14) is open, so
+    an entry write must present the page on both, and one whose data
+    byte and A8-A14 disagree raises SystemExit.  Code that deliberately
+    drives another B (the decode tests) constructs the mapper non-strict.
     """
 
     ENTRIES = 16
@@ -2638,11 +2644,12 @@ class Mk2Mapper:
     DAT_BANK = 0x01
     MAP_ENABLE = 0x02
 
-    def __init__(self, seed=1):
+    def __init__(self, seed=1, strict=True):
         self._rng = random.Random(seed)
         self.entries = self._make_entries()
         self.dat_bank = 0
         self.map_enable = 0
+        self.strict = strict
         self.reset()
 
     def _make_entries(self):
@@ -2680,6 +2687,10 @@ class Mk2Mapper:
         if low > self.CONTROL_LOW:
             return False
         if not port & 0x8000:
+            if self.strict and (value & 0x7F) != ((port >> 8) & 0x7F):
+                raise SystemExit(
+                    "sim: mk2 entry %d write %02Xh at port %04Xh: data and "
+                    "A8-A14 disagree" % (low, value & 0xFF, port & 0xFFFF))
             self.entries[low] = value & 0x7F
             return True
         if low == self.CONTROL_LOW:
@@ -3162,13 +3173,14 @@ class Machine:
     Mapper = Mk2Mapper
 
     def __init__(self, page0, page1, rom_pages=None, decoder_revision=13,
-                 board="mk1", mapper_seed=1):
+                 board="mk1", mapper_seed=1, mapper_strict=True):
         """`board` "mk1" (default): page0/page1 are the 64 KiB boot images
         and the banking latch decodes memory.  "mk2": the LS612 board;
         page0 is the ROM content from physical 0 (up to 512 KiB, the rest
         reads FFh), page1 the SRAM content from physical 80000h (up to
         512 KiB, the rest FFh); rom_pages is unused and the instance has
-        a `mapper` and `phys` but no latch, banks or decoder."""
+        a `mapper` and `phys` but no latch, banks or decoder;
+        `mapper_strict` is the mapper's strict mode (Mk2Mapper)."""
         if board not in ("mk1", "mk2"):
             raise ValueError("unsupported board %r" % (board,))
         self.board = board
@@ -3184,7 +3196,7 @@ class Machine:
             self.phys = bytearray([FILL] * Mk2Mapper.PHYS_SIZE)
             self.phys[0:len(page0)] = page0
             self.phys[half:half + len(page1)] = page1
-            self.mapper = self._make_mapper(mapper_seed)
+            self.mapper = self._make_mapper(mapper_seed, mapper_strict)
             self.rd = self._rd_mk2
             self.wr = self._wr_mk2
         else:
@@ -3411,8 +3423,8 @@ class Machine:
             return self.bank7
         return self.banks[bank]
 
-    def _make_mapper(self, seed):
-        return Mk2Mapper(seed)
+    def _make_mapper(self, seed, strict):
+        return Mk2Mapper(seed, strict)
 
     def _rd_mk2(self, addr):
         return self.phys[self.mapper.physical(addr)]

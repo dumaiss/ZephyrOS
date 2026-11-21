@@ -21,6 +21,12 @@
 ;   BC, DE, IX, IY preserved; SP and the selected bank restored;
 ;   mode 10 restored; other flags unspecified
 ;
+; The text above is the Mk1 board's.  Assembled for Mk2 (the mapping
+; operations of kernel/memory/mk2/map_ops.inc), the caller runs in the
+; working DAT bank, the body in the system bank with the caller's page 0
+; as system entry 0, and "latch" reads "mapping value" (architecture
+; 2.7.6).
+;
 ; Single-entry and non-reentrant; the common transition state is
 ; single-depth.  SYS_EXIT never takes this return path: the C dispatcher
 ; tears the process down and resumes the parent through the process gate.
@@ -32,7 +38,7 @@
 	.module syscall_entry
 	.include "hardware.inc"
 	.include "memory.inc"
-	.include "kernel/memory/map_ops.inc"
+	.include "map_ops.inc"
 
 	.globl kos_syscall_entry
 	.globl kos_syscall_dispatch
@@ -102,25 +108,15 @@ entry_iff1:
 	ld	a,(kos_gate_saved_a)
 	push	af			; syscall number for the dispatcher
 
-	; Validate the entry state: mode 10 over an application bank 0-6.
-	; Anything else takes the defined common-resident fatal path rather
-	; than returning through an unsafe mapping.
-	KOS_MAP_CURRENT
-	ld	(kos_gate_saved_latch),a	; preserve the full caller latch
-	and	#KOS_MODE_MASK
-	cp	#KOS_MODE_APPLICATION
-	jp	nz,__kos_mode_fault
-	ld	a,(kos_gate_saved_latch)
-	KOS_MAP_BANK_OF
-	cp	#KOS_BANK_MASK		; bank 7 is not an application bank
-	jp	z,__kos_mode_fault
-
-	; Enter OS mode over the caller bank: bank and mode only, so the
-	; revision-13 page field is cleared and the whole bank-7 decode is
-	; visible (architecture 4.2: the syscall gate is P-normalizing).
-	ld	a,(kos_gate_saved_latch)
-	KOS_MAP_BANK_OF
-	KOS_MAP_SYSTEM
+	; Save the caller's exact mapping and enter the system mapping with
+	; the caller's low page visible (the argument block).  A caller that
+	; is not a program takes the defined common-resident fatal path
+	; rather than returning through an unsafe mapping.  Mk1: mode 10 over
+	; an application bank 0-6, then OS mode over that bank with the page
+	; field cleared, so the whole bank-7 decode is visible (architecture
+	; 4.2: the gate is P-normalizing).  Mk2: the working bank, its page 0
+	; mapped as system entry 0 (architecture 2.7.3).
+	KOS_MAP_GATE_ENTER kos_gate_saved_latch, __kos_mode_fault
 
 	; The body runs under the caller's interrupt state: the CTC holds one
 	; interrupt, so a body that ran masked for longer than two ticks would
@@ -163,8 +159,8 @@ entry_iff1:
 	pop	de
 	pop	bc
 
-	; Back to application mode over the caller bank (common code; the
-	; next instructions are fetched from memory mapped in both modes).
+	; Back to the caller's exact mapping (common code; the next
+	; instructions are fetched from memory mapped in both).
 	ld	a,(kos_gate_saved_latch)
 	KOS_MAP_RESTORE
 
