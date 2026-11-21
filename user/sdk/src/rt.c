@@ -83,6 +83,18 @@ int rt_gap(unsigned int us)
 	return 0;
 }
 
+int rt_rate(unsigned int rate_hz)
+{
+	if (rt_clock_handle == 0u) {
+		return -KOS_EINVAL;
+	}
+	if (rate_hz != 0u &&
+	    (rate_hz < KOS_RT_RATE_MIN || rate_hz > KOS_RT_RATE_MAX)) {
+		return -KOS_EINVAL;
+	}
+	return rt_clock_rate((unsigned char)(rt_clock_handle - 1u), rate_hz);
+}
+
 int rt_close(void)
 {
 	unsigned char handle;

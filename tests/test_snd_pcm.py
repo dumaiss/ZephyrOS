@@ -124,6 +124,39 @@ class TestSndPcm(SndReplay):
     def test_the_smallest_staging_buffer(self):
         self.assert_plays(samples(6000), pcmconv.CODEC_DPCM4, "small")
 
+    def test_without_a_session_the_player_holds_the_card(self):
+        self.assert_plays(samples(6000), pcmconv.CODEC_DPCM4, "bare")
+
+    def test_staging_in_the_rt_region(self):
+        self.assert_plays(samples(9000), pcmconv.CODEC_DPCM4, "rtstage")
+        self.assert_plays(samples(9000), pcmconv.CODEC_U8, "rtstage")
+
+    def test_pause_and_resume_keep_the_stream_whole(self):
+        data = samples(16000)
+        z, text, dac = self.play(stream(data, pcmconv.CODEC_DPCM4), "pause")
+        self.assertIn("pcm: pause 0", text)
+        self.assertIn("pcm: resume 0", text)
+        at, state = (int(v) for v in re.search(
+            r"pcm: paused at (\d+) state (\d+)", text).groups())
+        self.assertEqual(state, 6)
+        state, played, under, _loops, _reads, error = self.end(text)
+        self.assertEqual((state, under, error), (4, 0, 0))
+        # The samples before the pause, then (after the glides down and up)
+        # every sample from the pause on, nothing lost or repeated.
+        start = dac.find(data[:64])
+        self.assertEqual(dac[start:start + at], data[:at])
+        rest = dac.find(data[at:at + 64], start + at)
+        self.assertGreater(rest, start + at)
+        self.assertEqual(dac[rest:rest + len(data) - at], data[at:])
+        # The clock stopped for the pause and started again with the
+        # interrupt held throughout (one open), then the close stops it
+        # (and the hold's release once more).
+        rates = [hz for hz, _gap in z.ioc_peer.rt_requests]
+        runs = [hz for i, hz in enumerate(rates) if i == 0 or hz != rates[i - 1]]
+        self.assertEqual(runs, [16000, 0, 16000, 0])
+        self.assertEqual(rates[:3], [16000, 0, 16000])
+        self.assert_released(z, dac)
+
     def test_loop_restarts_at_the_start(self):
         data = samples(1500)
         z, text, dac = self.play(stream(data, pcmconv.CODEC_DPCM4), "loop")

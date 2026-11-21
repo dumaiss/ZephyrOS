@@ -270,7 +270,7 @@ $(EXE_LIBKRES): $(EXE_KRES_OBJS) $(KOS_RULES)
 KOS_SND_SRC     := $(KOS_SDK_ROOT)/snd/src
 KOS_SND_PRIVATE := $(KOS_SND_SRC)/snd_private.h
 KOS_SND_C_SRC   := snd.c snd_manual.c snd_tables.c snd_zvg.c snd_ztr.c snd_service.c \
-	snd_pcm.c
+	snd_pcm.c snd_card.c
 KOS_SND_ASM_SRC := snd_tick.asm snd_tick_ztr.asm snd_voice.asm snd_out.asm \
 	snd_zvg_dec.asm snd_ztr_dec.asm snd_pcm_rt.asm snd_pcm_dec.asm
 EXE_SND_OBJS    := $(addprefix $(EXE_SDK_BUILD)/snd/,\

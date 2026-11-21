@@ -70,6 +70,45 @@ int kres_read(kres_resource *r, void *dst, uint16_t len)
 	return got;
 }
 
+int kres_read_direct(kres_resource *r, void *dst, uint16_t len)
+{
+	uint32_t at;
+	uint16_t got = 0u;
+	int result;
+
+	if (r == (kres_resource *)0 || r->open == 0u || dst == (void *)0 ||
+	    len == 0u) {
+		return -KOS_EINVAL;
+	}
+	if (r->cursor >= r->used_bytes) {
+		return 0; /* end of file */
+	}
+	if ((uint32_t)len > r->used_bytes - r->cursor) {
+		len = (uint16_t)(r->used_bytes - r->cursor);
+	}
+	/* A sealed resource is contiguous in the file: one seek, then the
+	 * whole range straight into the caller's buffer. */
+	at = r->start_record * KRES_RECORD_SIZE + r->cursor;
+	result = kres_io->seek(r->container->io_ctx, at);
+	if (result < 0) {
+		return result;
+	}
+	while (got < len) {
+		result = kres_io->read(r->container->io_ctx,
+				       (uint8_t *)dst + got,
+				       (uint16_t)(len - got));
+		if (result < 0) {
+			return result;
+		}
+		if (result == 0) {
+			break;
+		}
+		got = (uint16_t)(got + (uint16_t)result);
+	}
+	r->cursor = (uint32_t)(r->cursor + got);
+	return got;
+}
+
 int kres_read_records(kres_resource *r, uint16_t first_record,
 		      uint16_t record_count, void *dst)
 {

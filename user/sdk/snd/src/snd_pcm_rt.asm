@@ -7,7 +7,9 @@
 ; any mapping, so it and everything it touches live in the RT region of
 ; common memory, which the nucleus lends to the interrupt's owner:
 ;
-;   F000h-FBFFh   the ring: 12 pages of 256 samples
+;   F000h-FBFFh   the ring: 12 pages of 256 samples, or 8 (F000h-F7FFh)
+;                 with the staging buffer at F800h-FBFFh when the program
+;                 gives none
 ;   FC00h-FC0Fh   counters (below)
 ;   FC10h-        the handler, copied from snd_pcm_rt_image by snd_pcm_play
 ;
@@ -35,7 +37,7 @@
 	.module snd_pcm_rt
 
 	.globl _snd_pcm_rt_image, _snd_pcm_rt_image_end
-	.globl _snd_pcm_rt_rd, _snd_pcm_rt_out, _snd_pcm_rt_wr
+	.globl _snd_pcm_rt_rd, _snd_pcm_rt_out, _snd_pcm_rt_wr, _snd_pcm_rt_end
 
 ; Keep in step with snd_pcm.c.
 SND_PCM_RT_AT   = 0xFC10        ; where the image runs
@@ -45,7 +47,7 @@ PCM_EOF         = 0xFC03        ; byte: non-zero once the stream is in
 PCM_UNDER       = 0xFC04        ; word: pages replayed before EOF
 PCM_DRAIN       = 0xFC06        ; word: pages replayed after EOF
 PCM_RING_FIRST  = 0xF0          ; first ring page
-PCM_RING_END    = 0xFC          ; exclusive: the state page
+PCM_RING_END    = 0xFC          ; exclusive: the state page (patched)
 
 	.area _CODE
 
@@ -64,7 +66,8 @@ _snd_pcm_rt_out::
 rt_page:
 	ld	a,(PCM_RD_HI)			; 13
 	inc	a				; 4
-	cp	#PCM_RING_END			; 7
+_snd_pcm_rt_end::
+	cp	#PCM_RING_END			; 7  the ring's end, patched at prepare
 	jr	nz,rt_wr			; 12
 	ld	a,#PCM_RING_FIRST
 _snd_pcm_rt_wr::

@@ -48,6 +48,11 @@ int rt_open(const void *handler, unsigned int rate_hz);
  * RETN on the board.  0, or -KOS_EINVAL. */
 int rt_gap(unsigned int us);
 
+/* Change the open clock's rate, keeping the interrupt and its handles
+ * held; 0 stops the clock (no NMI, the lanes at full speed) until the next
+ * rate.  0, or -KOS_EINVAL (nothing open, or a rate out of range). */
+int rt_rate(unsigned int rate_hz);
+
 /* Stop the clock and give the interrupt back.  0 when nothing is open. */
 int rt_close(void);
 

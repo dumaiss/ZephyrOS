@@ -361,9 +361,11 @@ int snd_ztr_tables(struct snd_ztr_tables *out);
  * the DAC from a handler in the RT region, so nothing the program or the
  * system masks can delay one.  The program keeps the ring fed by calling
  * snd_pcm_service often (every 100 ms is plenty; the ring holds 176 ms
- * and the staging buffer more).  One PCM stream at a time; it needs the
- * session (snd_open) and the RT interrupt, so no other program can hold
- * either while it plays.
+ * and the staging buffer more).  One PCM stream at a time.  It plays over
+ * the session's card when snd_open came first, and otherwise holds
+ * `/dev/sound` itself for the stream (so a PCM-only program links none of
+ * the PSG engine; a program that wants both opens the session first).  It
+ * holds the RT interrupt while it plays.
  *
  * Codecs: SND_PCM_CODEC_U8 (8-bit unsigned samples) and
  * SND_PCM_CODEC_DPCM4 (lossless 4-bit deltas, about half the size).  The
@@ -393,6 +395,7 @@ int snd_ztr_tables(struct snd_ztr_tables *out);
 #define SND_PCM_PLAYING   3u /* the RT interrupt is consuming           */
 #define SND_PCM_DONE      4u /* played to the end (or stopped)          */
 #define SND_PCM_ERROR     5u /* a read failed; the stream is stopped    */
+#define SND_PCM_PAUSED    6u /* the RT interrupt released; resumable    */
 
 #define SND_PCM_NAME_SIZE 64u
 
@@ -415,9 +418,12 @@ struct snd_pcm_status {
 
 /* Validate a KPCM v1 header through the borrowed reader and take the
  * caller's staging buffer (`size` >= SND_PCM_STAGE_MIN; larger means
- * fewer, larger reads and more buffering: 4 KiB suits 16 kHz).  The
- * reader and the buffer stay the caller's until snd_pcm_close.  0, or
- * -KOS_ENODEV (no session), -KOS_EBUSY (a stream is open), -KOS_EINVAL
+ * fewer, larger reads and more buffering: 4 KiB suits 16 kHz), or, with
+ * `buffer` NULL, stage 1 KiB in the RT region above a smaller ring (128 ms
+ * instead of 192 ms) for a program with no memory to spare.  The reader
+ * and the buffer stay the caller's until snd_pcm_close.  0, or
+ * -KOS_EBUSY (a stream is open, or another program holds the card),
+ * -KOS_ENODEV (no sound card), -KOS_EINVAL
  * (not a valid KPCM v1 stream for this player), -KOS_ENOTSUP (an unknown
  * codec, or a card without a DAC) or the reader's error. */
 int snd_pcm_open(const kos_reader_t *source, void *buffer, uint16_t size);
@@ -441,6 +447,17 @@ int snd_pcm_play(uint8_t flags);
  * decoded into the ring as fit.  Returns the state (SND_PCM_*), or the
  * reader's error once (the stream then stops: SND_PCM_ERROR). */
 int snd_pcm_service(void);
+
+/* Pause: stop the RT clock (the IO controller's lanes run at full speed
+ * again: a program pauses around a long card transfer, such as a screen
+ * load) and glide the DAC to its midpoint; the interrupt stays held and
+ * the ring keeps its place.  Service reads nothing while paused.  0, or -KOS_EINVAL when
+ * not playing. */
+int snd_pcm_pause(void);
+
+/* Glide back to the next sample and restart the RT clock where the stream
+ * paused.  0, rt_rate's error, or -KOS_EINVAL when not paused. */
+int snd_pcm_resume(void);
 
 /* Stop the RT interrupt and bring the DAC to its midpoint.  0. */
 int snd_pcm_stop(void);

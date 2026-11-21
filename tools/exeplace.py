@@ -625,8 +625,14 @@ CODE_AREA = {"resident": "_CODE", "home": "_ZHOME"}
 DATA_AREA = {"home": "_ZHOMEB"}
 VENEER_BYTES = 6       # CALL kos_vcall, the zone byte, the target word
 # libkos members placed like library code rather than kept resident with
-# the runtime: the keyboard key decoder (kos/key.h) and its waiting read.
-PLACEABLE_RUNTIME = ("libkos.lib(key.rel)", "libkos.lib(key_get.rel)")
+# the runtime: the keyboard key decoder (kos/key.h) and its waiting read,
+# the sound and real-time wrappers (kos/sound.h, kos/rt.h) and the
+# formatted output with its number conversions: leaf calls no trampoline,
+# stub, event path or handler runs.
+PLACEABLE_RUNTIME = ("libkos.lib(key.rel)", "libkos.lib(key_get.rel)",
+                     "libkos.lib(sound.rel)", "libkos.lib(rt.rel)",
+                     "libkos.lib(printf.rel)", "libkos.lib(ltoa.rel)",
+                     "libkos.lib(ultoa.rel)", "libkos.lib(itoa.rel)")
 
 SDK_LOW = 0x005D       # _KOS_SDK_DATA before _CODE
 

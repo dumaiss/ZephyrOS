@@ -15,14 +15,12 @@
 
 #define SND_A440_CLOCK_HZ 3579545ul
 
-int snd_handle;
 uint8_t snd_output_mode;
 uint16_t snd_manual_rate;
 const uint16_t *snd_custom_table;
 uint16_t snd_reserved_voices;
 uint16_t snd_active_rate;
 unsigned int snd_overruns;
-void (*snd_pcm_closer)(void);
 
 int snd_open(void)
 {

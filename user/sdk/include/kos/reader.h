@@ -54,6 +54,10 @@ typedef struct kos_memory_source {
 int kos_reader_from_handle(kos_reader_t *out, kos_handle_source_t *source);
 int kos_reader_from_stdio(kos_reader_t *out, struct kos_stream *stream);
 int kos_reader_from_kres(kos_reader_t *out, struct kres_resource *resource);
+/* The same view, each read one backing-file read into the caller's buffer
+ * (kres_read_direct): the buffer must be resident or common memory. */
+int kos_reader_from_kres_direct(kos_reader_t *out,
+				struct kres_resource *resource);
 int kos_reader_from_memory(kos_reader_t *out, kos_memory_source_t *source);
 
 int kos_reader_read_full(const kos_reader_t *reader, uint32_t offset,

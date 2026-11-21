@@ -25,9 +25,13 @@
 #define PCM_UNDER        ((volatile uint8_t *)0xFC04u)
 #define PCM_DRAIN        ((volatile uint8_t *)0xFC06u)
 #define PCM_RING_FIRST   0xF0u
-#define PCM_RING_END     0xFCu
-#define PCM_RING_PAGES   12u
-#define PCM_RING_FILL    11u          /* pages the producer may hold */
+#define PCM_RING_TOP     0xFCu        /* exclusive: the state page    */
+#define PCM_STAGE_PAGES  4u           /* the RT-region staging buffer */
+/* The ring's end and size: 12 pages, or 8 with the staging buffer in the
+ * RT region above them.  The producer holds one page less. */
+#define PCM_RING_END     pcm_ring_end
+#define PCM_RING_PAGES   (uint8_t)(pcm_ring_end - PCM_RING_FIRST)
+#define PCM_RING_FILL    (uint8_t)(pcm_ring_end - PCM_RING_FIRST - 1u)
 
 #define PCM_HEADER_SIZE  512u
 #define PCM_NAME_OFFSET  32u
@@ -41,6 +45,7 @@ extern const uint8_t snd_pcm_rt_image_end[];
 extern const uint8_t snd_pcm_rt_rd[];
 extern const uint8_t snd_pcm_rt_out[];
 extern const uint8_t snd_pcm_rt_wr[];
+extern const uint8_t snd_pcm_rt_end[];
 void snd_pcm_dpcm4(const uint8_t *src, uint8_t *page);
 
 /* snd_pcm_dec.asm's predictor: the last sample decoded. */
@@ -51,9 +56,18 @@ static uint8_t pcm_flags;
 static uint8_t pcm_dac;
 static uint8_t pcm_rt_open;
 static uint8_t pcm_closed;            /* the closing silence page is in */
+static int pcm_card;                  /* the card handle PCM holds, or 0 */
+static uint8_t pcm_ring_end;          /* the ring's exclusive end page  */
 static volatile uint8_t *pcm_wr;      /* the handler's wr operand       */
 static kos_reader_t pcm_reader;
-static struct snd_pcm_info pcm_info;
+/* The header's fields; the name stays in the stream (snd_pcm_get_info
+ * reads it back), so it costs the program no memory. */
+static struct {
+	uint8_t codec;
+	uint16_t rate;
+	uint32_t samples;
+	uint32_t payload;
+} pcm_info;
 static uint8_t *pcm_stage;
 static uint16_t pcm_stage_size;
 static uint16_t pcm_head;             /* staging: next byte to use      */
@@ -302,48 +316,80 @@ int snd_pcm_open(const kos_reader_t *source, void *buffer, uint16_t size)
 	struct ksound_info card;
 	uint8_t *raw;
 	uint8_t i;
+	int handle;
 	int result;
 
-	if (snd_handle == 0) {
-		return -KOS_ENODEV;
-	}
 	if (pcm_state != SND_PCM_IDLE) {
 		return -KOS_EBUSY;
 	}
 	if (source == (const kos_reader_t *)0 ||
 	    source->read_at == (kos_read_at_fn)0 ||
-	    buffer == (void *)0 || size < SND_PCM_STAGE_MIN) {
+	    (buffer != (void *)0 && size < SND_PCM_STAGE_MIN)) {
 		return -KOS_EINVAL;
 	}
-	if (sound_info(snd_handle, &card) < 0) {
-		return -KOS_EIO;
+	pcm_ring_end = PCM_RING_TOP;
+	if (buffer == (void *)0) {
+		/* Stage in the RT region, above a smaller ring: the region is
+		 * not ours to write while another program holds it. */
+		struct kos_rt_info rt;
+
+		if (rt_info(&rt) < 0 || rt.held == KOS_RT_OTHER) {
+			return -KOS_EBUSY;
+		}
+		pcm_ring_end = (uint8_t)(PCM_RING_TOP - PCM_STAGE_PAGES);
+		buffer = (void *)((uint16_t)pcm_ring_end << 8);
+		size = (uint16_t)PCM_STAGE_PAGES << 8;
+	}
+	/* The session's card, or the card held for the stream alone. */
+	pcm_card = 0;
+	handle = snd_handle;
+	if (handle == 0) {
+		unsigned char type = 0u;
+
+		handle = bind("/dev/sound", KOS_BIND_EXCLUSIVE, &type);
+		if (handle < 0) {
+			return handle;
+		}
+		pcm_card = handle;
+		if (type != KOS_TYPE_SOUND) {
+			result = -KOS_ENODEV;
+			goto refuse;
+		}
+	}
+	if (sound_info(handle, &card) < 0) {
+		result = -KOS_EIO;
+		goto refuse;
 	}
 	if ((card.flags & (KSOUND_CAP_DIRECT_IO | KSOUND_CAP_DAC)) !=
 	    (KSOUND_CAP_DIRECT_IO | KSOUND_CAP_DAC) || card.dac_port == 0u) {
-		return -KOS_ENOTSUP;
+		result = -KOS_ENOTSUP;
+		goto refuse;
 	}
 	/* The header goes through the staging buffer. */
 	raw = (uint8_t *)buffer;
+	result = -KOS_EINVAL;
 	if (source->size < PCM_HEADER_SIZE) {
-		return -KOS_EINVAL;
+		goto refuse;
 	}
 	result = kos_reader_read_full(source, 0u, raw, PCM_HEADER_SIZE);
 	if (result < 0) {
-		return result;
+		goto refuse;
 	}
+	result = -KOS_EINVAL;
 	if (raw[0] != 'K' || raw[1] != 'P' || raw[2] != 'C' ||
 	    raw[3] != 'M' || raw[4] != 1u || raw[6] != 1u || raw[7] != 8u) {
-		return -KOS_EINVAL;
+		goto refuse;
 	}
 	if (raw[5] != SND_PCM_CODEC_U8 && raw[5] != SND_PCM_CODEC_DPCM4) {
-		return -KOS_ENOTSUP;
+		result = -KOS_ENOTSUP;
+		goto refuse;
 	}
 	pcm_info.codec = raw[5];
 	{
 		uint32_t rate = pcm_u32(raw + 8);
 
 		if (rate < SND_PCM_RATE_MIN || rate > SND_PCM_RATE_MAX) {
-			return -KOS_EINVAL;
+			goto refuse;
 		}
 		pcm_info.rate = (uint16_t)rate;
 	}
@@ -354,19 +400,15 @@ int snd_pcm_open(const kos_reader_t *source, void *buffer, uint16_t size)
 	    (pcm_info.codec == SND_PCM_CODEC_U8 &&
 	     pcm_info.payload != pcm_info.samples) ||
 	    pcm_info.payload > source->size - PCM_HEADER_SIZE) {
-		return -KOS_EINVAL;
+		goto refuse;
 	}
 	for (i = 0u; i < SND_PCM_NAME_SIZE; ++i) {
-		pcm_info.name[i] = (char)raw[PCM_NAME_OFFSET + i];
-		if (pcm_info.name[i] == '\0') {
+		if (raw[PCM_NAME_OFFSET + i] == 0u) {
 			break;
 		}
 	}
 	if (i == SND_PCM_NAME_SIZE) {
-		return -KOS_EINVAL;
-	}
-	for (; i < SND_PCM_NAME_SIZE; ++i) {
-		pcm_info.name[i] = '\0';
+		goto refuse;
 	}
 
 	pcm_reader = *source;
@@ -381,14 +423,32 @@ int snd_pcm_open(const kos_reader_t *source, void *buffer, uint16_t size)
 	pcm_status.state = SND_PCM_OPEN;
 	snd_pcm_closer = snd_pcm_close;
 	return 0;
+
+refuse:
+	if (pcm_card != 0) {
+		(void)sound_close(pcm_card);
+		pcm_card = 0;
+	}
+	return result;
 }
 
 int snd_pcm_get_info(struct snd_pcm_info *out)
 {
+	int result;
+
 	if (out == (struct snd_pcm_info *)0 || pcm_state == SND_PCM_IDLE) {
 		return -KOS_EINVAL;
 	}
-	*out = pcm_info;
+	out->codec = pcm_info.codec;
+	out->rate = pcm_info.rate;
+	out->samples = pcm_info.samples;
+	out->payload = pcm_info.payload;
+	result = kos_reader_read_full(&pcm_reader, PCM_NAME_OFFSET, out->name,
+				      SND_PCM_NAME_SIZE);
+	if (result < 0) {
+		return result;
+	}
+	out->name[SND_PCM_NAME_SIZE - 1u] = '\0';   /* open found its NUL */
 	return 0;
 }
 
@@ -413,6 +473,8 @@ static int pcm_install(void)
 	PCM_RD_LO = 0u;
 	PCM_RD_HI = PCM_RING_FIRST;
 	*pcm_wr = PCM_RING_FIRST;
+	PCM_RT_AT[(uint16_t)(snd_pcm_rt_end - snd_pcm_rt_image) + 1u] =
+		pcm_ring_end;
 	PCM_EOF = 0u;
 	memset((void *)PCM_UNDER, 0, 4u);   /* UNDER, DRAIN */
 	pcm_seen_rd = PCM_RING_FIRST;
@@ -497,36 +559,91 @@ int snd_pcm_service(void)
 }
 
 /* Glide the DAC from `from` to the midpoint rather than step to it. */
-static void pcm_glide(uint8_t from)
+/* Glide the DAC from `from` to `to` rather than step there: about 250 us a
+ * step, so a full half-scale glide (128 steps) is a 30 ms fade, not a
+ * click. */
+#define PCM_GLIDE_SPIN 64u
+
+static void pcm_glide(uint8_t from, uint8_t to)
 {
-	while (from != 0x80u) {
+	while (from != to) {
 		volatile uint8_t spin;
 
-		from = (uint8_t)(from < 0x80u ? from + 1u : from - 1u);
+		from = (uint8_t)(from < to ? from + 1u : from - 1u);
 		sound_out(pcm_dac, from);
-		for (spin = 0u; spin < 8u; ++spin) {
+		for (spin = 0u; spin < PCM_GLIDE_SPIN; ++spin) {
 		}
 	}
+}
+
+/* The last sample the DAC took (the clock is stopped). */
+static uint8_t pcm_last(void)
+{
+	uint8_t lo = PCM_RD_LO;
+	uint8_t *at = (uint8_t *)(((uint16_t)PCM_RD_HI << 8) | lo);
+
+	if (lo != 0u) {
+		return at[-1];
+	}
+	return PCM_RD_HI == PCM_RING_FIRST
+		? *(uint8_t *)(((uint16_t)PCM_RING_END << 8) - 1u)
+		: at[-1];
+}
+
+/* Stop the RT interrupt and bring the DAC to its midpoint. */
+static void pcm_halt(void)
+{
+	(void)rt_close();
+	pcm_rt_open = 0u;
+	pcm_count();
+	pcm_glide(pcm_last(), 0x80u);
+}
+
+int snd_pcm_pause(void)
+{
+	int result;
+
+	if (pcm_state != SND_PCM_PLAYING) {
+		return -KOS_EINVAL;
+	}
+	/* The clock stops; the interrupt and its handles stay held, so the
+	 * resume needs no free handle. */
+	result = rt_rate(0u);
+	if (result < 0) {
+		return result;
+	}
+	pcm_count();
+	pcm_glide(pcm_last(), 0x80u);
+	pcm_state = SND_PCM_PAUSED;
+	return 0;
+}
+
+int snd_pcm_resume(void)
+{
+	int result;
+
+	if (pcm_state != SND_PCM_PAUSED) {
+		return -KOS_EINVAL;
+	}
+	/* Back up to the next sample from the midpoint, then the clock. */
+	pcm_glide(0x80u, *(uint8_t *)(((uint16_t)PCM_RD_HI << 8) | PCM_RD_LO));
+	result = rt_rate(pcm_info.rate);
+	if (result < 0) {
+		pcm_glide(*(uint8_t *)(((uint16_t)PCM_RD_HI << 8) | PCM_RD_LO),
+			  0x80u);
+		return result;
+	}
+	pcm_state = SND_PCM_PLAYING;
+	return 0;
 }
 
 int snd_pcm_stop(void)
 {
 	if (pcm_rt_open != 0u) {
-		uint8_t lo;
-		uint8_t *at;
-
-		(void)rt_close();
-		pcm_rt_open = 0u;
-		pcm_count();
-		/* The last sample the DAC took. */
-		lo = PCM_RD_LO;
-		at = (uint8_t *)(((uint16_t)PCM_RD_HI << 8) | lo);
-		pcm_glide(lo != 0u ? at[-1]
-			  : (PCM_RD_HI == PCM_RING_FIRST
-			     ? *(uint8_t *)(((uint16_t)PCM_RING_END << 8) - 1u)
-			     : at[-1]));
+		pcm_halt();
 	}
-	if (pcm_state == SND_PCM_PLAYING || pcm_state == SND_PCM_READY) {
+	if (pcm_state == SND_PCM_PLAYING || pcm_state == SND_PCM_READY ||
+	    pcm_state == SND_PCM_PAUSED) {
 		pcm_state = SND_PCM_DONE;
 	}
 	return 0;
@@ -537,6 +654,10 @@ void snd_pcm_close(void)
 	snd_pcm_closer = (void (*)(void))0;
 	(void)snd_pcm_stop();
 	pcm_state = SND_PCM_IDLE;
+	if (pcm_card != 0) {
+		(void)sound_close(pcm_card);   /* the release resets the card */
+		pcm_card = 0;
+	}
 	pcm_reader.context = (void *)0;
 	pcm_reader.read_at = (kos_read_at_fn)0;
 	pcm_stage = (uint8_t *)0;

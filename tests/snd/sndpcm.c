@@ -5,6 +5,9 @@
  *   sndpcm FILE loop     play looped; stop once three passes have played
  *   sndpcm FILE stop     stop once a quarter has played
  *   sndpcm FILE small    play with the smallest staging buffer
+ *   sndpcm FILE bare     play with no session: the player holds the card
+ *   sndpcm FILE rtstage  no session and no buffer: staging in the RT region
+ *   sndpcm FILE pause    pause a quarter in, idle, resume, play to the end
  *
  * The foreground is a game's: snd_pcm_service between idle() waits.  One
  * line per outcome; the replay checks the lines and the DAC's bytes.
@@ -37,6 +40,9 @@ int main(int argc, char **argv)
 	uint16_t size = same(mode, "small") ? SND_PCM_STAGE_MIN : sizeof(stage);
 	uint8_t flags = same(mode, "loop") ? SND_PCM_LOOP : 0u;
 	uint8_t stop_early = same(mode, "stop");
+	uint8_t pause_once = same(mode, "pause");
+	uint8_t rtstage = same(mode, "rtstage");
+	uint8_t bare = (uint8_t)(same(mode, "bare") | rtstage);
 	int file;
 	int result;
 
@@ -50,15 +56,19 @@ int main(int argc, char **argv)
 	}
 	source.handle = (unsigned int)file;
 	(void)kos_reader_from_handle(&reader, &source);
-	result = snd_open();
-	if (result < 0) {
-		printf("pcm: snd_open %d\r\n", result);
-		return 3;
+	if (bare == 0u) {
+		result = snd_open();
+		if (result < 0) {
+			printf("pcm: snd_open %d\r\n", result);
+			return 3;
+		}
 	}
-	result = snd_pcm_open(&reader, stage, size);
+	result = snd_pcm_open(&reader, rtstage != 0u ? (void *)0 : stage, size);
 	printf("pcm: pcm_open %d\r\n", result);
 	if (result < 0) {
-		snd_close();
+		if (bare == 0u) {
+			snd_close();
+		}
 		return 4;
 	}
 	(void)snd_pcm_get_info(&info);
@@ -82,6 +92,20 @@ int main(int argc, char **argv)
 		if (stop_early != 0u && status.played >= info.samples / 4u) {
 			break;
 		}
+		if (pause_once != 0u && status.played >= info.samples / 4u) {
+			unsigned int i;
+
+			pause_once = 0u;
+			printf("pcm: pause %d\r\n", snd_pcm_pause());
+			(void)snd_pcm_get_status(&status);
+			printf("pcm: paused at %lu state %u\r\n", status.played,
+			       (unsigned int)status.state);
+			for (i = 0u; i < 20u; ++i) {
+				(void)snd_pcm_service();
+				idle();
+			}
+			printf("pcm: resume %d\r\n", snd_pcm_resume());
+		}
 		idle();
 	}
 	(void)snd_pcm_stop();
@@ -91,7 +115,9 @@ int main(int argc, char **argv)
 	       status.underruns, status.loops, status.reads,
 	       status.last_error);
 	snd_pcm_close();
-	snd_close();
+	if (bare == 0u) {
+		snd_close();
+	}
 	(void)close((unsigned int)file);
 	return 0;
 }

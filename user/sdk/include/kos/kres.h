@@ -194,6 +194,11 @@ int kres_create(kres_container *c, const char *name,
 		uint16_t capacity_records, kres_resource *r);
 int kres_rclose(kres_resource *r);
 int kres_read(kres_resource *r, void *dst, uint16_t len);
+/* kres_read in one backing-file read straight into `dst`, for a large
+ * streamed read: `dst` must be memory the file read can write directly
+ * (resident or common, never the far aperture), and a resource of a
+ * writable container must not be in its cache's pending state. */
+int kres_read_direct(kres_resource *r, void *dst, uint16_t len);
 int kres_write(kres_resource *r, const void *src, uint16_t len);
 int kres_seek(kres_resource *r, uint32_t offset);
 int kres_resize(kres_resource *r, uint32_t used_bytes);
