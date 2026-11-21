@@ -4,7 +4,10 @@
 registers and counters live in the C `struct core` (z80core.h) and whose
 `step()` runs the C core.  Memory stays the Python bytearrays: the core
 writes through their buffers, so `z.bank0[...]` and `z.rd()` see the same
-bytes.  Ports other than the latch's model call the instance's `io_in` /
+bytes.  A board="mk2" instance keeps its mapper state (16 entries, the
+control bits) in the C struct and the 1 MiB physical array in `z.phys`;
+`z.mapper` is a view that reads and writes that state, and translates
+through the C core.  Ports other than the latch's model call the instance's `io_in` /
 `io_out` attributes, so wrappers installed on an instance (the CTC's, a
 test's) keep working.  An attached CTC moves its counting state into C;
 the V9958 frame clock calls back into Python while its period is set.
@@ -89,7 +92,14 @@ class CoreState(ctypes.Structure):
                  ("rt_hz", ctypes.c_int64),
                  ("rt_acc", ctypes.c_int64),
                  ("rt_ticks", ctypes.c_int64),
-                 ("nmi_count", ctypes.c_int64)])
+                 ("nmi_count", ctypes.c_int64),
+                 ("board", ctypes.c_int32),
+                 ("dat_bank", ctypes.c_int32),
+                 ("map_enable", ctypes.c_int32),
+                 ("pad3", ctypes.c_int32),
+                 ("dat", ctypes.c_int32 * 16),
+                 ("phys", ctypes.c_void_p),
+                 ("phys_len", ctypes.c_int64)])
 
 
 _lib = None
@@ -116,6 +126,14 @@ def library():
                                  ctypes.c_int, ctypes.c_int,
                                  ctypes.POINTER(ctypes.c_int64)]
         lib.core_run.restype = ctypes.c_int
+        lib.core_rd.argtypes = [ctypes.POINTER(CoreState), ctypes.c_int]
+        lib.core_rd.restype = ctypes.c_int
+        lib.core_wr.argtypes = [ctypes.POINTER(CoreState), ctypes.c_int,
+                                ctypes.c_int]
+        lib.core_wr.restype = None
+        lib.core_translate.argtypes = [ctypes.POINTER(CoreState),
+                                       ctypes.c_int]
+        lib.core_translate.restype = ctypes.c_int
         _lib = lib
     return _lib
 
@@ -126,6 +144,20 @@ def _register(name):
 
     def put(self, value):
         setattr(self._c, name, int(value))
+    return property(get, put)
+
+
+def _mk1_only(prop):
+    """The Mk1 banking latch: absent on a Mk2 instance."""
+    def get(self):
+        if self.board == "mk2":
+            raise AttributeError("latch")
+        return prop.fget(self)
+
+    def put(self, value):
+        if self.board == "mk2":
+            raise AttributeError("latch")
+        prop.fset(self, value)
     return property(get, put)
 
 
@@ -194,6 +226,33 @@ class _CounterView:
         return repr(list(self._a))
 
 
+class _EntryView:
+    """`Mk2Mapper.entries`: a list-like view of the C int32[16]."""
+
+    def __init__(self, array):
+        self._a = array
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return list(self._a)[index]
+        return self._a[index]
+
+    def __setitem__(self, index, value):
+        self._a[index] = value
+
+    def __len__(self):
+        return len(self._a)
+
+    def __iter__(self):
+        return iter(list(self._a))
+
+    def __eq__(self, other):
+        return list(self._a) == list(other)
+
+    def __repr__(self):
+        return repr(list(self._a))
+
+
 def make_core_class(Z80, Ctc, tables):
     """The C-core subclass of the Python `Z80`.  `tables` is
     (ONE_BYTE_T, ED_T, DD_T, ED_BLOCK, INTERRUPT_TSTATES)."""
@@ -214,14 +273,47 @@ def make_core_class(Z80, Ctc, tables):
         def advance(self, tstates):
             raise AssertionError("a C-bound CTC is advanced by the core")
 
+    class MapperView(Z80.Mapper):
+        """A Mk2Mapper whose state lives in the C core and whose
+        translation runs there; reset, I/O decode and the entry pattern
+        are the Python reference's."""
+
+        def __init__(self, cpu, seed):
+            object.__setattr__(self, "_cpu", cpu)
+            object.__setattr__(self, "_s", cpu._c)
+            super().__init__(seed)
+
+        def _make_entries(self):
+            return _EntryView(self._s.dat)
+
+        @property
+        def dat_bank(self):
+            return self._s.dat_bank
+
+        @dat_bank.setter
+        def dat_bank(self, value):
+            self._s.dat_bank = int(value)
+
+        @property
+        def map_enable(self):
+            return self._s.map_enable
+
+        @map_enable.setter
+        def map_enable(self, value):
+            self._s.map_enable = int(value)
+
+        def physical(self, la):
+            return lib.core_translate(ctypes.byref(self._s), int(la))
+
     class CZ80(Z80):
         """The Python Z80 API over the C core."""
 
         CORE = "c"
 
         def __init__(self, page0, page1, rom_pages=None,
-                     decoder_revision=13):
+                     decoder_revision=13, board="mk1", mapper_seed=1):
             c = CoreState()
+            c.board = 1 if board == "mk2" else 0
             object.__setattr__(self, "_c", c)
             object.__setattr__(self, "_ctc", None)
             object.__setattr__(self, "_exc", None)
@@ -270,12 +362,35 @@ def make_core_class(Z80, Ctc, tables):
                          ACCEPT(accept))
             object.__setattr__(self, "_callbacks", callbacks)
             c.io_in, c.io_out, c.clock, c.accept = callbacks
-            super().__init__(page0, page1, rom_pages, decoder_revision)
+            super().__init__(page0, page1, rom_pages, decoder_revision,
+                             board, mapper_seed)
             self._bind_memory()
+
+        def _make_mapper(self, seed):
+            return MapperView(self, seed)
+
+        def _rd_mk2(self, addr):
+            value = lib.core_rd(ctypes.byref(self._c), int(addr) & 0xFFFF)
+            if self._c.err:
+                self._raise(self._c.err)
+            return value
+
+        def _wr_mk2(self, addr, v):
+            lib.core_wr(ctypes.byref(self._c), int(addr) & 0xFFFF,
+                        int(v) & 0xFF)
+            if self._c.err:
+                self._raise(self._c.err)
 
         def _bind_memory(self):
             c = self._c
             views = []
+            if self.board == "mk2":
+                view = (ctypes.c_char * len(self.phys)).from_buffer(
+                    self.phys)
+                c.phys = ctypes.addressof(view)
+                c.phys_len = len(self.phys)
+                object.__setattr__(self, "_views", [view])
+                return
             for bank in range(8):
                 data = self._sram(bank)
                 view = (ctypes.c_char * len(data)).from_buffer(data)
@@ -380,6 +495,7 @@ def make_core_class(Z80, Ctc, tables):
 
     for name in REGISTERS + COUNTERS:
         setattr(CZ80, name, _register(name))
+    CZ80.latch = _mk1_only(CZ80.latch)
     for name in FLAGS:
         setattr(CZ80, name, _flag(name))
     for name in ("cycles", "tstates", "nmi_pending", "rt_hz", "rt_acc",

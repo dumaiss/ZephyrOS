@@ -96,11 +96,73 @@ static int decoder_bank(struct core *c, int addr, int latch)
 	return (a18 << 2) | (a17 << 1) | a16;
 }
 
+/* Mk2Mapper.physical */
+int core_translate(struct core *c, int la)
+{
+	int page;
+
+	la &= 0xFFFF;
+	if (!c->map_enable) return la;
+	page = c->dat[(c->dat_bank << 3) | (la >> 13)] & 0x7F;
+	return (page << 13) | (la & 0x1FFF);
+}
+
+/* Mk2 memory: ROM (below 80000h) is never written. */
+static int mk2_rd(struct core *c, int addr)
+{
+	int pa = core_translate(c, addr);
+
+	if (c->phys == NULL || pa >= c->phys_len) {
+		if (!c->err) {
+			c->err = CORE_INDEXERR;
+			c->err_arg = pa;
+		}
+		return 0;
+	}
+	return c->phys[pa];
+}
+
+static void mk2_wr(struct core *c, int addr, int v)
+{
+	int pa = core_translate(c, addr);
+
+	if (c->phys == NULL || pa >= c->phys_len) {
+		if (!c->err) {
+			c->err = CORE_INDEXERR;
+			c->err_arg = pa;
+		}
+		return;
+	}
+	if (pa >= 0x80000) c->phys[pa] = (uint8_t)(v & 0xFF);
+}
+
+/* Mk2Mapper.io_write: 1 when the mapper took the write. */
+static int mk2_io_write(struct core *c, int port, int value)
+{
+	int low = port & 0xFF;
+
+	if (low > 0x0F) return 0;
+	if (!(port & 0x8000)) {
+		c->dat[low] = value & 0x7F;
+		return 1;
+	}
+	if (low == 0x0F) {
+		c->dat_bank = value & 0x01;
+		c->map_enable = (value & 0x02) >> 1;
+		return 1;
+	}
+	return 0;
+}
+
 /* Z80.bank_of: 0 and the bank, or nonzero after a SystemExit. */
 int core_bank_of(struct core *c, int addr, int *bank)
 {
 	int mode = c->latch & 0x18;
 
+	if (c->board) {
+		core_exit(c, "sim: bank_of is Mk1 only; use mapper.translate");
+		return 1;
+	}
 	if (addr >= 0xE000) {
 		*bank = 0;
 		return 0;
@@ -138,6 +200,7 @@ int core_rd(struct core *c, int addr)
 	uint8_t *cell;
 
 	addr &= 0xFFFF;
+	if (c->board) return mk2_rd(c, addr);
 	if (mode == 0x00) {
 		int page = (c->latch >> 5) & 0x07;
 
@@ -185,6 +248,10 @@ static void wr(struct core *c, int addr, int v)
 	uint8_t *cell;
 
 	addr &= 0xFFFF;
+	if (c->board) {
+		mk2_wr(c, addr, v);
+		return;
+	}
 	if (mode == 0x00 || mode == 0x08) {
 		cell = sram_cell(c, c->latch & 0x07, addr);
 		if (cell) *cell = (uint8_t)(v & 0xFF);
@@ -193,6 +260,11 @@ static void wr(struct core *c, int addr, int v)
 	if (core_bank_of(c, addr, &bank)) return;
 	cell = sram_cell(c, bank, addr);
 	if (cell) *cell = (uint8_t)(v & 0xFF);
+}
+
+void core_wr(struct core *c, int addr, int v)
+{
+	wr(c, addr, v);
 }
 
 static void wr16(struct core *c, int addr, int v)
@@ -297,7 +369,10 @@ static int parity(int value)
 
 static int io_in(struct core *c, int port)
 {
-	int v = c->io_in(port & 0xFF);
+	int v;
+
+	if (c->board && (port & 0xFF) <= 0x0F) return 0xFF;
+	v = c->io_in(port & 0xFF);
 
 	if (v < 0) {
 		if (!c->err) c->err = CORE_PYERR;
@@ -306,9 +381,16 @@ static int io_in(struct core *c, int port)
 	return v;
 }
 
-static void io_out(struct core *c, int port, int value)
+/* `hi` is the bus byte on A8-A15: A for OUT (n),A, B for the (C)
+ * forms (B already counted down for OUTI and OTIR).  The Mk2 mapper
+ * decodes the 16-bit port; every other port is the low byte. */
+static void io_out(struct core *c, int hi, int port, int value)
 {
 	if ((port & 0xFF) == c->stop_out_port) c->out_hit = 1;
+	if (c->board && (port & 0xFF) <= 0x0F) {
+		mk2_io_write(c, ((hi & 0xFF) << 8) | (port & 0xFF), value & 0xFF);
+		return;
+	}
 	if (c->io_out(port & 0xFF, value & 0xFF) < 0 && !c->err)
 		c->err = CORE_PYERR;
 }
@@ -772,7 +854,7 @@ static void step_ed(struct core *c)
 	} else if (op == 0xA3) {
 		value = rd(c, HL);
 		CK;
-		io_out(c, c->c, value);
+		io_out(c, (c->b - 1) & 0xFF, c->c, value);
 		CK;
 		set_hl(c, (HL + 1) & 0xFFFF);
 		c->b = (c->b - 1) & 0xFF;
@@ -784,7 +866,7 @@ static void step_ed(struct core *c)
 		for (;;) {
 			value = rd(c, HL);
 			CK;
-			io_out(c, c->c, value);
+			io_out(c, (c->b - 1) & 0xFF, c->c, value);
 			CK;
 			set_hl(c, (HL + 1) & 0xFFFF);
 			c->b = (c->b - 1) & 0xFF;
@@ -815,7 +897,7 @@ static void step_ed(struct core *c)
 			value = read_r(c, code);
 			CK;
 		}
-		io_out(c, c->c, value);
+		io_out(c, c->b, c->c, value);
 	} else if (op == 0x44) {
 		int old = c->a;
 
@@ -1157,7 +1239,7 @@ static void step_op(struct core *c, int op)
 
 		CK;
 		if (op == 0xD3) {
-			io_out(c, port, c->a);
+			io_out(c, c->a, port, c->a);
 		} else {
 			v = io_in(c, port);
 			CK;
@@ -1430,7 +1512,7 @@ int core_run(struct core *c, int64_t limit, const uint8_t *stops,
 			*done = n;
 			return 1;
 		}
-		if (delay_addr >= 0 && c->latch == delay_latch &&
+		if (delay_addr >= 0 && !c->board && c->latch == delay_latch &&
 		    c->pc == delay_addr) {
 			c->err = CORE_OK;
 			c->pc = pop16(c);

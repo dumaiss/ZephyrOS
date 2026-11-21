@@ -18,6 +18,7 @@ Usage: sim.py <selftest-image> [start-pc] [trace]
 import os
 import sys
 import collections
+import random
 import struct
 
 SZ = 0x10000
@@ -2586,6 +2587,89 @@ class MemoryDecoder:
         return rom_cs, sram_cs
 
 
+class Mk2Mapper:
+    """Zephyr-80 Mk2 memory mapper: the 74LS612 DAT (architecture 2.7).
+
+    Sixteen 7-bit page entries (system 0-7, working 8-15), the control
+    bits DAT_BANK and MAP_ENABLE, and the translation
+    `physical = page << 13 | (logical & 1FFFh)` over 128 pages of 8 KiB:
+    pages 00h-3Fh are ROM (physical 00000h-7FFFFh), 40h-7Fh SRAM
+    (80000h-FFFFFh).  With MAP_ENABLE = 0 (pass mode) logical
+    0000h-FFFFh is the first 64 KiB of ROM whatever the entries hold.
+
+    I/O decode, from the full 16-bit port (OUT (n),A drives A on
+    A8-A15): the mapper owns low byte 00h-0Fh.  A15 = 0 writes entry
+    (low & 0Fh) with the low seven data bits; A15 = 1 with low byte 0Fh
+    writes the control byte (D0 DAT_BANK, D1 MAP_ENABLE, D2-D7 ignored);
+    A15 = 1 with any other low byte writes nothing.  A8-A14 are not
+    decoded: every value of them aliases.  No register reads back.
+
+    Reset selects DAT_BANK = 0 and pass mode and fills the entries from
+    a seeded generator, a different pattern on every reset, standing in
+    for the undefined LS612 power-on contents.
+    """
+
+    ENTRIES = 16
+    PAGE_SHIFT = 13
+    PAGE_MASK = 0x1FFF
+    ROM_PAGES = 0x40
+    SRAM_BASE = 0x80000
+    PHYS_SIZE = 0x100000
+    CONTROL_LOW = 0x0F
+    DAT_BANK = 0x01
+    MAP_ENABLE = 0x02
+
+    def __init__(self, seed=1):
+        self._rng = random.Random(seed)
+        self.entries = self._make_entries()
+        self.dat_bank = 0
+        self.map_enable = 0
+        self.reset()
+
+    def _make_entries(self):
+        return [0] * self.ENTRIES
+
+    def _pattern(self):
+        while True:
+            vals = [self._rng.randrange(128) for _ in range(self.ENTRIES)]
+            if len(set(vals)) >= 8 and vals != list(self.entries):
+                return vals
+
+    def reset(self):
+        """Hardware reset: system bank, pass mode, scrambled entries."""
+        self.dat_bank = 0
+        self.map_enable = 0
+        for index, page in enumerate(self._pattern()):
+            self.entries[index] = page
+
+    def physical(self, la):
+        """The 20-bit physical address backing logical address `la`."""
+        la &= 0xFFFF
+        if not self.map_enable:
+            return la
+        page = self.entries[(self.dat_bank << 3) | (la >> 13)] & 0x7F
+        return (page << self.PAGE_SHIFT) | (la & self.PAGE_MASK)
+
+    def translate(self, la):
+        """(device, physical address): device is "rom" or "sram"."""
+        pa = self.physical(la)
+        return ("sram" if pa >= self.SRAM_BASE else "rom"), pa
+
+    def io_write(self, port, value):
+        """One I/O write at the 16-bit port; True when the mapper took it."""
+        low = port & 0xFF
+        if low > self.CONTROL_LOW:
+            return False
+        if not port & 0x8000:
+            self.entries[low] = value & 0x7F
+            return True
+        if low == self.CONTROL_LOW:
+            self.dat_bank = value & self.DAT_BANK
+            self.map_enable = (value & self.MAP_ENABLE) >> 1
+            return True
+        return False
+
+
 # --- instruction clocks (T-states) -----------------------------------------
 #
 # The Z80 real-time model: the T-state cost of the instruction at PC.  The
@@ -3051,17 +3135,46 @@ def opcode_cost(z):
 
 
 class Z80:
-    def __init__(self, page0, page1, rom_pages=None, decoder_revision=13):
-        self.bank0 = bytearray(page0)
-        self.bank7 = bytearray(page1)
-        self.banks = {n: bytearray([FILL] * SZ) for n in range(1, 7)}
-        # ROM images for the ROM-read modes.  Page 0/1 mirror the boot
-        # images; recovery pages are provided by the caller.
-        self.rom = {0: bytearray(page0), 1: bytearray(page1)}
-        if rom_pages:
-            for number, data in rom_pages.items():
-                self.rom[number] = bytearray(data)
-        self.latch = 0x00
+    Mapper = Mk2Mapper
+
+    def __init__(self, page0, page1, rom_pages=None, decoder_revision=13,
+                 board="mk1", mapper_seed=1):
+        """`board` "mk1" (default): page0/page1 are the 64 KiB boot images
+        and the banking latch decodes memory.  "mk2": the LS612 board;
+        page0 is the ROM content from physical 0 (up to 512 KiB, the rest
+        reads FFh), page1 the SRAM content from physical 80000h (up to
+        512 KiB, the rest FFh); rom_pages is unused and the instance has
+        a `mapper` and `phys` but no latch, banks or decoder."""
+        if board not in ("mk1", "mk2"):
+            raise ValueError("unsupported board %r" % (board,))
+        self.board = board
+        # The bus byte on A8-A15 during the current IN/OUT (OUT (n),A
+        # drives A there, (C) forms drive B); the Mk2 mapper decodes it.
+        self.io_high = 0
+        if board == "mk2":
+            if rom_pages:
+                raise ValueError("board mk2 takes no rom_pages")
+            half = Mk2Mapper.SRAM_BASE
+            if len(page0) > half or len(page1) > half:
+                raise ValueError("board mk2: image over 512 KiB")
+            self.phys = bytearray([FILL] * Mk2Mapper.PHYS_SIZE)
+            self.phys[0:len(page0)] = page0
+            self.phys[half:half + len(page1)] = page1
+            self.mapper = self._make_mapper(mapper_seed)
+            self.rd = self._rd_mk2
+            self.wr = self._wr_mk2
+        else:
+            self.mapper = None
+            self.bank0 = bytearray(page0)
+            self.bank7 = bytearray(page1)
+            self.banks = {n: bytearray([FILL] * SZ) for n in range(1, 7)}
+            # ROM images for the ROM-read modes.  Page 0/1 mirror the
+            # boot images; recovery pages are provided by the caller.
+            self.rom = {0: bytearray(page0), 1: bytearray(page1)}
+            if rom_pages:
+                for number, data in rom_pages.items():
+                    self.rom[number] = bytearray(data)
+            self.latch = 0x00
         self.pc = 0
         self.sp = 0
         self.a = self.f = 0
@@ -3099,8 +3212,9 @@ class Z80:
         self.int_vector = 0
         # Banking-latch decoder model (MEM_DECODER revision 13; revision
         # 12 remains as the reference the P = 0 equivalence is proven
-        # against).
-        self.decoder = MemoryDecoder(decoder_revision)
+        # against).  Mk2 has the mapper instead.
+        if board == "mk1":
+            self.decoder = MemoryDecoder(decoder_revision)
         # SIO0/B emulation (ports 22h data / 23h control).  Bytes written
         # to the data port are captured in sio_tx; bytes queued in sio_rx
         # are returned by data-port reads and make RR0's RX-available bit
@@ -3147,7 +3261,10 @@ class Z80:
     def io_in(self, port):
         """Read one I/O port (the single port model for IN forms)."""
         port &= 0xFF
-        if port == 0x00:
+        if self.mapper is not None:
+            if port <= Mk2Mapper.CONTROL_LOW:
+                return 0xFF          # the mapper has no readback
+        elif port == 0x00:
             return self.latch
         if self.vdp_peer is not None and 0xA0 <= port <= 0xA4:
             self.vdp_peer.now = self.tstates
@@ -3190,7 +3307,9 @@ class Z80:
         value &= 0xFF
         if port == self._stop_out_port:
             self._out_hit = True
-        if port == 0x00:
+        if self.mapper is not None and port <= Mk2Mapper.CONTROL_LOW:
+            self.mapper.io_write((self.io_high << 8) | port, value)
+        elif port == 0x00 and self.mapper is None:
             self.latch = value
         elif self.vdp_peer is not None and 0xA0 <= port <= 0xA4:
             self.vdp_peer.now = self.tstates
@@ -3304,8 +3423,21 @@ class Z80:
             return self.bank7
         return self.banks[bank]
 
+    def _make_mapper(self, seed):
+        return Mk2Mapper(seed)
+
+    def _rd_mk2(self, addr):
+        return self.phys[self.mapper.physical(addr)]
+
+    def _wr_mk2(self, addr, v):
+        pa = self.mapper.physical(addr)
+        if pa >= Mk2Mapper.SRAM_BASE:      # ROM writes are ignored
+            self.phys[pa] = v & 0xFF
+
     def bank_of(self, addr):
         """SRAM bank backing `addr` in the RAM-only modes (10h/18h)."""
+        if self.mapper is not None:
+            raise SystemExit("sim: bank_of is Mk1 only; use mapper.translate")
         mode = self.latch & 0x18
         bank = self.latch & 0x07
         if addr >= 0xE000:
@@ -3582,6 +3714,7 @@ class Z80:
             self.step_cb()
         elif op in (0xD3, 0xDB):
             port = self.fetch()
+            self.io_high = self.a
             if op == 0xD3:
                 self.io_out(port, self.a)
             else:
@@ -3727,7 +3860,8 @@ class Z80:
                 if (stops is not None and (n or check_first) and
                         self.pc in stops):
                     return "stop", n
-                if (delay is not None and self.latch == delay[1] and
+                if (delay is not None and self.mapper is None and
+                        self.latch == delay[1] and
                         self.pc == delay[0]):
                     self.pc = self.pop16()
                 self._out_hit = False
@@ -3967,6 +4101,7 @@ class Z80:
             self.ZF = self.hl == 0
             self.SNF = (self.hl & 0x8000) != 0
         elif op == 0xA2:  # ini: (HL) <- in(C), HL++, B--
+            self.io_high = self.b
             value = self.io_in(self.c)
             self.wr((self.h << 8) | self.l, value)
             self.hl = (self.hl + 1) & 0xFFFF
@@ -3977,6 +4112,7 @@ class Z80:
             self.PV = self.parity(value)
         elif op == 0xA3:  # outi: out(C) <- (HL), HL++, B--
             value = self.rd((self.h << 8) | self.l)
+            self.io_high = (self.b - 1) & 0xFF   # B counts down first
             self.io_out(self.c, value)
             self.hl = (self.hl + 1) & 0xFFFF
             self.b = (self.b - 1) & 0xFF
@@ -3987,6 +4123,7 @@ class Z80:
         elif op == 0xB3:  # otir: outi until B is zero, one step per byte
             while True:
                 value = self.rd((self.h << 8) | self.l)
+                self.io_high = (self.b - 1) & 0xFF
                 self.io_out(self.c, value)
                 self.hl = (self.hl + 1) & 0xFFFF
                 self.b = (self.b - 1) & 0xFF
@@ -3997,6 +4134,7 @@ class Z80:
             self.SNF = False
             self._sf(0x02, 1)
         elif (op & 0xC7) == 0x40:  # in r,(c); op 70h reads and discards
+            self.io_high = self.b
             value = self.io_in(self.c)
             code = (op >> 3) & 7
             if code != 6:
@@ -4007,6 +4145,7 @@ class Z80:
         elif (op & 0xC7) == 0x41:  # out (c),r; op 71h writes zero
             code = (op >> 3) & 7
             value = 0 if op == 0x71 else self.read_r(code)
+            self.io_high = self.b
             self.io_out(self.c, value)
         elif op == 0x44:  # neg is an exact 0 - A subtract
             old = self.a
