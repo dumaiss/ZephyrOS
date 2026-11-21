@@ -355,9 +355,17 @@ process workspace.
 The existing syscall path relies on access to a caller's low page while
 the kernel executes. A plausible Mk2 implementation maps that caller
 page into the system DAT's logical page 0 when required; whether the
-final port does so, or copies arguments through the common area, must
-be resolved during the OS-port spike. The system DAT is **resident**,
-but not necessarily immutable in every entry.
+final port does so, or copies arguments through the common area, is
+decided with a measurement in the transitions package. The system DAT is
+**resident**, but not necessarily immutable in every entry.
+
+**Page 0 after boot:** ROM page 00h is the reset and boot view only. The
+bootstrap builds a **RAM system page-0 image** (the low entry stubs at
+`0000h–00FFh`) and maps it as system entry 0 before the handoff; every
+process page-0 image carries the same stub bytes, written by `exec`. So
+an RST or NMI reaches the same common-memory entry code whichever page 0
+is mapped, and the kernel's entry stubs impose nothing on the ROM layout
+beyond the boot code.
 
 Software maintains one eight-byte DAT image per process/working context
 and tracks which image is cached in hardware bank 1. Switching to an
@@ -390,6 +398,18 @@ Each mapper entry is programmed with one page byte in `00h–7Fh`.
 The proposed decoder distinguishes the two operations by I/O **A15**:
 `A15=0` for page programming and `A15=1` for control. This permits
 ordinary `LD A,page` / `OUT (n),A` mapper writes.
+
+**Open hardware decision: the LS612 data inputs** connect either to the
+data bus or to A8–A15 (timing and electrical review). Until it is made,
+software is **wiring-agnostic**: an entry write presents the page on both
+D0–D6 and A8–A14, that is `OUT (n),A`, or `OUT (C),A` with **B = A**.
+`OUTI`/`OTIR` (which drive the decremented B) and an entry write with an
+unrelated B are not allowed. B stays an address everywhere else: the
+control register (`B=80h`) and every other device block. The cost is that
+the A15 = 0 half of the mapper's own `00h–0Fh` block cannot use B to
+select further registers; a design that needs that settles the decision
+in favour of data-bus wiring. The simulator reports an entry write whose
+data byte and A8–A14 disagree.
 
 **Z80 bus detail:** `OUT (n),A` places A on **A8–A15**. For example,
 `LD A,2Ah` / `OUT (02h),A` produces I/O address `2A02h`, not `0002h`.
@@ -463,6 +483,11 @@ RST/NMI paths must transfer into stable code before remapping. ISR
 return must recover the interrupted DAT and SP, including interrupts
 taken in the system or service context. Bounded interrupt-masking rules
 from sections 4.3–4.5 still apply.
+
+**Boot exception:** the bootstrap programs the DAT before any RAM exists,
+so it writes the mirror after its `OUT`s. This is safe only because of the
+IOC invariant (2.7.5: no NMI before the bootstrap has a RAM stack); after
+the handoff the mirror is always valid and the rule below holds.
 
 **NMI rule** (the Mk2 counterpart of "an NMI never changes the latch"):
 an NMI handler never changes `DAT_BANK`, a DAT entry or a software
