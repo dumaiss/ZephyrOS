@@ -19,6 +19,13 @@
  * Segment ids are the container's table ids: 1..segment_count, in table
  * order.  An id outside the container, or a segment of another process,
  * is refused: the table is the calling process's own.
+ *
+ * The text above is the Zephyr-80 Mk1 board's.  On the Mk2 board
+ * (`KOS_BOARD_MK2`, docs/abi.md section 8.3) every segment is an
+ * extended-memory object of its own pages, holding the segment from its
+ * first byte; the calls, records and errors are the same, and
+ * `SYS_SEG_MAP` returns the far code's mapping handle (kos/xmem.h), which
+ * opens the far window `8000h-BFFFh` onto it.
  */
 
 #ifndef KOS_SEG_H

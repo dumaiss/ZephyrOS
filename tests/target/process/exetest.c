@@ -11,7 +11,8 @@
  *   3. the initial stack lies inside the reserved [E000-stack_size,
  *      E000h) window;
  *   4. SYS_GETINFO returns the six-byte v1 record with this process'
- *      identity and the kernel-parent flag;
+ *      identity (a bank 0-6 on Zephyr-80; the page-0 page on Mk2) and
+ *      the kernel-parent flag;
  *   5. SYS_CONSOLE_WRITE reaches the normal console device;
  *   6. the process exits with PASS|bank (a known status that also proves
  *      which bank ran the identical ROMFS payload).
@@ -97,7 +98,10 @@ int main(void)
 		zt_fail(KOS_PCST_ZT_FAIL_GETINFO);
 	}
 	if (info.size != KOS_GETINFO_SIZE || info.abi != KOS_GETINFO_ABI ||
-	    info.bank > 6u || info.pid > 6u ||
+#if !defined(KOS_BOARD_MK2)
+	    info.bank > 6u ||
+#endif
+	    info.pid > 6u ||
 	    (info.flags & KOS_PROCESS_FLAG_KERNEL_PARENT) == 0u) {
 		zt_fail(KOS_PCST_ZT_FAIL_GETINFO);
 	}

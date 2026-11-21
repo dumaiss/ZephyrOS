@@ -13,6 +13,9 @@
 /* The low entry stubs every page-0 image carries (0000h-00FFh). */
 #define KOS_PAGE_ZERO_END           0x0100u
 #define KOS_NMI_ENTRY               0x0066u
+/* The far-window vector (RST 28h): JP kos_far_map in every program
+ * page-0 image (kernel/memory/mk2/far.asm). */
+#define KOS_FAR_VECTOR              0x0028u
 
 /* The system DAT after the boot: entry 0 the system page-0 image (a
  * caller's page 0 for a syscall crossing), entries 1-4 the nucleus pages,

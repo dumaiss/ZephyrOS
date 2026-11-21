@@ -25,6 +25,7 @@
 #   make mod-test            packed-module tooling tests
 #   make exe-test             packed-program tooling tests
 #   make sdk                  standalone SDK tree + tarball (build/kos-sdk-*)
+#   make sdk BOARD=mk2        the Zephyr-80 Mk2 SDK (build-mk2/sys/kos-sdk-*-mk2)
 #   make subsystem-selftest        ROMFS-reader acceptance image
 #   make process-selftest          process/EXE lifecycle acceptance image
 #   make exe2-selftest             EXE v2 loader-outcome acceptance image
@@ -37,7 +38,8 @@
 #   make mk2boot                   Zephyr-80 Mk2 boot proof image (test-only)
 #   make mk2trans                  Zephyr-80 Mk2 transitions image (test-only)
 #   make mk2proc                   Zephyr-80 Mk2 processes image (test-only)
-#   make BOARD=mk2 (or make mk2)   Zephyr-80 Mk2 production image (build-mk2/)
+#   make BOARD=mk2 (or make mk2)   Zephyr-80 Mk2 production image (build-mk2/),
+#                                  its store and card test programs
 #   make clean    remove all generated files
 #
 # Builds are parallel by default (KOS_JOBS defaults to nproc); use
@@ -57,6 +59,27 @@ MAKEFLAGS += -j$(KOS_JOBS)
 
 BUILD     := build
 .DEFAULT_GOAL := all
+
+# --- board selection --------------------------------------
+# BOARD names the CPU board whose production image `make` builds: mk1
+# (the banking latch, the production board; build/) or mk2 (the LS612 DAT
+# mapper, architecture 2.7; the `mk2` target below).  A board is its
+# platform include roots plus its mapping operations
+# (kernel/memory/map_ops.inc or kernel/memory/mk2/), which the sources
+# include as "map_ops.inc"; Mk2 C builds add -DKOS_BOARD_MK2.  Every
+# nucleus rule above the Mk2 section builds for Mk1; the Mk2 rules name
+# their own flags.  Programs, the SDK and the store are built for BOARD:
+# an EXE runs on the board it was built for (its header's board), so a
+# Mk2 make keeps the drivers, the SDK, the programs and the store under
+# build-mk2/sys and the Mk2 nucleus under build-mk2.
+BOARD ?= mk1
+ifeq ($(filter $(BOARD),mk1 mk2),)
+$(error BOARD must be mk1 or mk2, not "$(BOARD)")
+endif
+ifeq ($(BOARD),mk2)
+BUILD := build-mk2/sys
+.DEFAULT_GOAL := mk2
+endif
 
 # --- system selection -------------------------------------
 # One systems/<name>.json describes the image this makefile builds: its
@@ -98,24 +121,9 @@ include $(SYSTEM_MK)
 include platform/zephyr80/config.mk
 include platform/zephyr80mk2/config.mk
 
-# --- board selection --------------------------------------
-# BOARD names the CPU board whose production image `make` builds: mk1
-# (the banking latch, the production board; build/) or mk2 (the LS612 DAT
-# mapper, architecture 2.7; build-mk2/, the `mk2` target below).  A board
-# is its platform include roots plus its mapping operations
-# (kernel/memory/map_ops.inc or kernel/memory/mk2/), which the sources
-# include as "map_ops.inc"; Mk2 C builds add -DKOS_BOARD_MK2.  Every rule
-# above the Mk2 section builds for Mk1; the Mk2 rules name their own
-# flags, so one make builds both boards' objects side by side.
-BOARD ?= mk1
+# The two boards' assembler roots (board selection above).
 KOS_BOARD_ASFLAGS.mk1 := $(KOS_PLATFORM_ASFLAGS) -Ikernel/memory
 KOS_BOARD_ASFLAGS.mk2 := $(KOS_MK2_PLATFORM_ASFLAGS) -Ikernel/memory/mk2
-ifeq ($(filter $(BOARD),mk1 mk2),)
-$(error BOARD must be mk1 or mk2, not "$(BOARD)")
-endif
-ifeq ($(BOARD),mk2)
-.DEFAULT_GOAL := mk2
-endif
 
 # The standalone SDK release version (`make sdk`).
 include config/sdk.mk
@@ -1403,10 +1411,15 @@ $(MODULES)/exe-fixtures.stamp: tests/subsys/gen_exe_fixtures.py \
 # program rules, the template, the examples and the docs.  A developer unpacks the
 # tarball and builds a program with no OS source (docs/sdk.md, "Using the
 # standalone SDK"); tests/test_sdk_package.py builds the tarball
-# out-of-tree and runs the result.
+# out-of-tree and runs the result.  The SDK is built for BOARD: `make sdk
+# BOARD=mk2` assembles build-mk2/sys/kos-sdk-<version>-mk2/, whose
+# libraries carry the Mk2 mapping members and whose mk/board.mk makes
+# every program it builds a Mk2 EXE.
 
-KOS_SDK_DIR     := $(BUILD)/kos-sdk-$(KOS_SDK_VERSION)
-KOS_SDK_TARBALL := $(BUILD)/kos-sdk-$(KOS_SDK_VERSION).tar.gz
+KOS_SDK_NAME.mk1 := kos-sdk-$(KOS_SDK_VERSION)
+KOS_SDK_NAME.mk2 := kos-sdk-$(KOS_SDK_VERSION)-mk2
+KOS_SDK_DIR     := $(BUILD)/$(KOS_SDK_NAME.$(BOARD))
+KOS_SDK_TARBALL := $(BUILD)/$(KOS_SDK_NAME.$(BOARD)).tar.gz
 
 SDK_INPUTS := $(wildcard abi/kos/*.h) \
 	$(wildcard user/sdk/include/*.h) $(wildcard user/sdk/include/kos/*.h) \
@@ -1429,7 +1442,7 @@ $(KOS_SDK_TARBALL): $(EXE_SDK_RELEASE_LIB) $(EXE_LIBTUI) $(EXE_LIBTUI_WIDE) \
 		$(EXE_LIBTUI_WIDGETS) $(EXE_LIBGFX) $(EXE_LIBKRES) \
 		$(EXE_LIBSND) \
 		$(EXE_CRT0) $(BUILD)/host/kres $(SDK_INPUTS)
-	$(PYTHON) tools/sdkpack.py --version $(KOS_SDK_VERSION) \
+	$(PYTHON) tools/sdkpack.py --version $(KOS_SDK_VERSION) --board $(BOARD) \
 		--libkos $(EXE_SDK_RELEASE_LIB) --libtui $(EXE_LIBTUI) \
 		--libtui-wide $(EXE_LIBTUI_WIDE) \
 		--libtui-widgets $(EXE_LIBTUI_WIDGETS) \
@@ -1975,9 +1988,10 @@ $(MK2BOOT_DIR)/mk2boot.bin: tests/target/mk2boot/mk2boot.asm \
 
 # Zephyr-80 Mk2 transitions image (test-only, BOARD=mk2): the kernel's
 # transition sources assembled for Mk2 - the syscall gate, page zero, the
-# IRQ executive, its vectors, init and code end, the event core and the
-# Mk2 mapping state - around a bootstrap, stub dispatchers and a process in the working
-# bank (tests/test_mk2_transitions.py).  The image is the whole 512 KiB
+# IRQ executive, its vectors, init and code end, the event core, the
+# Mk2 mapping state and the far window - around a bootstrap, stub
+# dispatchers and a process in the working bank
+# (tests/test_mk2_transitions.py).  The image is the whole 512 KiB
 # flash.  mk1gate is the Mk1 gate on the same harness: the same kernel
 # sources assembled for Mk1, with a null dispatcher, for the gate
 # measurement.
@@ -1989,7 +2003,7 @@ MK2TRANS_INC := $(wildcard platform/zephyr80mk2/*/*.inc) \
 MK2TRANS_KERNEL := kernel/syscall/page_zero.asm kernel/syscall/entry.asm \
 	kernel/irq/entry.asm kernel/irq/vectors.asm kernel/irq/init.asm \
 	kernel/event/event_common.asm kernel/memory/mk2/banking.asm \
-	kernel/irq/code_end.asm
+	kernel/memory/mk2/far.asm kernel/irq/code_end.asm
 MK2TRANS_RELS := $(MK2TRANS_DIR)/mk2trans.rel \
 	$(foreach src,$(MK2TRANS_KERNEL),$(MK2TRANS_DIR)/$(subst /,_,$(basename $(src))).rel)
 MK1GATE_KERNEL := kernel/syscall/page_zero.asm kernel/syscall/entry.asm \
@@ -2051,7 +2065,7 @@ MK2PROC_CFLAGS := -mz80 -c --nostdinc --Werror $(KOS_SDCC_OPT) \
 	-DKOS_BOARD_MK2=1 -I . $(KOS_MK2_PLATFORM_CFLAGS)
 MK2PROC_ASM := tests/target/mk2proc/mk2proc.asm \
 	$(filter-out kernel/irq/code_end.asm,$(MK2TRANS_KERNEL)) \
-	kernel/process/launch.asm kernel/memory/mk2/far.asm \
+	kernel/process/launch.asm \
 	kernel/memory/mk2/page_copy.asm kernel/runtime/sdcc_helpers.asm
 MK2PROC_C := tests/target/mk2proc/mk2proc_kernel.c \
 	kernel/memory/mk2/pages.c kernel/process/process.c \
@@ -2096,8 +2110,9 @@ $(MK2PROC_DIR)/mk2proc.bin: $(MK2PROC_RELS)
 # below is the Mk2 nucleus: the Mk1-only sources (the latch gates, the
 # mode-00 ROM access, the Mk1 copy and upcall primitives, the bank-6
 # driver crossing and the Mk1 boot) are not in it.  The image carries the
-# production store (the Mk1 build's recovery.romfs, the same content) and
-# boot setting; tools/pack_image.py --board mk2 lays out the ROM.
+# production store and boot setting built for Mk2 ($(BUILD) is
+# build-mk2/sys: the same drivers and files, every program built with the
+# Mk2 SDK); tools/pack_image.py --board mk2 lays out the ROM.
 
 MK2_DIR := build-mk2
 MK2_IMAGE := $(MK2_DIR)/konaos-mk2.bin
@@ -2158,8 +2173,20 @@ MK2_RELS := $(foreach s,$(MK2_ASM_SRCS) $(MK2_C_SRCS) $(MK2_COMMON_C_SRCS),\
 MK2_LINK := -b _CODE=0x2000 -b _WINDOW=0x6000 -b _COLD1=0x16000 \
 	-b _COMMON=0xE000
 
-mk2: $(MK2_IMAGE) $(SIM_CORE_LIB)
+# The image and the Mk2 builds of the programs tests/test_mk2_programs.py
+# runs from the card (the SDK demo, the process and EXE v2 outcome
+# programs and the placement probe).  The target always builds for Mk2:
+# `make mk2` is `make BOARD=mk2`.
+ifeq ($(BOARD),mk2)
+MK2_PROGRAMS := $(addprefix $(EXE_USER_ROOT)/,hello.exe exetest.exe \
+	exe2probe.exe exe2seg.exe exe2big.exe placetest.exe)
+
+mk2: $(MK2_IMAGE) $(MK2_PROGRAMS) $(SIM_CORE_LIB)
 	@echo "mk2 image: $(MK2_IMAGE)"
+else
+mk2:
+	$(MAKE) BOARD=mk2 mk2
+endif
 
 define MK2_ASM_RULE
 $(MK2_DIR)/$(call MK2_STEM,$(1)).rel: $(call MK2_SRC,$(1)) $(MK2_INC)

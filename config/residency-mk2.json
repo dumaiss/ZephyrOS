@@ -30,8 +30,8 @@
   ],
   "cold_sets": [
     ["object", "vfs_router", "vfs_dev", "vfs_fs", "vfs_handles",
-     "vfs_system", "vfs_path", "event_syscall", "process_exec"],
-    ["diag", "diag_io", "xmem", "rt", "driver_loader"]
+     "vfs_system", "vfs_path", "process_exec"],
+    ["diag", "diag_io", "xmem", "rt", "event_syscall", "driver_loader"]
   ],
   "driver_api": [
     "ipc", "ipc_asm", "event", "event_common", "irq", "irq_entry",

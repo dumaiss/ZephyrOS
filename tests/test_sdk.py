@@ -145,12 +145,21 @@ def _ar_members(path):
     return names
 
 
-def _rule_sources(variable):
-    """The source list of one ``:=`` assignment in user/sdk/exe.mk."""
-    match = re.search(r"^%s\s*:=\s*((?:.*\\\n)*.*)" % variable,
+def _rule_sources(variable, board="mk1"):
+    """The source list of one ``:=`` assignment in user/sdk/exe.mk, a
+    per-board list (``$(NAME.$(KOS_BOARD))``) expanded for `board` (the
+    tree's build/ is the Zephyr-80 build)."""
+    match = re.search(r"^%s\s*:=\s*((?:.*\\\n)*.*)" % re.escape(variable),
                       _read(EXE_MK), re.M)
     assert match is not None, "exe.mk defines no %s" % variable
-    return match.group(1).replace("\\\n", " ").split()
+    sources = []
+    for word in match.group(1).replace("\\\n", " ").split():
+        per_board = re.match(r"^\$\(([\w.]+)\.\$\(KOS_BOARD\)\)$", word)
+        if per_board:
+            sources += _rule_sources("%s.%s" % (per_board.group(1), board))
+        else:
+            sources.append(word)
+    return sources
 
 
 def _split_call_arguments(text, start):

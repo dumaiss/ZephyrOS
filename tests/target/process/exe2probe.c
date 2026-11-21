@@ -13,7 +13,7 @@
  *     still there);
  *   - an ordinary (zero-segment) program runs with its full bank: the
  *     latch is mode 10 with P = 0, so nothing in 0000h-DFFFh is an
- *     aperture (7.2);
+ *     aperture (7.2; Zephyr-80 only: the Mk2 build has no latch);
  *   - the startup block is present (GETINFO reports the identity).
  *
  * The console lines are for hardware transcripts; the exit status
@@ -23,9 +23,11 @@
 #include "kos.h"
 #include "process_selftest.h"
 
+#if !defined(KOS_BOARD_MK2)
 /* The banking latch (port 00h): mode in D4-D3, bank in D2-D0, page in
  * D7-D5 (platform/zephyr80/public/hardware.inc). */
 __sfr __at 0x00 latch_port;
+#endif
 
 /* Uninitialized: the loader must zero this whole region. */
 static unsigned char bss_probe[64];
@@ -61,9 +63,11 @@ int main(void)
 	}
 	/* An ordinary EXE v2 program runs in the application mode over its
 	 * own bank with P = 0: every address in the bank is primary. */
+#if !defined(KOS_BOARD_MK2)
 	if ((latch_port & 0x18u) != 0x10u || (latch_port & 0xE0u) != 0u) {
 		z2_fail(KOS_PCST_Z2_FAIL_LATCH);
 	}
+#endif
 	if (mark[0] != KOS_PCST_EXE2_MARK_0 || mark[1] != KOS_PCST_EXE2_MARK_1 ||
 	    mark[2] != KOS_PCST_EXE2_MARK_2 ||
 	    mark[3] != KOS_PCST_EXE2_MARK_3) {

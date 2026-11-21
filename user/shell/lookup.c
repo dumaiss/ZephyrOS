@@ -70,6 +70,8 @@ const char *shell_strerror(int code)
 		return "cross-device";
 	case KOS_EMFILE:
 		return "too many open";
+	case KOS_EBOARD:
+		return "built for another board";
 	default:
 		(void)snprintf(unknown, sizeof unknown, "error %02x", code);
 		return unknown;

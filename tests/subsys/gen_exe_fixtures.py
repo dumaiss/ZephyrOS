@@ -8,7 +8,7 @@ formats/include/exe.h plus two well-formed control files:
     exe-bad-format.exe         EXE_EXEC_ERR_FORMAT
     exe-bad-abi.exe            EXE_EXEC_ERR_ABI
     exe-bad-flags.exe          EXE_EXEC_ERR_FLAGS
-    exe-bad-reserved0.exe      EXE_EXEC_ERR_RESERVED0
+    exe-bad-board.exe          EXE_EXEC_ERR_BOARD       (no such board)
     exe-bad-header-size.exe    EXE_EXEC_ERR_HEADER
     exe-bad-reserved1.exe      EXE_EXEC_ERR_RESERVED1
     exe-zero-image.exe         EXE_EXEC_ERR_IMAGE
@@ -144,9 +144,9 @@ def build_fixtures():
          _container(_fields(abi_version=2), _image(4)), "EXE_EXEC_ERR_ABI"),
         ("exe-bad-flags.exe",
          _container(_fields(flags=1), _image(4)), "EXE_EXEC_ERR_FLAGS"),
-        ("exe-bad-reserved0.exe",
-         _container(_fields(reserved0=1), _image(4)),
-         "EXE_EXEC_ERR_RESERVED0"),
+        ("exe-bad-board.exe",
+         _container(_fields(board=2), _image(4)),
+         "EXE_EXEC_ERR_BOARD"),
         ("exe-bad-header-size.exe",
          _container(_fields(header_size=34), _image(4)),
          "EXE_EXEC_ERR_HEADER"),

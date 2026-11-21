@@ -16,6 +16,7 @@
 #include "kos/syscall.h"
 #include "kos/errno.h"
 #include "kos/xmem.h"
+#include "kos/seg.h"
 #include "process.h"
 #include "kernel.h"
 #include "kernel/syscall/diag.h"
@@ -208,7 +209,7 @@ void kernel_syscall_dispatch(void)
 		return;
 	}
 	if (kos_syscall_number >= KOS_SYSCALL_XMEM_ALLOC &&
-	    kos_syscall_number <= KOS_SYSCALL_XMEM_MAP) {
+	    kos_syscall_number <= KOS_SYSCALL_SEG_MAP) {
 		kos_xmem_dispatch(kos_syscall_number, block);
 	}
 }

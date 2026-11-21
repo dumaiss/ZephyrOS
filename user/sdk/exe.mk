@@ -23,6 +23,9 @@ KOS_INCLUDE  := $(KOS_SDK_ROOT)/include
 EXE_ABI_ROOT := abi
 KOS_MODULES  := $(MODULES)
 KOS_RULES    := $(KOS_SDK_ROOT)/exe.mk mk/kos.mk
+# The OS build's board: the SDK members and every program are built for
+# it (mk/kos.mk).
+KOS_BOARD    := $(BOARD)
 
 EXE_SDK_BUILD := $(KOS_BUILD)/user/sdk
 EXE_CRT0      := $(EXE_SDK_BUILD)/crt0.rel
@@ -66,8 +69,14 @@ KOS_SDK_C_SRC := args.c fs.c truncate.c ipc.c exec.c console_io.c console_line.c
     klibc/strrchr.c klibc/strlcpy.c klibc/strlcat.c \
     klibc/utoa.c klibc/ultoa.c klibc/itoa.c klibc/ltoa.c \
     klibc/printf.c klibc/sdcc_arith.c klibc/sdcc_arith_signed.c
+# The SDK's mapping members, per board: the aperture wrapper and the
+# veneer trampoline open the far window the board's way (src/ for Mk1's
+# latch, src/mk2/ for Mk2's far-window vector).  The archive member names
+# are the same on both boards.
+KOS_SDK_MAP_SRC.mk1 := xmemgate.asm vcall.asm
+KOS_SDK_MAP_SRC.mk2 := mk2/xmemgate.asm mk2/vcall.asm
 KOS_SDK_ASM_SRC := gate.asm ipcgate.asm diaggate.asm nsgate.asm \
-    xmemgate.asm bcall.asm vcall.asm sdcc_calls.asm event_entry.asm sound_out.asm serial_io.asm joy_read.asm idle_halt.asm \
+    $(KOS_SDK_MAP_SRC.$(KOS_BOARD)) bcall.asm sdcc_calls.asm event_entry.asm sound_out.asm serial_io.asm joy_read.asm idle_halt.asm \
     klibc/strlen.asm klibc/strcmp.asm klibc/strncmp.asm klibc/strchr.asm \
     klibc/memcpy.asm klibc/memmove.asm klibc/memset.asm klibc/memcmp.asm \
     klibc/divmod.asm klibc/sdcc_arith16.asm klibc/mul.asm \

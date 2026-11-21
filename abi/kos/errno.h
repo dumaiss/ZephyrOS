@@ -45,4 +45,8 @@
 #define KOS_EXDEV     0x16 /* cross-filesystem operation          */
 #define KOS_EMFILE    0x17 /* descriptor/handle table exhausted   */
 
+/* SYS_EXEC of a program built for another CPU board (the EXE header's
+ * board field, docs/exe-format.md). */
+#define KOS_EBOARD    0x18 /* program built for another board     */
+
 #endif /* KOS_ERRNO_H */

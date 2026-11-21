@@ -131,6 +131,15 @@
 # -----------------------------------------------------------------------------
 
 KOS_SDK_ROOT ?= ..
+# The CPU board the programs are built for: mk1 (Zephyr-80) or mk2
+# (Zephyr-80 Mk2).  The standalone SDK names it in mk/board.mk, next to
+# this file, because its libraries are built for one board; the in-tree
+# wrapper sets it from the OS build's BOARD.  Programs compile with the
+# board's definitions (-DKOS_BOARD_MK2 on Mk2) and are packed for it: the
+# EXE header's board field, which a loader on the other board refuses.
+-include $(KOS_SDK_ROOT)/mk/board.mk
+KOS_BOARD ?= mk1
+$(if $(filter $(KOS_BOARD),mk1 mk2),,$(error KOS_BOARD must be mk1 or mk2, not "$(KOS_BOARD)"))
 # The libtui capacities: 85x26 is lib/libtui.lib (the default), every
 # other one lib/libtui_<grid>.lib.
 KOS_TUI_GRIDS := 85x26 128x35
@@ -180,7 +189,10 @@ EXE_LIBKOS ?= $(KOS_LIB)/libkos.lib
 EXE_LIB_DIR ?= $(KOS_LIB)
 EXE_RUNTIME ?=
 
-EXE_CFLAGS  := -mz80 -c --nostdinc --Werror -I$(EXE_ABI_ROOT) -I$(KOS_INCLUDE)
+EXE_BOARD_CFLAGS.mk1 :=
+EXE_BOARD_CFLAGS.mk2 := -DKOS_BOARD_MK2=1
+EXE_CFLAGS  := -mz80 -c --nostdinc --Werror -I$(EXE_ABI_ROOT) -I$(KOS_INCLUDE) \
+	$(EXE_BOARD_CFLAGS.$(KOS_BOARD))
 # Header prerequisites.  SDCC emits no dependency
 # files through this rule, and the SDK's include surface is exactly the
 # public ABI plus the SDK include root, so every program object depends on
@@ -431,7 +443,8 @@ $$($(1)_OBJDIR)/$(1).json: $$($(1)_OBJDIR)/$(1).link $$($(1)_SEGMENTSDEP)
 $$($(1)_EXE): $$($(1)_OBJDIR)/$(1).json $$($(1)_BLOBCOPIES) \
 		$$(KOS_TOOLS)/exepack.py
 	$(KOS_PYTHON) $$(KOS_TOOLS)/exepack.py pack $$($(1)_OBJDIR)/$(1).json $$@ \
-	    --objdir $$($(1)_OBJDIR) --report $$($(1)_OBJDIR)/$(1).report.json
+	    --objdir $$($(1)_OBJDIR) --report $$($(1)_OBJDIR)/$(1).report.json \
+	    --board $(KOS_BOARD)
 	$(KOS_PYTHON) $$(KOS_TOOLS)/exepack.py validate $$@
 
 ifneq ($$($(1)_STAGE),)

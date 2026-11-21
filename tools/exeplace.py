@@ -41,6 +41,13 @@ placed program the rewritten objects, the veneer and area-order modules,
 OUTDIR/placement.txt and OUTDIR/placement.json.  A program whose code and
 data fit its bank, with nothing pinned, links unchanged: placed.lk is
 LINKSCRIPT.
+
+The placement is the same for every board: the zones are logical (the
+resident zone, the home zone and the far segments at 8000h-BFFFh), and a
+veneer only names its zone and target for `kos_vcall`, the SDK's veneer
+trampoline, which the board's SDK supplies (the Zephyr-80 latch, the
+Zephyr-80 Mk2 far-window vector).  So one placed link serves both boards;
+the packer records the board (exepack.py pack --board).
 """
 
 import json

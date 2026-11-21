@@ -134,6 +134,7 @@ SDK_FILES = {
     "tools/exerun.py",
     "tools/kres",
     "mk/kos.mk",
+    "mk/board.mk",
     "template/Makefile",
     "template/hello.c",
     "examples/Makefile",
@@ -420,6 +421,9 @@ class TestSdkPackage(unittest.TestCase):
                     for dest in SDK_FILES}
         self.assertEqual(self.members, expected)
         self.assertEqual(_tree_files(self.tree), SDK_FILES)
+        # The Zephyr-80 SDK: mk/kos.mk builds and packs for its board.
+        self.assertIn("KOS_BOARD := mk1\n",
+                      _read(os.path.join(self.tree, "mk", "board.mk")))
 
     def test_the_shipped_library_carries_no_build_dates(self):
         """lib/libkos.lib and lib/libtui.lib are packed with `sdar -rcD`:

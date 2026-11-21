@@ -122,6 +122,8 @@ class Mk2ShellReplay(ShellReplay):
     """The Mk2 production image: booted from reset (the ROM bootstrap
     runs), so the serial-connect delay runs too."""
 
+    STORE = os.path.join(MK2_DIR, "sys", "modules")  # its programs: Mk2
+
     def make_cpu(self, card=False):
         z = Z80(self.image, b"", board="mk2")
         z.vdp = z.vdp_peer = V9958Peer()
@@ -279,8 +281,62 @@ class TestReboot(Mk2ShellCase):
         self.assertIn("console: driver OK", self.trace(z, since))
 
 
+class TestIrqTrampoline(Mk2ShellCase):
+    """A driver's interrupt taken inside kos_dat_map, between the mirror
+    write of a domain entry and its OUT (the NMI rule's order): the
+    mirror already names the domain page while the hardware entry still
+    shows the previous one.  The IRQ trampoline must run the handler on
+    the domain all the same, and the interrupted call must finish with
+    the domain installed."""
+
+    CTC2_VECTOR = 0x04          # the timer driver's channel (CTC base 00h)
+    ENTRY = 6                   # the domain's last entry (3-6)
+
+    def test_an_irq_between_mirror_and_out_runs_on_the_domain(self):
+        z = self.start()
+        self.idle(z)
+        mapper = self.syms["_kos_dat_map"]
+        code = bytes(z.phys[self.nucleus(mapper):self.nucleus(mapper) + 64])
+        out = mapper + code.index(bytes([0xED, 0x79]))  # OUT (C),A
+        at = self.nucleus(self.syms["_kos_driver_domain"])
+        domain = bytes(z.phys[at:at + 8])
+        mirror = 0xEF10 - 0xE000 + 0x7F * PAGE     # KOS_DAT_SYSTEM
+        seen = {}
+
+        def lagging(_step):
+            if "taken" in seen:
+                # The trampoline's call of the driver's handler (the
+                # executive's call of the trampoline targets the fixed
+                # region): the domain in force.
+                if 0x5F00 <= z.sp < 0x6000 and z.iy >= 0x6000:
+                    seen["entries"] = tuple(z.mapper.entries[3:7])
+                    return True
+                return None
+            if (z.c == self.ENTRY and z.a == domain[self.ENTRY] and
+                    z.phys[mirror + self.ENTRY] == domain[self.ENTRY] and
+                    z.mapper.entries[self.ENTRY] != domain[self.ENTRY] and
+                    z.iff1):
+                seen["taken"] = z.mapper.entries[self.ENTRY]
+                z.assert_int(self.CTC2_VECTOR)
+                return {self.syms["___sdcc_call_iy"]}
+            return None
+
+        since = len(z.glyphs)
+        z.hid.hid_queue.extend(b"ls /system\r")
+        self.assertIsNotNone(self.drive(z, STEP_LIMIT, watch={out},
+                                        hook=lagging),
+                             "no driver call found the entry lagging")
+        self.assertEqual(seen["entries"], tuple(domain[3:7]))
+        # The interrupted call finished and the shell goes on.
+        self.run_to_pattern(z, r"\n/system> $", since=since)
+        self.idle(z)
+        self.assertIn("\n/system\n", self.type_line(z, "pwd", NO_CARD_PROMPT))
+
+
 class Mk1ShellReplay(ShellReplay):
     """The Mk1 production image on the same harness (TestIpcCost)."""
+
+    STORE = os.path.join("build", "modules")
 
     def start(self):
         z = self.make_cpu()
@@ -315,7 +371,7 @@ class TestIpcCost(unittest.TestCase):
                                           buffer, 512, DESC_OUT)
             self.assertEqual(status, 512)
             reads.append(tstates)
-        with open(os.path.join(ROOT, "build", "modules", "shell.exe"),
+        with open(os.path.join(ROOT, replay.STORE, "shell.exe"),
                   "rb") as source:
             want = source.read(512)
         self.assertEqual(bytes(z.rd(buffer + i) for i in range(512)), want)

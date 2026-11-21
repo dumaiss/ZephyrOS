@@ -7,7 +7,7 @@ segments, all described by one up-front feasibility-checked header (see
 docs/exe-format.md and formats/include/exe.h):
 
     00 magic[4]="KEX2"   04 format_version=2   05 abi_version=1
-    06 flags=0           07 reserved0=0
+    06 flags=0           07 board (0 Zephyr-80, 1 Zephyr-80 Mk2)
     08 header_size=36    0A segment_count      0B total_segment_slots
     0C primary_image_size  0E primary_bss_size 10 entry_offset
     12 stack_size        14 segment_table_offset (u32)
@@ -41,10 +41,14 @@ must stay outside `8000h-BFFFh`.
 
 Packing validates every geometry boundary before emitting a byte; the
 result codes match the kernel reader exactly (formats/include/exe.h).
+`--board` names the CPU board the program was built for (its SDK's
+mapping members): mk1 (the default) or mk2.  The header records it and a
+loader on the other board refuses the program (EXE_EXEC_ERR_BOARD); the
+segment geometry and the far link addresses are the same on both boards.
 
 Usage:
     exepack.py pack <manifest.json> <out.exe> [--objdir DIR]
-                   [--report FILE]
+                   [--report FILE] [--board mk1|mk2]
     exepack.py validate <file.exe>
     exepack.py dump <file.exe>
     exepack.py get <manifest.json> <field>
@@ -99,6 +103,9 @@ MAGIC = b"KEX2"
 FORMAT_VERSION = 2
 ABI_VERSION = 1
 FLAGS_NONE = 0
+# The header's board field (formats/include/exe.h EXE_BOARD_*).
+BOARDS = {"mk1": 0, "mk2": 1}
+BOARD_NAMES = {value: name for name, value in BOARDS.items()}
 HEADER_SIZE = 36
 SEGMENT_ENTRY_SIZE = 16
 LOAD_BASE = 0x0100
@@ -142,7 +149,7 @@ RESULT_CODES = (
     ("EXE_EXEC_ERR_FORMAT", -0x32),
     ("EXE_EXEC_ERR_ABI", -0x33),
     ("EXE_EXEC_ERR_FLAGS", -0x34),
-    ("EXE_EXEC_ERR_RESERVED0", -0x35),
+    ("EXE_EXEC_ERR_BOARD", -0x35),
     ("EXE_EXEC_ERR_HEADER", -0x36),
     ("EXE_EXEC_ERR_RESERVED1", -0x37),
     ("EXE_EXEC_ERR_IMAGE", -0x38),
@@ -199,7 +206,7 @@ def build_header(fields):
     header.append(fields["format_version"] & 0xFF)
     header.append(fields["abi_version"] & 0xFF)
     header.append(fields["flags"] & 0xFF)
-    header.append(fields["reserved0"] & 0xFF)
+    header.append(fields["board"] & 0xFF)
     header += (fields["header_size"] & 0xFFFF).to_bytes(2, "little")
     header.append(fields["segment_count"] & 0xFF)
     header.append(fields["total_segment_slots"] & 0xFF)
@@ -237,7 +244,7 @@ def base_fields():
         "format_version": FORMAT_VERSION,
         "abi_version": ABI_VERSION,
         "flags": FLAGS_NONE,
-        "reserved0": 0,
+        "board": BOARDS["mk1"],
         "header_size": HEADER_SIZE,
         "segment_count": 0,
         "total_segment_slots": 0,
@@ -276,7 +283,7 @@ def parse_header(data):
         "format_version": data[4],
         "abi_version": data[5],
         "flags": data[6],
-        "reserved0": data[7],
+        "board": data[7],
         "header_size": data[8] | (data[9] << 8),
         "segment_count": data[10],
         "total_segment_slots": data[11],
@@ -322,8 +329,8 @@ def validate_fields(fields, file_size):
         return "EXE_EXEC_ERR_ABI"
     if fields["flags"] != FLAGS_NONE:
         return "EXE_EXEC_ERR_FLAGS"
-    if fields["reserved0"] != 0:
-        return "EXE_EXEC_ERR_RESERVED0"
+    if fields["board"] not in BOARD_NAMES:
+        return "EXE_EXEC_ERR_BOARD"
     if fields["header_size"] != HEADER_SIZE:
         return "EXE_EXEC_ERR_HEADER"
     if fields["reserved1"] != 0:
@@ -611,7 +618,10 @@ def _resolve(raw, manifest_path, objdir):
 
 # --- packing ----------------------------------------------------------------
 
-def pack(manifest_path, out_path, objdir=None, report_path=None):
+def pack(manifest_path, out_path, objdir=None, report_path=None,
+         board="mk1"):
+    if board not in BOARDS:
+        raise ExeError("EXE_EXEC_ERR_BOARD", "unknown board %r" % board)
     try:
         raw = json.loads(Path(manifest_path).read_text())
     except OSError as exc:
@@ -941,6 +951,7 @@ def pack(manifest_path, out_path, objdir=None, report_path=None):
     file_size = payload_cursor
 
     fields = base_fields()
+    fields["board"] = BOARDS[board]
     fields["segment_count"] = len(segments)
     fields["total_segment_slots"] = total_slots
     fields["image_size"] = image_size
@@ -1031,9 +1042,9 @@ def dump(path):
         % (fields["header_size"], fields["segment_count"],
            fields["total_segment_slots"], fields["image_size"],
            fields["bss_size"]),
-        "  entry_offset %d  stack_size %d  reserved0 %d  reserved1 %d"
-        % (fields["entry_offset"], fields["stack_size"], fields["reserved0"],
-           fields["reserved1"]),
+        "  entry_offset %d  stack_size %d  board %s  reserved1 %d"
+        % (fields["entry_offset"], fields["stack_size"],
+           BOARD_NAMES[fields["board"]], fields["reserved1"]),
         "  table %08Xh  primary payload %08Xh  file_size %d"
         % (fields["segment_table_offset"],
            fields["primary_payload_offset"], fields["file_size"]),
@@ -1077,6 +1088,8 @@ def main(argv):
                           help="base directory for manifest input paths")
     pack_cmd.add_argument("--report", default=None,
                           help="write a deterministic JSON report")
+    pack_cmd.add_argument("--board", default="mk1", choices=sorted(BOARDS),
+                          help="the CPU board the program is built for")
 
     for name in ("validate", "dump"):
         cmd = sub.add_parser(name, help="%s a .exe" % name)
@@ -1090,7 +1103,7 @@ def main(argv):
     try:
         if args.mode == "pack":
             result = pack(args.manifest, args.output, objdir=args.objdir,
-                          report_path=args.report)
+                          report_path=args.report, board=args.board)
             entry_address = result["entry"]["address"]
             print("exepack: %s -> %s (%d bytes, entry %04Xh, sha256 %s)"
                   % (args.manifest, args.output, result["size"],

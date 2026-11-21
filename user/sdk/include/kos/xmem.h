@@ -4,14 +4,17 @@
  * _WRITE / _INFO / _MAP).  These wrappers return a non-negative result or
  * the negated native error code, exactly like the other libkos clients.
  *
- * A mappable object can be opened through the mode-10 aperture:
+ * A mappable object can be opened through the far aperture (8000h-BFFFh):
  * `xmap` returns the token and the object's address, and
- * `aperture_open` writes the token to the memory-control port
- * (saving the previous latch), `aperture_close` restores it.  While
- * the aperture is open, plain pointer accesses in 8000h-BFFFh reach the
- * object - and every syscall buffer in that range belongs to the far bank
- * too (the buffer-identity rule), so a path or read/write buffer inside
- * the aperture names the object, not the program's own memory.
+ * `aperture_open` opens the aperture onto the token and returns the
+ * token in force before, which `aperture_close` restores.  The token is
+ * the board's - the latch value on Zephyr-80, a one-byte mapping handle
+ * on Zephyr-80 Mk2 - and the SDK the program is built with opens it the
+ * board's way (docs/sdk.md).  While the aperture is open, plain pointer
+ * accesses in 8000h-BFFFh reach the object - and every syscall buffer in
+ * that range belongs to the object too (the buffer-identity rule), so a
+ * path or read/write buffer inside the aperture names the object, not
+ * the program's own memory.
  *
  * Ordinary programs that never map anything keep their whole 56 KiB and
  * need none of this.
@@ -47,8 +50,8 @@ int xinfo(unsigned int handle, struct kos_xmem_info *out);
  * `*address` receives the object's address in the aperture. */
 int xmap(unsigned int handle, unsigned int *address);
 
-/* Open the aperture onto a mapped object: writes `token` and returns the
- * previous latch.  Close restores that latch exactly. */
+/* Open the aperture onto a mapped object: returns the token in force
+ * before.  Close restores that mapping exactly.  Both keep DE and HL. */
 unsigned char aperture_open(unsigned char token);
 void aperture_close(unsigned char previous);
 

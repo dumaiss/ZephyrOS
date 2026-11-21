@@ -29,9 +29,19 @@ void kos_xmem_dispatch(uint8_t number, uint16_t block);
  * segment has no handle (SYS_SEG_MAP returns its token).  Returns 0,
  * -KOS_EINVAL for a bad request or -KOS_ENOSPC when no region or table
  * entry is free; nothing is registered on failure. */
+#if defined(KOS_BOARD_MK2)
+/* Mk2: the segment is an object of its own pages (any segment, mappable or
+ * not, starts at offset 0 of its pages, where a far-code or mappable data
+ * segment's 8000h link address lies); the pages are written to `pages`,
+ * which must be common or stack memory (the caller is in another cold
+ * set).  The same codes; nothing is held on failure. */
+int kos_xmem_segment_alloc(uint8_t pid, uint8_t id, uint8_t kind,
+			   uint16_t flags, uint16_t size, uint8_t *pages);
+#else
 int kos_xmem_segment_alloc(uint8_t pid, uint8_t id, uint8_t kind,
 			   uint16_t flags, uint16_t size, uint16_t *handle,
 			   uint8_t *bank, uint8_t *slot);
+#endif
 
 /* Release every object `pid` owns.  Called by process teardown after the
  * process's handles are unbound (architecture 4.10/4.8): exit releases

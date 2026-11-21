@@ -39,6 +39,7 @@
 	.globl	_kos_event_frame, _kos_event_frame_latch, _kos_event_latch
 	.globl	_kos_event_return_frame, _kos_event_pick, _kos_event_enter
 	.globl	_kos_event_unwind
+	.globl	_kos_dat_running
 	.globl	s__COMMON_DATA, l__COMMON_DATA, s__DATA, l__DATA
 
 SYS_SUM		= 1	; HL = w0 + w1 of the block, also stored at +4
@@ -361,6 +362,10 @@ t_start::
 	ld	hl,#s__DATA
 	ld	bc,#l__DATA
 	call	t_zero
+	; The running program's image: an event's home mapping
+	; (KOS_MAP_HOME closes the far window onto it).
+	ld	hl,#t_process_image
+	ld	(_kos_dat_running),hl
 	call	_irq_arch_init
 	di
 	xor	a			; CTC vector base 00h

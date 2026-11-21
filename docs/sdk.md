@@ -40,7 +40,12 @@ user/sdk/
   src/ipcgate.asm         the call gate
   src/nsgate.asm          the bind, unbind, list and exec blocks
   src/diaggate.asm        the diagnostic gates
-  src/xmemgate.asm        extended memory and the aperture helpers
+  src/xmemgate.asm        the aperture helpers (Zephyr-80: the latch)
+  src/vcall.asm           kos_vcall, the placed programs' veneer
+                          trampoline (Zephyr-80)
+  src/mk2/xmemgate.asm    the aperture helpers (Zephyr-80 Mk2: the
+                          far-window vector)
+  src/mk2/vcall.asm       the veneer trampoline (Zephyr-80 Mk2)
   src/sdcc_calls.asm      SDCC's indirect-call trampolines
   src/bcall.asm           ___sdcc_bcall_ehl, the banked-call trampoline
   src/args.c              startup(), splitargs()
@@ -689,11 +694,15 @@ int xwrite(unsigned int handle, unsigned int offset,
            const void *buffer, unsigned int length);
 int xinfo(unsigned int handle, struct kos_xmem_info *out);
 int xmap(unsigned int handle, unsigned int *address);
-unsigned char aperture_open(unsigned char token);   /* returns the previous latch */
+unsigned char aperture_open(unsigned char token);   /* returns the previous token */
 void aperture_close(unsigned char previous);
 ```
 
-`aperture_open` and `aperture_close` are register-only: no syscall.
+`aperture_open` and `aperture_close` are register-only: no syscall.  The
+token is the board's: on Zephyr-80 the latch value they write to the
+memory-control port, on Zephyr-80 Mk2 a one-byte mapping handle they
+hand to the far-window vector (`RST 28h`, `docs/abi.md` section 8.3).
+Both keep `DE` and `HL`.
 
 ### 6.6 Segments and far code (`kos/seg.h`)
 
@@ -720,13 +729,13 @@ result = far_main(a, b);
 SDCC emits `ld e,#b_<fn>` / `ld hl,#_<fn>` / `call ___sdcc_bcall_ehl`;
 the SDK's trampoline (`src/bcall.asm`) keeps one token per segment (only
 the first call of a segment costs a `SYS_SEG_MAP`), opens the aperture,
-calls, and restores the caller's latch. Arguments travel on the stack;
+calls, and restores the caller's mapping. Arguments travel on the stack;
 results come back in `A`, `DE` or `DEHL`. Far code may make banked calls of
 its own. A banked call that names no far segment reports `KOS_RT_EFARMAP`
 (an SDK-level code outside the syscall error range) and does not run.
 
 **`farcall`** is the primitive under it: it maps a segment, calls a far
-entry by its linked address and restores the latch. Far code may call
+entry by its linked address and restores the caller's mapping. Far code may call
 primary code directly and make syscalls, whose buffers follow the
 buffer-identity rule while the aperture is open.
 
@@ -1381,8 +1390,25 @@ The examples:
 ## 11. The standalone SDK
 
 ```sh
-make sdk        # build/kos-sdk-<version>/ and its .tar.gz
+make sdk             # build/kos-sdk-<version>/ and its .tar.gz
+make sdk BOARD=mk2   # build-mk2/sys/kos-sdk-<version>-mk2/ and its .tar.gz
 ```
+
+**One SDK per board.** A program runs only on the CPU board it was built
+for: the SDK's mapping members open the far aperture the board's way
+(`src/xmemgate.asm` and `src/vcall.asm` write the Zephyr-80 latch,
+`src/mk2/` hands a mapping handle to the Zephyr-80 Mk2 far-window
+vector), and the loader refuses a program packed for the other board
+(`docs/exe-format.md`, the header's `board`).  `make sdk BOARD=mk2`
+builds the Mk2 SDK: its libraries carry the Mk2 members and are
+compiled with `-DKOS_BOARD_MK2`, and its `mk/board.mk` sets `KOS_BOARD :=
+mk2`, so `mk/kos.mk` compiles every program with the board's definitions
+and packs it with `exepack.py pack --board mk2`.  The headers, the
+program rule, the placement (zones, veneers, the `8000h` far link
+address) and every source are the same on both boards; a program that
+must know its board tests `KOS_BOARD_MK2`.  In the OS tree the build's
+`BOARD` selects the same (`user/sdk/exe.mk`), and `make BOARD=mk2`
+builds the Mk2 image's programs and store with it.
 
 The package holds everything a program needs and nothing from the tree it
 was built in. Repacking unchanged sources reproduces it byte for byte (the
@@ -1405,6 +1431,7 @@ kos-sdk-<version>/
                    kres, the KRES container tool (§13), an executable
                    built for the machine that built the SDK
   mk/kos.mk        the program rule
+  mk/board.mk      KOS_BOARD, the board the libraries are built for
   template/        Makefile and hello.c
   examples/        hello, fardemo, fardata, files, tui_demo, tui_keys,
                    tui_dialog, tui_mouse, gfx_mouse
@@ -1507,6 +1534,10 @@ Data that does not fit in the program's 56 KiB. Four ways in:
 | `BLOBS=` files | at build time, binary files | `blob(n)` gives the handle; `xread`/`xwrite` copy | slots only; a copy per access |
 | `xalloc` | at run time | `xread`/`xwrite`, or `xmap` + `aperture_open` if mappable | a bank's aperture slice for a mappable object, slots otherwise |
 | `xload(path, flags)` | at run time, a file | its handle, as for `xalloc` | one copy of the file |
+
+The costs are Zephyr-80's; on Zephyr-80 Mk2 every segment and object is
+whole 8 KiB pages of its own, wherever free pages are, so the bounds are
+the free pages and the 32-entry object table (`docs/abi.md` section 8.3).
 
 ```c
 unsigned char saved;

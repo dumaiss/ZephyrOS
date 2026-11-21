@@ -777,9 +777,10 @@ static void ipc_span_close(void)
 
 #if defined(KOS_BOARD_MK2)
 /* Show the driver domain's hot tier at system entries 3-6 unless they show
- * it already: `saved` gets what they showed, and the return says whether
- * the mapping changed (domain_leave puts it back). */
-static uint8_t domain_enter(uint8_t *saved)
+ * it already (always, with `force`): `saved` gets what they showed, and
+ * the return says whether the mapping changed (domain_leave puts it
+ * back). */
+static uint8_t domain_enter(uint8_t *saved, uint8_t force)
 {
 	volatile const uint8_t *mirror = (volatile const uint8_t *)
 		(KOS_DAT_SYSTEM + KOS_DRIVER_DOMAIN_FIRST_ENTRY);
@@ -791,7 +792,7 @@ static uint8_t domain_enter(uint8_t *saved)
 		saved[i] = mirror[i];
 		differ |= (uint8_t)(saved[i] ^ want[i]);
 	}
-	if (differ == 0u) {
+	if ((differ | force) == 0u) {
 		return 0u;
 	}
 	kos_dat_map(want, KOS_DAT_SPAN(KOS_DRIVER_DOMAIN_FIRST_ENTRY,
@@ -830,7 +831,7 @@ static int16_t invoke_endpoint(const struct ipc_endpoint *ep,
 		kos_dat_map(saved, KOS_DAT_SPAN(KOS_COLD_FIRST_ENTRY, 2u));
 		return result;
 	}
-	mapped = domain_enter(saved);
+	mapped = domain_enter(saved, 0u);
 	if (nested) {
 		result = ipc_invoke_here(ep->dispatch, frame);
 	} else {
@@ -1321,17 +1322,18 @@ static void ipc_irq_trampoline(void *context)
 #if defined(KOS_BOARD_MK2)
 	/* Mk2: the domain at entries 3-6 for the handler, then exactly what
 	 * the interrupted code had there (a cold set, a copy window, the
-	 * domain itself); domain_enter reads the mirror, which an
-	 * interrupted remap has already written. */
+	 * domain itself).  The mirror is what the interrupted code has
+	 * installed or is installing (an interrupted remap writes it before
+	 * its OUT), so the hardware may still show the previous page in one
+	 * entry: the domain is written whatever the mirror says, and the
+	 * saved mirror goes back. */
 	{
 		uint8_t saved[KOS_DRIVER_DOMAIN_ENTRIES];
-		uint8_t mapped = domain_enter(saved);
 
+		(void)domain_enter(saved, 1u);
 		((void (*)(void *))irq_handler_entry[source])(
 			(void *)irq_handler_context[source]);
-		if (mapped) {
-			domain_leave(saved);
-		}
+		domain_leave(saved);
 	}
 #else
 	ipc_domain_set(IPC_DRIVER_PAGE_BITS);
@@ -1489,7 +1491,7 @@ uint8_t ipc_driver_run(uint16_t entry, uint16_t arg, uint8_t boot)
 		token = irq_arch_lock();
 		kos_dat_map(kos_driver_domain, KOS_DAT_SPAN(0u, 1u));
 	}
-	mapped = domain_enter(saved);
+	mapped = domain_enter(saved, 0u);
 	status = ((uint8_t (*)(uint16_t))entry)(arg);
 	if (mapped) {
 		domain_leave(saved);

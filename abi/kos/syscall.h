@@ -72,6 +72,7 @@ struct kos_exit_args {
  *   missing file            KOS_ENOENT
  *   directory               KOS_EISDIR
  *   malformed/oversize EXE  KOS_EINVAL
+ *   built for another board KOS_EBOARD
  *   bad argument block      KOS_EINVAL
  *   no free slot or bank    KOS_ENOSPC
  *   nesting/frame limit     KOS_EBUSY

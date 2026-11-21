@@ -48,8 +48,13 @@
 ;                          system bank, 130 T to a program, 279 T closing
 ;                          a crossing (+ KOS_DAT_LOAD_WORKING when the
 ;                          body replaced the image).
-;   KOS_MAP_HOME           install the mapping value in A: the Mk2 value
-;                          has no window page, so this is KOS_MAP_RESTORE.
+;   KOS_MAP_HOME           install the mapping value in A with the far
+;                          window closed: KOS_MAP_RESTORE, then the
+;                          program's own pages in the window (kos_far_map
+;                          with handle 0), the image the program was
+;                          started with.  Interrupts masked.  A, F, BC,
+;                          HL (DE kept).  10 bytes; about 550 T beyond
+;                          KOS_MAP_RESTORE.
 ;   KOS_MAP_SYSTEM         select the system bank (A ignored).  A, BC.
 ;                          10 bytes, 42 T.
 ;   KOS_MAP_APP            enter the running program (A ignored): the
@@ -115,6 +120,7 @@ KOS_MAP_DAT = 1
 	.globl	kos_dat_enter
 	.globl	kos_dat_gate_suspend
 	.globl	kos_dat_gate_resume
+	.globl	kos_far_map
 
 	.macro	KOS_MAP_CURRENT
 	ld	hl,#KOS_DAT_WORKING
@@ -148,6 +154,10 @@ KOS_MAP_DAT = 1
 
 	.macro	KOS_MAP_HOME
 	call	kos_dat_restore
+	push	de
+	ld	hl,#0
+	call	kos_far_map
+	pop	de
 	.endm
 
 	.macro	KOS_DAT_SELECT

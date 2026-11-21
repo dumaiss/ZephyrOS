@@ -63,14 +63,15 @@
  *
  * - An object is any whole number of 8 KiB units up to
  *   `KOS_XMEM_MAX_OBJECT` (56 KiB); a `MAPPABLE` object is at most the
- *   16 KiB far window.  There are no slots, no placement classes and no
- *   segments (`SYS_SEG_INFO` and `SYS_SEG_MAP` are `KOS_ENOSYS`).
- * - `SYS_XMEM_MAP` returns a **mapping handle**, not a latch value, and
- *   `address` is always `KOS_XMEM_APERTURE_BASE`.  The handle is opaque;
- *   the platform's far-window operation opens the window onto it and
- *   returns the handle in force before, and handle 0 is the program's own
- *   memory, so passing the returned handle back closes the window.  A
- *   freed object's handle is refused by that operation.
+ *   16 KiB far window.  There are no slots and no placement classes; a
+ *   loader segment is an object of its own pages.
+ * - `SYS_XMEM_MAP` (and `SYS_SEG_MAP`) returns a **mapping handle**, not
+ *   a latch value, and `address` is always `KOS_XMEM_APERTURE_BASE`.  The
+ *   handle is opaque, nonzero and one byte; the far-window vector every
+ *   program page zero carries (`RST 28h`, docs/abi.md section 8.3) opens
+ *   the window onto it and returns the handle in force before, and
+ *   handle 0 is the program's own memory, so passing the returned handle
+ *   back closes the window.  A freed object's handle is refused there.
  * - Buffer identity: a caller address is resolved through the caller's
  *   current mapping, far window included, so a buffer may also straddle
  *   the window's edges.

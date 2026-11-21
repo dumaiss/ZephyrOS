@@ -544,8 +544,8 @@ veneer names fixed, common or stack memory. The fixed region holds what
 every set and every driver needs (the dispatcher and its helpers, the
 process table and lifecycle, the boot path, the IPC substrate, the page
 allocator and the ROMFS reader); set 0 holds the namespace, the object
-calls, the event calls and the EXE loader, set 1 the diagnostics,
-extended memory, the real-time calls and the driver loader. An
+calls and the EXE loader, set 1 the diagnostics, extended memory, the
+real-time calls, the event calls and the driver loader. An
 in-process endpoint runs with the set that installed it. The dispatcher
 empties the veneer stack at every syscall, where no cross-set call is
 live (a body that leaves without returning leaves a frame behind).
@@ -614,9 +614,16 @@ page 0 as system entry 0 and selects the system bank. Restoring a program
 context closes the crossing: the caller's image is loaded back if a body
 replaced it, the working bank selected and system entry 0 put back. An
 IRQ saves and restores the mapping value only; a driver's handler gets
-the driver domain from the trampoline, which puts the entries back, so
-an interrupt in a body returns to the body's exact DAT. An
-event frame carries the mapping value where Mk1 keeps the latch. A Mk2
+the driver domain from the trampoline, which writes the domain's
+entries whatever the mirrors say (an interrupted remap has written its
+mirror before its `OUT`, so one hardware entry may still lag) and puts
+the saved mirrors back, so an interrupt in a body returns to the body's
+exact DAT. The mapping value names no far window, so an event frame
+carries the **far-window handle** in force where Mk1 keeps the latch: the
+delivery's home mapping (`KOS_MAP_HOME`) is the program's own image with
+the window closed, and `EVENT_RETURN` opens the frame's handle again, so
+the interrupted code gets its exact window back whatever the handler
+mapped (`tests/test_mk2_programs.py`). A Mk2
 syscall round trip costs about 1,520 T-states without the body, against
 1,130 for Mk1's gate on the same harness (`tests/test_mk2_transitions.py`).
 
@@ -650,13 +657,14 @@ indexed by pid: entries 0-6 are its own pages (the primary-bank layout of
 process's image and the image the working bank holds; entering a program
 loads its image only when the bank holds another one, and exec and exit
 drop that identity, so a reused image row is never trusted. `exec`
-binds the path as a FILE and reads and validates the EXE header, then
-takes a slot, the CWD (inherited) and seven pages before it writes
-anything, then builds page zero (zeroed; the `0030h` gate and `0066h`
-NMI stubs; the startup block with the caller's tail read through its
-current mapping), the image - straight from the store's ROM pages for a
-`/system` EXE, through FILE reads for any other - and its BSS; nothing
-else is cleared. The launch gate enters the child through
+binds the path as a FILE and reads and validates the EXE header (its
+board included) and segment table, then takes a slot, the CWD
+(inherited) and seven pages before it writes anything, then builds page
+zero (zeroed; the `0028h` far-window vector, the `0030h` gate and the
+`0066h` NMI stubs; the startup block with the caller's tail read through
+its current mapping), the image - straight from the store's ROM pages for
+a `/system` EXE, through FILE reads for any other - and its BSS, then
+each segment's object, payload and BSS; nothing else is cleared. The launch gate enters the child through
 its image. The syscall gate's DAT block (the saved system entry 0, the
 caller's image identity, the crossing flag and the gate's own image copy)
 is kept per exec depth with the rest of the gate state: the child starts
@@ -705,7 +713,16 @@ page) and returns a **mapping handle**; the common routine `kos_far_map`
 first with interrupts masked, and returns the handle in force before.
 Handle 0 is the program's own pages and gives the working bank its image
 identity back. Freeing an object clears its row, so its handle is
-refused. The Mk2 ABI is `docs/abi.md` section 8.3.
+refused. A program reaches `kos_far_map` through the **far-window
+vector**, `JP kos_far_map` at `0028h` of every program page-0 image
+(`RST 28h`), not a syscall: an open costs about 470 T-states against
+about 1,520 for a syscall round trip. A handle is one byte, so the SDK
+keeps it where a Mk1 token goes and its mapping members (`user/sdk/src/
+mk2/`: the aperture wrapper and the veneer trampoline) are the only
+board-specific SDK code; the placement, the far link addresses and the
+EXE format are shared, and the EXE header's board field keeps each
+board's programs on their board. The Mk2 ABI is `docs/abi.md` section
+8.3.
 
 An extended-memory object is **a list of physical pages** owned by its
 process: up to seven (56 KiB), a `MAPPABLE` one up to the far window's
@@ -715,9 +732,15 @@ one-mappable-object-per-bank rule, the slow (slots 0–2, mode-10 gate)
 versus window-speed (slots 3, 6) copy paths, and the rule that a bank
 holding an auxiliary slot cannot become a primary bank. `READ` and
 `WRITE` copy between the caller's pages and the object's through the
-copy windows, directly. Segments are not objects on Mk2: the Mk2 loader
-places none (it refuses a container with far-code or data segments), and
-`SEG_INFO`/`SEG_MAP` are `KOS_ENOSYS`.
+copy windows, directly. **Segments** are objects too: the loader gives
+each far-code or data segment an object of its own pages, its image from
+the object's first byte, so a far-code or mappable data segment linked
+at `8000h` is in place when the window shows it; `SEG_MAP` and
+`XMEM_MAP` return its mapping handle. The Mk1 limits that come from
+banks do not apply: no auxiliary bank per far or mappable segment, no
+one-far-segment-per-bank rule, no aperture slice; a container is bounded
+by the free pages and the object table, beside the format's own limits
+(16 KiB far and mappable rows, 32 KiB data rows, eight rows).
 
 No hardware-enforced page permissions, user/kernel isolation or
 preemptive scheduling are added by this mapper.

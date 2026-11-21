@@ -2,17 +2,23 @@
 ; KonaOS far window: the Zephyr-80 Mk2 realization of a mapping handle.
 ;
 ; The far window is logical 8000h-BFFFh of a program, working entries 12
-; and 13 (architecture 2.7.6).  SYS_XMEM_MAP (kernel/syscall/xmem.c) turns
-; one of the caller's mappable objects into a mapping handle: it fills the
-; object's row of _kos_far_table with the pages the window shows and
-; returns the handle, (row << 4) | generation.  The program opens the
-; window with kos_far_map, which names no page: the handle is logical and
-; this routine, in common memory, realizes it.  Handle 0 is the program's
-; own memory (its image's entries 4 and 5), so passing back the handle a
-; call returned closes what that call opened.
+; and 13 (architecture 2.7.6).  SYS_XMEM_MAP and SYS_SEG_MAP (kernel/
+; syscall/xmem.c) turn one of the caller's mappable objects or far-code
+; segments into a mapping handle: they fill the object's row of
+; _kos_far_table with the pages the window shows and return the handle,
+; one byte, (row << 3) | generation.  The program opens the window with
+; kos_far_map, which names no page: the handle is logical and this
+; routine, in common memory, realizes it.  Handle 0 is the program's own
+; memory (its image's entries 4 and 5), so passing back the handle a call
+; returned closes what that call opened.
+;
+; Programs reach kos_far_map through the page-0 vector every program
+; page-0 image carries (KOS_FAR_VECTOR, 0028h: RST 28h), _kos_far_vector
+; below, which exec copies there (kernel/process/exec.c).
 ;
 ; _kos_far_current is the running program's handle; the process lifecycle
-; keeps it per process across exec (kernel/process/process.c).
+; keeps it per process across exec (kernel/process/process.c) and an event
+; frame keeps it across a delivery (kernel/event/event_common.asm).
 ; -----------------------------------------------------------------------------
 
 	.module far_mk2
@@ -24,9 +30,17 @@
 
 ; Rows of the far table: one per extended-memory object (XMEM_MAX_OBJECTS,
 ; kernel/syscall/xmem.c), each {generation, page of 8000h, page of A000h};
-; generation 0 is a row with no handle.
+; generation 0 is a row with no handle, 1-7 a live one.
 KOS_FAR_ROWS     = 32
 KOS_FAR_ROW_SIZE = 3
+
+	.area _CODE
+
+; The three bytes every program page-0 image carries at KOS_FAR_VECTOR
+; (C name kos_far_vector): the far-window entry, RST 28h.
+_kos_far_vector::
+	.db	0xC3			; JP kos_far_map
+	.dw	kos_far_map
 
 	.area _COMMON
 
@@ -34,7 +48,8 @@ KOS_FAR_ROW_SIZE = 3
 ; kos_far_map - open the far window onto a mapping handle.
 ;
 ; Entry: the program's context (working bank), any interrupt state;
-;        HL = a handle from SYS_XMEM_MAP, or 0 for the program's own pages.
+;        HL = a handle from SYS_XMEM_MAP or SYS_SEG_MAP (H = 0), or 0 for
+;        the program's own pages.
 ; Exit:  carry clear, HL = the handle in force before; or carry set and
 ;        nothing changed (a handle that names no live row).
 ; The window, its mirrors and the handle change with interrupts masked;
@@ -53,18 +68,18 @@ kos_far_map::
 	add	hl,bc
 	jr	far_pages
 far_object:
-	ld	a,h			; (row << 4) | generation, row 0-31
-	cp	#(KOS_FAR_ROWS >> 4)
-	jr	nc,far_refuse
+	ld	a,h			; (row << 3) | generation, H = 0
+	or	a
+	jr	nz,far_refuse
 	ld	a,l
-	and	#0x0F
+	and	#0x07
 	jr	z,far_refuse
 	ld	c,a			; C = the generation
-	ld	b,#4
-far_row:
-	srl	h
-	rr	l
-	djnz	far_row			; HL = the row
+	xor	l
+	rrca
+	rrca
+	rrca
+	ld	l,a			; HL = the row
 	ld	d,h
 	ld	e,l
 	add	hl,hl

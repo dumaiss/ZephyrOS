@@ -269,14 +269,18 @@ class TestPages(Mk2ProcCase):
         self.assertEqual(cached(z), self.image_addr(0))
         self.assertEqual(self.kword(z, "_kos_dat_running"),
                          self.image_addr(0))
-        # Page zero: the two entry stubs, the startup block, zeroes.
+        # Page zero: the three entry stubs, the startup block, zeroes.
         entry = self.sym("kos_syscall_entry")
+        far = self.sym("kos_far_map")
         page0 = bytes(z.phys[image[0] * PAGE:image[0] * PAGE + 0x100])
+        self.assertEqual(page0[0x28:0x2B],
+                         bytes([0xC3, far & 0xFF, far >> 8]))
         self.assertEqual(page0[0x30:0x33],
                          bytes([0xC3, entry & 0xFF, entry >> 8]))
         self.assertEqual(page0[0x66:0x69], NMI_STUB)
         self.assertEqual(page0[0x80:0x83], bytes([1, 0, 0]))
-        rest = page0[:0x30] + page0[0x33:0x66] + page0[0x69:0x80]
+        rest = (page0[:0x28] + page0[0x2B:0x30] + page0[0x33:0x66] +
+                page0[0x69:0x80])
         self.assertEqual(rest, bytes(len(rest)))
         # The image from ROM, then its BSS.
         size = self.sym("p_end") - self.sym("p_entry")
@@ -498,12 +502,15 @@ class TestObjects(Mk2ProcCase):
                                    (0xE001, 0, ENOSPC)):
             with self.subTest(size=size, flags=flags):
                 self.fails(z, ALLOC, le16(size) + le16(flags), error)
-        self.fails(z, SEG_INFO, bytes(4), ENOSYS)
+        self.fails(z, SEG_INFO, bytes(4), EINVAL)        # no segment 0
         # A stale handle and its mapping: refused, the window untouched.
         self.ok(z, FREE, le16(m))
         self.fails(z, MAP_, le16(m) + le16(0), EINVAL)
         bank = hardware(z)
-        for handle in (mapping, 0x0200, mapping & 0x1F0):
+        # One-byte handles (row << 3) | generation: a high byte, and the
+        # row with generation 0.
+        self.assertTrue(mapping < 0x100 and mapping & 0xF8)
+        for handle in (mapping, 0x0100 | mapping, mapping & 0xF8):
             with self.subTest(mapping=handle):
                 carry, hl = self.far(z, handle)
                 self.assertEqual((carry, hl), (1, handle))

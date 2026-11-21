@@ -173,6 +173,7 @@ there is no `wait` and no asynchronous spawn.
 | a directory | `KOS_EISDIR` |
 | no card behind `/fs` | `KOS_ENODEV` |
 | malformed, oversize or wrong-ABI EXE, or not an EXE entry in `/system` | `KOS_EINVAL` |
+| an EXE built for another CPU board (its header's `board`) | `KOS_EBOARD` |
 | bad block, tail over 125 bytes, tail outside the window | `KOS_EINVAL` |
 | no free slot, bank or auxiliary space | `KOS_ENOSPC` |
 | depth limit reached, or the gate frame too large | `KOS_EBUSY` |
@@ -503,24 +504,51 @@ nothing about them is visible.
   it may also straddle the window's edges; the bytes move directly
   between the caller's pages and the object's.
 - `INFO` reports `allocated` in whole 8 KiB units; `type` is
-  `KOS_XMEM_TYPE_RUNTIME`.
-- `MAP` returns in `HL` a **mapping handle** (nonzero, opaque) and
-  `address` = `8000h`. The far window (`8000h-BFFFh`) then shows the
-  object's first 16 KiB, or a one-unit object at `8000h` and the
-  program's own memory at `A000h`. A stale, foreign or non-mappable
-  handle is `-KOS_EINVAL`.
-- The window is opened by the platform's far-window operation, the common
-  routine `kos_far_map`: `HL` = a mapping handle in, `HL` = the handle in
-  force before out, carry clear; handle 0 is the program's own memory, so
-  passing the returned handle back closes what the call opened. A handle
-  that names no live mapping (its object freed, a malformed value) sets
-  carry and changes nothing. It preserves the caller's interrupt state and
-  clobbers `AF`, `BC`, `DE`. The handle in force is the program's own:
-  a child starts with handle 0 and its parent's window is unchanged when
-  it resumes.
-- `SEG_INFO`, `SEG_MAP`: `-KOS_ENOSYS` (the Mk2 loader places no
-  segments), and `EXEC` refuses a container with far-code or data
-  segments (`KOS_EINVAL`).
+  `KOS_XMEM_TYPE_RUNTIME`, or `KOS_XMEM_TYPE_SEGMENT` for a loader
+  segment.
+- `MAP` returns in `HL` a **mapping handle** and `address` = `8000h`.
+  The handle is opaque, nonzero and one byte (`H` = 0), so the SDK keeps
+  it in the same `unsigned char` a Mk1 token uses. The far window
+  (`8000h-BFFFh`) then shows the object's first 16 KiB, or a one-unit
+  object at `8000h` and the program's own memory at `A000h`. A stale,
+  foreign or non-mappable handle is `-KOS_EINVAL`.
+- **The far-window vector.** Every program page-0 image carries
+  `JP kos_far_map` at `0028h` (`KOS_FAR_VECTOR`), beside the syscall
+  vector at `0030h`, so a program opens the window with `RST 28h`:
+
+  ```text
+  entry   RST 28h        HL = a mapping handle, or 0 for the program's own memory
+  return  carry clear:   HL = the handle in force before
+          carry set:     nothing changed (a handle that names no live
+                         mapping: its object freed, a malformed value)
+  ```
+
+  Passing the returned handle back closes what the call opened. It
+  preserves the caller's interrupt state and clobbers `AF`, `BC`, `DE`.
+  The vector is not a syscall: the window changes in common memory, with
+  interrupts masked for the two entry writes, without crossing the gate.
+  On the simulator an open costs about 474 T-states and a close about
+  429, the `RST` included (`tests/test_mk2_programs.py`), against about
+  1,520 for a syscall round trip without its body - the reason the ABI
+  is a vector.
+- **The window is part of the program's context.** The handle in force is
+  the program's own: a child starts with handle 0 and its parent's
+  window is unchanged when it resumes. A syscall made with the window
+  open names buffers through it and returns with it open (the gate keeps
+  the exact working bank); an interrupt returns to the exact window. An
+  event handler runs with the window closed (handle 0), and
+  `EVENT_RETURN` opens the window the interrupted code had, whatever the
+  handler mapped (a handle the handler freed is refused and the window
+  stays closed).
+- `SEG_INFO`, `SEG_MAP`: every segment is an object of its own pages,
+  placed at load (or the `EXEC` fails with `KOS_ENOSPC` when the pages
+  or the 32 object entries run out), holding the segment from its first
+  byte. `SEG_INFO` writes the record of section 8.2. `SEG_MAP` returns a
+  far-code segment's mapping handle, which opens the window onto it at
+  `8000h`, where it was linked; a mappable data segment is opened with
+  `XMEM_MAP`. `FREE` refuses a segment's handle; exit releases it.
+- `EXEC` refuses a program built for the other board (the EXE header's
+  `board`, `docs/exe-format.md`) with `KOS_EBOARD`.
 - Handles are owner-tagged and generation-counted; a child inherits no
   object, and exit releases every object and page the process owns.
 
@@ -592,6 +620,7 @@ One numbering for the whole system (`abi/kos/errno.h`):
 | `15h` | `KOS_ESTALE` | stale object identity |
 | `16h` | `KOS_EXDEV` | across providers |
 | `17h` | `KOS_EMFILE` | handle table or open-file limit reached |
+| `18h` | `KOS_EBOARD` | `EXEC` of a program built for another CPU board |
 
 Syscalls return the code in `A` with carry set; `CALL` statuses and SDK
 wrappers return it negated.

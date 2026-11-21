@@ -317,9 +317,10 @@ class TestEvents(Mk2Case):
         before = snapshot(z)
         self.take_irq(z)
         self.run_to(z, "p_trampoline")
-        # The frame carries the mapping value: the program's page 0.
+        # The frame carries the far-window handle in force: 0, the
+        # program's own pages.
         frame = z.sp
-        self.assertEqual(z.rd(frame), PROCESS_PAGE0)
+        self.assertEqual(z.rd(frame), 0)
         self.assertEqual(z.rd(frame + 1), 0)
         self.assertEqual(hardware(z)[16], CTL_WORKING)
         self.run_to(z, "p_idle")

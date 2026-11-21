@@ -17,6 +17,8 @@
                        PCM, libsnd's snd_pcm_*); kres, the KRES
                        container tool, an executable for the build host
       mk/kos.mk        the standalone build rules
+      mk/board.mk      the CPU board the libraries are built for
+                       (KOS_BOARD): every program is packed for it
       template/        Makefile + hello.c
       examples/        hello, fardemo (__banked), files (open/read/list),
                        fardata (DATA1= + FAR1=, far data and a banked call),
@@ -29,10 +31,10 @@ they are exempt), and the header closure is proved complete by resolving
 every quoted include the way SDCC will.
 
 Usage:
-    sdkpack.py --version V --libkos FILE --libtui FILE --libtui-wide FILE
-               --libtui-widgets FILE --libgfx FILE --libkres FILE
-               --crt0 FILE --kres FILE [--root DIR] [--out DIR]
-               [--tar FILE]
+    sdkpack.py --version V [--board mk1|mk2] --libkos FILE --libtui FILE
+               --libtui-wide FILE --libtui-widgets FILE --libgfx FILE
+               --libkres FILE --crt0 FILE --kres FILE [--root DIR]
+               [--out DIR] [--tar FILE]
 
 With --tar the tree is also written as a .tar.gz with pinned metadata
 (member order, mtimes, ownership), so the same tree always packs to the
@@ -48,6 +50,7 @@ import sys
 import tarfile
 from pathlib import Path
 
+BOARDS = ("mk1", "mk2")
 TOOL_FILES = ("exepack.py", "exemanifest.py", "exeplace.py", "ihx.py", "kimg.py",
               "exerun.py", "pcmconv.py")
 DOC_FILES = ("sdk.md", "tui.md", "exe-format.md")
@@ -173,9 +176,19 @@ def tree_files(root, headers, abi, libkos, libtui, libtui_wide,
     return files
 
 
+def board_mk(board):
+    """mk/board.mk: the board the SDK's libraries are built for."""
+    return ("# The CPU board this SDK's libraries are built for: mk/kos.mk\n"
+            "# compiles and packs every program for it.\n"
+            "KOS_BOARD := %s\n" % board)
+
+
 def build_tree(root, out, version, libkos, libtui, libtui_wide,
-               libtui_widgets, libgfx, libkres, libsnd, crt0, kres):
+               libtui_widgets, libgfx, libkres, libsnd, crt0, kres,
+               board="mk1"):
     """Lay out the SDK tree under `out`; returns the destination list."""
+    if board not in BOARDS:
+        raise PackError("unknown board %r" % board)
     root = Path(root)
     out = Path(out)
     for path in (root / "formats/include/exe.h", Path(libkos), Path(libtui),
@@ -196,6 +209,8 @@ def build_tree(root, out, version, libkos, libtui, libtui_wide,
         shutil.rmtree(out)
     out.mkdir(parents=True)
     (out / "VERSION").write_text("%s abi %d\n" % (version, abi))
+    (out / "mk").mkdir()
+    (out / "mk" / "board.mk").write_text(board_mk(board))
     for dest, source in files:
         target = out / dest
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -210,7 +225,7 @@ def build_tree(root, out, version, libkos, libtui, libtui_wide,
             if token.encode("ascii") in data:
                 raise PackError("%s names %r; the SDK must stand alone"
                                 % (dest, token))
-    return ["VERSION"] + [dest for dest, _source in files]
+    return ["VERSION", "mk/board.mk"] + [dest for dest, _source in files]
 
 
 def walk_tree(tree, prefix=""):
@@ -246,6 +261,8 @@ def pack_tar(tree, tarball):
 def main(argv):
     parser = argparse.ArgumentParser(prog="sdkpack.py")
     parser.add_argument("--version", required=True)
+    parser.add_argument("--board", default="mk1", choices=BOARDS,
+                        help="the CPU board the libraries are built for")
     parser.add_argument("--libkos", required=True)
     parser.add_argument("--libtui", required=True)
     parser.add_argument("--libtui-wide", required=True,
@@ -273,7 +290,8 @@ def main(argv):
         dests = build_tree(root, out, args.version, args.libkos,
                            args.libtui, args.libtui_wide,
                            args.libtui_widgets, args.libgfx, args.libkres,
-                           args.libsnd, args.crt0, args.kres)
+                           args.libsnd, args.crt0, args.kres,
+                           args.board)
         if args.tar:
             pack_tar(out, args.tar)
     except (PackError, OSError) as exc:

@@ -1,12 +1,15 @@
 # The EXE executable format
 
 An EXE file is a native KonaOS program: a primary image plus zero or more
-auxiliary segments. It is stored in the ROM store (`docs/romfs-format.md`)
-or on the card, loaded into one primary bank `0-5` (plus auxiliary banks
-for its segments), and entered in mode 10. The loader is
-`kernel/process/exec.c`; the host packer (`tools/exepack.py`) applies every
-check the loader applies, so a bad link never reaches a store. The rules
-are in `docs/architecture.md` section 6.7.
+auxiliary segments, built for one CPU board. It is stored in the ROM store
+(`docs/romfs-format.md`) or on the card. On Zephyr-80 it is loaded into
+one primary bank `0-5` (plus auxiliary banks for its segments) and entered
+in mode 10; on Zephyr-80 Mk2 into seven pages of its own (plus an object
+of pages per segment) and entered through its own DAT image
+(architecture 2.7.6). The loader is `kernel/process/exec.c`; the host
+packer (`tools/exepack.py`) applies every check the loader applies, so a
+bad link never reaches a store. The rules are in `docs/architecture.md`
+section 6.7.
 
 ## 1. Logical load address
 
@@ -35,7 +38,7 @@ The header is 36 bytes, little-endian for every field:
 | `04h` | 1 | `format_version` | `2` |
 | `05h` | 1 | `abi_version` | `1` |
 | `06h` | 1 | `flags` | `0` (no flags defined) |
-| `07h` | 1 | `reserved0` | `0` |
+| `07h` | 1 | `board` | the CPU board the program is built for: `0` Zephyr-80, `1` Zephyr-80 Mk2 |
 | `08h` | 2 | `header_size` | `36` |
 | `0Ah` | 1 | `segment_count` | segment-table rows, `0..8` |
 | `0Bh` | 1 | `total_segment_slots` | whole 8-KiB slots all segments need |
@@ -52,6 +55,15 @@ Every file offset and the total size are 32-bit, so a container may
 exceed 64 KiB.  After the header come, in file order: the primary
 payload, the segment table (`segment_count` rows) and the segment
 payloads (4-byte aligned); the packer emits exactly this layout.
+
+**The board.** A program's SDK opens the far aperture the board's way
+(the latch on Zephyr-80, the far-window vector on Mk2: `docs/abi.md`
+section 8.3), so a program runs only on the board it was built for.  The
+SDK's program rule passes its board to the packer (`--board`), which
+writes it here; each loader refuses the other board's programs with
+`EXE_EXEC_ERR_BOARD`, which `SYS_EXEC` reports as `KOS_EBOARD` (the shell
+prints "built for another board").  Everything else in the format, the
+far link address `8000h` included, is the same on both boards.
 
 ## 3. Segment table
 
@@ -98,7 +110,7 @@ Validated in this order (first violation wins); the codes are also the
 | 2 | `format_version == 2` | `EXE_EXEC_ERR_FORMAT` |
 | 3 | `abi_version == 1` | `EXE_EXEC_ERR_ABI` |
 | 4 | `flags == 0` | `EXE_EXEC_ERR_FLAGS` |
-| 5 | `reserved0 == 0` | `EXE_EXEC_ERR_RESERVED0` |
+| 5 | `board` is the loader's board (the packer: `0` or `1`) | `EXE_EXEC_ERR_BOARD` |
 | 6 | `header_size == 36` | `EXE_EXEC_ERR_HEADER` |
 | 7 | `reserved1 == 0` | `EXE_EXEC_ERR_RESERVED1` |
 | 8 | `image_size > 0` | `EXE_EXEC_ERR_IMAGE` |
@@ -129,6 +141,12 @@ is the most a container can place.  The same bound covers far code: a
 `FAR_CODE` segment occupies the aperture slice of its own bank (one far
 segment per bank, at most two slots) and the packer sums every row's
 slots into this one field.
+
+On Mk2 these bounds are the format's, checked the same way, but not
+the machine's: a segment is an object of its own pages wherever
+free pages are, so there is no auxiliary bank, no one-far-segment-per-bank
+rule and no aperture slice; what bounds a container at load is the free
+pages and the 32-entry object table (`EXE_EXEC_ERR_NOSPACE`).
 
 The loader adds these result codes around the geometry checks:
 `EXE_EXEC_ERR_ARG` (null argument / invalid request),
@@ -239,6 +257,17 @@ steps: `process_prepare()` loads, then `process_launch()` enters.
 11. close the executable source, then build startup block v1 (below) and
     write it into the child's page zero at `0080h`;
 12. return the prepared child.
+
+On Mk2 the same steps build the child on pages: the slot, the CWD and
+seven pages (step 5), page zero with its three entry stubs (`0028h` the
+far-window vector, `0030h` the syscall vector, `0066h` the NMI entry) and
+the startup block, the primary image and its BSS, then each segment in
+table order: an object of its own pages (`EXE_EXEC_ERR_NOSPACE` when the
+pages or the object table run out), its payload from the object's first
+byte - where a far-code or mappable data segment's `8000h` link address
+lies when the far window shows it - and its zeroed BSS.  A `/system`
+program's payloads are copied straight from the store's ROM pages, any
+other FILE's through the staging block.
 
 **Memory initialization:** the loader zeroes only
 the primary BSS, each segment's BSS, the startup block and the page-zero
@@ -357,6 +386,10 @@ python3 tools/exepack.py pack     build/user/exetest/exetest.json out.exe \
 python3 tools/exepack.py validate out.exe
 python3 tools/exepack.py dump     out.exe
 ```
+
+`pack --board mk2` packs a Zephyr-80 Mk2 program (the default is `mk1`);
+the SDK's program rule passes the board it is built for, and `dump` shows
+it.
 
 `tools/exemanifest.py` derives `image_size`, `bss_size` and
 `entry_offset` from the link map, so no size is ever hand-entered, and
