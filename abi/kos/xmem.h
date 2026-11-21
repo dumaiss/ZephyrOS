@@ -56,6 +56,24 @@
  * Argument blocks live in the caller window `0100h-1FFFh`; `read`/`write`
  * buffers and the info record must lie in the caller buffer window
  * `0100h-DFFFh` and are moved only through the checked copy gates.
+ *
+ * The text above is the Zephyr-80 Mk1 board's.  On the Mk2 board
+ * (`KOS_BOARD_MK2`, docs/abi.md section 8.3) the family keeps its
+ * numbers, blocks and errors with these differences:
+ *
+ * - An object is any whole number of 8 KiB units up to
+ *   `KOS_XMEM_MAX_OBJECT` (56 KiB); a `MAPPABLE` object is at most the
+ *   16 KiB far window.  There are no slots, no placement classes and no
+ *   segments (`SYS_SEG_INFO` and `SYS_SEG_MAP` are `KOS_ENOSYS`).
+ * - `SYS_XMEM_MAP` returns a **mapping handle**, not a latch value, and
+ *   `address` is always `KOS_XMEM_APERTURE_BASE`.  The handle is opaque;
+ *   the platform's far-window operation opens the window onto it and
+ *   returns the handle in force before, and handle 0 is the program's own
+ *   memory, so passing the returned handle back closes the window.  A
+ *   freed object's handle is refused by that operation.
+ * - Buffer identity: a caller address is resolved through the caller's
+ *   current mapping, far window included, so a buffer may also straddle
+ *   the window's edges.
  */
 
 #ifndef KOS_XMEM_H
@@ -89,9 +107,14 @@
 #define KOS_XMEM_APERTURE_BASE 0x8000u
 #define KOS_XMEM_APERTURE_SIZE 0x4000u
 /* The largest mappable object (the aperture slice) and the largest object
- * of any kind (the four non-aperture data slots of one bank). */
+ * of any kind (Mk1: the four non-aperture data slots of one bank; Mk2:
+ * seven 8 KiB units). */
 #define KOS_XMEM_MAX_MAPPABLE  0x4000u
+#if defined(KOS_BOARD_MK2)
+#define KOS_XMEM_MAX_OBJECT    0xE000u
+#else
 #define KOS_XMEM_MAX_OBJECT    0x8000u
+#endif
 
 /* SYS_XMEM_ALLOC 20h {size:u16, flags:u16} -> HL = handle (>= 1).
  * A zero size, an unknown flag or a mappable size over 16 KiB is
@@ -144,7 +167,8 @@ struct kos_xmem_info_args {
 
 /* SYS_XMEM_MAP 25h {handle:u16, address:u16 out}
  *   -> HL = the map token (the latch value that opens the aperture onto
- *      this object) and `address` = the object's aperture address.
+ *      this object; on Mk2 the mapping handle the far-window operation
+ *      opens) and `address` = the object's aperture address.
  * Only the caller's own mappable objects can be mapped: any other handle,
  * a non-mappable object or a bad block is KOS_EINVAL. */
 struct kos_xmem_map_args {

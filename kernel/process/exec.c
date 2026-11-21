@@ -31,7 +31,100 @@
  * buffer to a driver (the call machinery stages the frame in the fixed
  * boundary buffer), so a `/fs` executable living behind a bank-6 driver
  * streams exactly like a `/system` one.
+ *
+ * On Mk2 (KOS_BOARD_MK2) the loader builds the child on pages: see
+ * process_prepare_program below; the EXE container path above is the Mk1
+ * board's.
  */
+
+#if defined(KOS_BOARD_MK2)
+
+#include "process.h"
+#include "kos/errno.h"
+#include "kernel/memory/mk2/pages.h"
+
+/* The 0030h vector (kernel/process/launch.asm) and the NMI entry every
+ * page-0 image carries (architecture 2.7.3, 4.12). */
+extern const uint8_t kos_process_page_zero_vector[];
+static const uint8_t exec_nmi_entry[3] = {
+	0xC3u, (uint8_t)KOS_RT_VECTOR, (uint8_t)(KOS_RT_VECTOR >> 8)
+};
+
+/* Every allocating step first (slot, pages), then the child's pages:
+ * page zero (zeroed, the two entry stubs, the startup block), the image
+ * and its BSS.  Nothing else is cleared (architecture 4.8).  The copies
+ * cannot fail once the pages are owned. */
+int process_prepare_program(const struct process_program *program,
+			    uint8_t parent_pid, uint16_t args,
+			    uint16_t args_length, struct process_child *child)
+{
+	uint8_t rom[KOS_DAT_ENTRIES];
+	uint8_t head[2];
+	uint8_t *image;
+	uint8_t pid;
+	uint8_t i;
+	int result;
+
+	if (program == (const struct process_program *)0 ||
+	    child == (struct process_child *)0 ||
+	    args_length > KOS_STARTUP_TAIL_MAX ||
+	    (uint32_t)EXE_LOAD_BASE + program->size + program->bss >
+		    (uint32_t)EXE_STACK_TOP - EXE_MIN_STACK_SIZE) {
+		return -KOS_EINVAL;
+	}
+	result = process_slot_alloc();
+	if (result < 0) {
+		return result;
+	}
+	pid = (uint8_t)result;
+	image = kos_dat_images[pid];
+	/* The row is about to change: the working bank may hold its last
+	 * process's copy. */
+	kos_dat_cache_drop();
+	if (kos_pages_alloc(pid, (uint8_t)(KOS_DAT_ENTRIES - 1u), image) !=
+	    0) {
+		process_slot_release(pid);
+		return -KOS_ENOSPC;
+	}
+	image[KOS_DAT_ENTRIES - 1u] = kos_dat_common_page();
+	process_table[pid].bank = image[0];
+	process_table[pid].parent = parent_pid;
+	process_table[pid].flags = (parent_pid == PROCESS_KERNEL_PARENT)
+		? PROCESS_FLAG_KERNEL_PARENT : 0;
+	process_table[pid].exit_status = 0;
+	process_table[pid].far = 0u;
+
+	kos_pages_zero(image, 0u, KOS_PAGE_ZERO_END);
+	kos_pages_copy((const uint8_t *)0,
+		       (uint16_t)kos_process_page_zero_vector, image, 0x0030u,
+		       3u);
+	kos_pages_copy((const uint8_t *)0, (uint16_t)exec_nmi_entry, image,
+		       KOS_NMI_ENTRY, 3u);
+	head[0] = KOS_STARTUP_VERSION;
+	head[1] = (uint8_t)args_length;
+	kos_pages_copy((const uint8_t *)0, (uint16_t)head, image,
+		       KOS_STARTUP_BASE, 2u);
+	/* The caller's raw tail, byte-exact, through its current mapping;
+	 * the NUL after it is page zero's. */
+	if (args_length != 0u) {
+		kos_pages_copy(kos_caller_map(), args, image,
+			       (uint16_t)(KOS_STARTUP_BASE + 2u), args_length);
+	}
+	for (i = 0u; i < KOS_DAT_ENTRIES; ++i) {
+		rom[i] = (uint8_t)(program->page + i);
+	}
+	kos_pages_copy(rom, program->offset, image, EXE_LOAD_BASE,
+		       program->size);
+	kos_pages_zero(image, (uint16_t)(EXE_LOAD_BASE + program->size),
+		       program->bss);
+
+	child->pid = pid;
+	child->bank = image[0];
+	child->entry = program->entry;
+	return 0;
+}
+
+#else /* Mk1 */
 
 #include "kernel/syscall/rt.h"
 #include "process.h"
@@ -794,3 +887,5 @@ int process_prepare(const char *path, uint8_t parent_pid, uint16_t args,
 	child->entry = geo.entry;
 	return EXE_EXEC_OK;
 }
+
+#endif /* Mk1 */

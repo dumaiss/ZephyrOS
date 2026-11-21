@@ -84,7 +84,8 @@ kernel/               the nucleus
   irq/                the interrupt executive and its platform quiesce
   lib/                small shared helpers
   memory/             banking, window and gate copies, upcall shims;
-                      mk2/: the Mk2 mapping operations and DAT state
+                      mk2/: the Mk2 mapping operations, DAT state, page
+                      allocator, page copy and far window
   process/            the process table, exec, launch
   romfs/              the ROM store reader and the ROM-access stub
   runtime/            compiler helper routines
@@ -530,9 +531,50 @@ Maskable-interrupt paths follow the same ordering.
 
 **Buffer identity** (the Mk2 form of section 4.9): a caller address is
 resolved through the caller's **current** working mapping, far window
-included, not through its process's default image. The nucleus may map
-the caller's pages into the system DAT to move bytes directly instead of
-staging them through common memory.
+included, not through its process's default image: the image the gate
+keeps for the crossing. The nucleus maps the caller's pages into its
+copy windows and moves bytes directly instead of staging them through
+common memory.
+
+**Page ownership** (`kernel/memory/mk2/pages.c`): one owner byte per
+SRAM page, in nucleus data: free, the nucleus, or a process. At init
+every page is free, then the build's list of nucleus pages (the common
+page, the page-0 images, nucleus code and data) is reserved; ROM pages
+are never allocated. An allocation takes any number of pages, lowest
+free first, all or none; exit releases every page the process owns.
+
+**Processes.** Each process has one 8-byte DAT image in common memory,
+indexed by pid: entries 0-6 are its own pages (the primary-bank layout of
+4.8: page zero, the image and BSS from `0100h`, the stack down from
+`E000h`) and entry 7 is the common page. The nucleus names the running
+process's image and the image the working bank holds; entering a program
+loads its image only when the bank holds another one, and exec and exit
+drop that identity, so a reused image row is never trusted. `exec` takes
+a slot and seven pages before it writes anything, then builds page zero
+(zeroed; the `0030h` gate and `0066h` NMI stubs; the startup block with
+the caller's tail read through its current mapping), the image and its
+BSS; nothing else is cleared. The launch gate enters the child through
+its image. The syscall gate's DAT block (the saved system entry 0, the
+caller's image identity, the crossing flag and the gate's own image copy)
+is kept per exec depth with the rest of the gate state: the child starts
+with the parent's crossing closed, and the crossing is open again before
+the parent's `SYS_EXEC` returns, so a nested child's syscalls never
+disturb it. Exit releases the child's objects and pages, drops the cached
+identity and resumes the parent; the parent's gate return reloads its
+exact working bank, far window included. The far-window handle is kept
+per process across a child's run. A Mk2 `exec` costs about 41,000
+T-states to the child's first instruction and an exit about 17,000 to the
+parent's (`tests/test_mk2_processes.py`, a 16-byte image with 256 bytes
+of BSS).
+
+**Copy windows:** system entries 5 and 6 (`A000h`, `C000h`;
+`KOS_DAT_COPY_*` in `memory.inc`) belong to `kernel/memory/mk2/
+page_copy.asm`, which remaps them, mirror first, and moves one chunk with
+one `LDIR` between two pages, a page and nucleus memory, or zero-fills
+it. No interrupt path uses them, so a copy runs under the caller's
+interrupt state. Copies are chunked at the page boundaries of both
+sides; an 8 KiB `XMEM_READ` runs at about 22 T-states a byte, the `LDIR`
+rate.
 
 **Page-zero NMI shadow store:** an NMI fetches `0066h` only through the
 current mapping's logical page 0. Pages of an extended-memory object are
@@ -540,25 +582,32 @@ never seen there by an NMI unless the object is mapped at `0000h`, so the
 Mk1 shadow store for objects starting at slot 0 (`kos_aux_copy`, section
 4.12) has no Mk2 counterpart; only mapped page-0 images need the entry stub.
 
-Initially, retain the existing **`8000h–BFFFh` 16 KiB far aperture**
-as an *OS logical convention*, implemented by changing two 8 KiB
-entries. This avoids coupling a hardware change to a simultaneous
+The **`8000h–BFFFh` 16 KiB far window** keeps the far aperture as an
+*OS logical convention*, realized by changing two 8 KiB entries (working
+entries 12-13). This avoids coupling a hardware change to a simultaneous
 redesign of far-code link addresses, SDK placement rules and the EXE
 format. But **Mk1 map tokens literally encode a latch value**, and
 libkos/veneers directly write that latch: those bytes and instructions
-cannot be reused on Mk2. Preserve handle/map/unmap *semantics* where
-possible; represent mappings logically and implement their realization
-through a platform-owned operation. ABI changes, if required, must be
-documented rather than assuming Mk1 binary compatibility.
+cannot be reused on Mk2. The map/unmap *semantics* stay and the mapping
+is logical: `SYS_XMEM_MAP` fills the object's row of a common far table
+(its first two pages, or its one page and the program's own `A000h`
+page) and returns a **mapping handle**; the common routine `kos_far_map`
+(`kernel/memory/mk2/far.asm`) realizes it, remapping both entries mirror
+first with interrupts masked, and returns the handle in force before.
+Handle 0 is the program's own pages and gives the working bank its image
+identity back. Freeing an object clears its row, so its handle is
+refused. The Mk2 ABI is `docs/abi.md` section 8.3.
 
-An extended-memory object becomes **a list of physical pages**. The Mk1
-object classes have no Mk2 meaning and are not carried over: the 32 KiB
-plain / 16 KiB `MAPPABLE` limits and one-mappable-object-per-bank rule,
-the slow (slots 0–2, mode-10 gate) versus window-speed (slots 3, 6) copy
-paths, and the rule that a bank holding an auxiliary slot cannot become a
-primary bank. Copies between a caller buffer and an object map both
-pages and move the bytes directly. Object size limits that remain are
-software choices, stated with the Mk2 ABI.
+An extended-memory object is **a list of physical pages** owned by its
+process: up to seven (56 KiB), a `MAPPABLE` one up to the far window's
+two. The Mk1 object classes have no Mk2 meaning and are not carried
+over: the 32 KiB plain / 16 KiB `MAPPABLE` limits and
+one-mappable-object-per-bank rule, the slow (slots 0–2, mode-10 gate)
+versus window-speed (slots 3, 6) copy paths, and the rule that a bank
+holding an auxiliary slot cannot become a primary bank. `READ` and
+`WRITE` copy between the caller's pages and the object's through the
+copy windows, directly. Segments are not objects on Mk2: the Mk2 loader
+places none, and `SEG_INFO`/`SEG_MAP` are `KOS_ENOSYS`.
 
 No hardware-enforced page permissions, user/kernel isolation or
 preemptive scheduling are added by this mapper.

@@ -38,4 +38,16 @@
 #define KOS_DAT_CACHED              0xEF21u
 #define KOS_DAT_STATE_SIZE          0x0013u
 
+/* The nucleus's copy windows: two system entries it remaps to move bytes
+ * between pages (an object, a caller's buffer, a program image) without
+ * staging them.  No interrupt path uses them. */
+#define KOS_DAT_COPY_SRC_ENTRY      5u
+#define KOS_DAT_COPY_SRC_BASE       0xA000u
+#define KOS_DAT_COPY_DST_ENTRY      6u
+#define KOS_DAT_COPY_DST_BASE       0xC000u
+
+/* The far window (logical 8000h-BFFFh): working entries 12-13. */
+#define KOS_DAT_FAR_ENTRY           12u
+#define KOS_DAT_FAR_BASE            0x8000u
+
 #endif /* ZEPHYR80MK2_MEMORY_H */

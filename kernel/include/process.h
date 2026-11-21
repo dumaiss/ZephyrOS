@@ -105,6 +105,10 @@ enum {
 	PROCESS_SUSPENDED
 };
 
+/* On Mk2 (KOS_BOARD_MK2) `bank` is the process's page-0 page (its
+ * mapping value, architecture 2.7.6): its memory is its DAT image,
+ * kos_dat_images[pid] (kernel/memory/mk2/pages.h), and `far` keeps its
+ * far-window handle while it is suspended. */
 struct process {
 	uint8_t  state;       /* PROCESS_*                          */
 	uint8_t  pid;         /* slot index, 0-6                    */
@@ -112,6 +116,9 @@ struct process {
 	uint8_t  parent;      /* pid or PROCESS_KERNEL_PARENT       */
 	uint16_t flags;       /* PROCESS_FLAG_*                     */
 	uint16_t exit_status; /* last recorded status of this slot  */
+#if defined(KOS_BOARD_MK2)
+	uint16_t far;         /* far-window handle while suspended  */
+#endif
 };
 
 /* Fixed table (bank-7 data), exported for acceptance inspection. */
@@ -165,6 +172,28 @@ int process_exec(const char *path, uint16_t *status);
  * it must return completely before process_launch() runs. */
 int process_prepare(const char *path, uint8_t parent_pid, uint16_t args,
 		    uint16_t args_length, struct process_child *child);
+
+#if defined(KOS_BOARD_MK2)
+/* Mk2: a program whose bytes are in ROM, from `offset` in ROM page `page`
+ * on.  The image loads at EXE_LOAD_BASE, `bss` zeroed bytes follow it,
+ * and the stack grows down from KOS_COMMON_BASE. */
+struct process_program {
+	uint8_t  page;
+	uint16_t offset;
+	uint16_t size;
+	uint16_t bss;
+	uint16_t entry;
+};
+
+/* Mk2 process_prepare: the slot, the child's pages (logical pages 0-6;
+ * entry 7 the common page), its DAT image, page zero (the entry stubs
+ * and the startup block with the caller's tail, read through the
+ * caller's current mapping), the image and its BSS.  0 and `child`
+ * filled, or -KOS_ENOSPC with nothing allocated. */
+int process_prepare_program(const struct process_program *program,
+			    uint8_t parent_pid, uint16_t args,
+			    uint16_t args_length, struct process_child *child);
+#endif
 
 /* Enter a prepared child through the common launch gate.  Infallible:
  * depth and frame size were preflighted and process_prepare() succeeded.

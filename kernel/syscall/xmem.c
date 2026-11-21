@@ -29,7 +29,309 @@
  * (`kos_bank_copy`); the caller side goes through the syscall copy
  * helpers, which resolve the buffer-identity rule (a buffer behind the
  * aperture is read from and written to the far bank).
+ *
+ * The text above is the Mk1 board's.  On Mk2 (KOS_BOARD_MK2, architecture
+ * 2.7.6) an object is a list of 8 KiB pages from the page allocator
+ * (kernel/memory/mk2/pages.c), owned by the process; there are no slots,
+ * classes or segments.  READ and WRITE move the bytes directly between
+ * the object's pages and the caller's, the caller's resolved through its
+ * current mapping, far window included.  MAP fills the object's row of
+ * the far table and returns a mapping handle, which the program's far
+ * window realizes (kernel/memory/mk2/far.asm).
  */
+
+#if defined(KOS_BOARD_MK2)
+
+#include "kos/syscall.h"
+#include "kos/xmem.h"
+#include "kos/errno.h"
+#include "process.h"
+#include "kernel/memory/mk2/pages.h"
+
+#include "diag.h"
+#include "xmem.h"
+
+#define XMEM_MAX_OBJECTS 32u /* far.asm KOS_FAR_ROWS */
+#define XMEM_GENERATIONS 16u
+#define XMEM_HANDLE_MAX  ((uint16_t)(XMEM_MAX_OBJECTS * XMEM_GENERATIONS - 1u))
+#define XMEM_MAX_PAGES   ((uint8_t)(KOS_XMEM_MAX_OBJECT >> KOS_DAT_PAGE_SHIFT))
+
+struct xmem_object {
+	uint8_t  used;
+	uint8_t  pid;      /* owner */
+	uint8_t  gen;      /* handle generation, 1..15 */
+	uint8_t  count;    /* pages, 1..XMEM_MAX_PAGES */
+	uint8_t  flags;    /* KOS_XMEM_FLAG_* */
+	uint8_t  type;     /* KOS_XMEM_TYPE_RUNTIME */
+	uint16_t requested;/* bytes asked for */
+	uint8_t  pages[XMEM_MAX_PAGES]; /* object offset >> 13 -> page */
+	uint8_t  reserved;
+};
+
+static struct xmem_object xmem_table[XMEM_MAX_OBJECTS];
+
+#if defined(__SDCC)
+_Static_assert(sizeof(struct xmem_object) == 16,
+	       "xmem object entry must be 16 packed bytes");
+_Static_assert(XMEM_MAX_PAGES == 7u,
+	       "an object is at most seven pages");
+_Static_assert(KOS_XMEM_MAX_MAPPABLE == 2u * KOS_DAT_PAGE_SIZE,
+	       "a mappable object fits the far window's two entries");
+_Static_assert(sizeof(struct kos_far_row) == 3,
+	       "far.asm KOS_FAR_ROW_SIZE");
+#endif
+
+static struct xmem_object *xmem_lookup(uint16_t handle, uint8_t pid)
+{
+	struct xmem_object *obj;
+
+	if (handle == 0u || handle > XMEM_HANDLE_MAX) {
+		return (struct xmem_object *)0;
+	}
+	obj = &xmem_table[(uint8_t)(handle >> 4)];
+	if (obj->used == 0u || obj->pid != pid ||
+	    (uint8_t)(handle & 0x0Fu) != obj->gen) {
+		return (struct xmem_object *)0;
+	}
+	return obj;
+}
+
+/* Release one object: its pages, its far-table row, its entry. */
+static void xmem_drop(uint8_t index)
+{
+	struct xmem_object *obj = &xmem_table[index];
+
+	kos_pages_free(obj->pid, obj->pages, obj->count);
+	kos_far_table[index].gen = 0u;
+	obj->used = 0u;
+}
+
+void kos_xmem_alloc(uint16_t block)
+{
+	struct kos_xmem_alloc_args *args = (struct kos_xmem_alloc_args *)block;
+	struct xmem_object *obj;
+	uint8_t pid = process_current_pid();
+	uint8_t index;
+	uint8_t count;
+	uint16_t size;
+	uint16_t flags;
+
+	if (!kos_syscall_block_ok(block, sizeof(*args)) ||
+	    pid >= PROCESS_TABLE_SIZE) {
+		kos_syscall_error(KOS_EINVAL);
+		return;
+	}
+	size = args->size;
+	flags = args->flags;
+	if (size == 0u ||
+	    (flags & (uint16_t)~(uint16_t)KOS_XMEM_FLAG_MAPPABLE) != 0u ||
+	    ((flags & KOS_XMEM_FLAG_MAPPABLE) != 0u &&
+	     size > KOS_XMEM_MAX_MAPPABLE)) {
+		kos_syscall_error(KOS_EINVAL);
+		return;
+	}
+	if (size > KOS_XMEM_MAX_OBJECT) {
+		kos_syscall_error(KOS_ENOSPC);
+		return;
+	}
+	for (index = 0u; index < XMEM_MAX_OBJECTS; ++index) {
+		if (xmem_table[index].used == 0u) {
+			break;
+		}
+	}
+	if (index == XMEM_MAX_OBJECTS) {
+		kos_syscall_error(KOS_ENOSPC);
+		return;
+	}
+	obj = &xmem_table[index];
+	count = (uint8_t)((size >> KOS_DAT_PAGE_SHIFT) +
+			  ((size & (KOS_DAT_PAGE_SIZE - 1u)) != 0u));
+	if (kos_pages_alloc(pid, count, obj->pages) != 0) {
+		kos_syscall_error(KOS_ENOSPC);
+		return;
+	}
+	obj->gen = (uint8_t)(obj->gen + 1u);
+	if (obj->gen >= XMEM_GENERATIONS) {
+		obj->gen = 1u;
+	}
+	obj->used = 1u;
+	obj->pid = pid;
+	obj->count = count;
+	obj->flags = (uint8_t)flags;
+	obj->type = KOS_XMEM_TYPE_RUNTIME;
+	obj->requested = size;
+	kos_far_table[index].gen = 0u;
+	kos_syscall_success((uint16_t)(((uint16_t)index << 4) | obj->gen));
+}
+
+void kos_xmem_free(uint16_t block)
+{
+	struct kos_xmem_free_args *args = (struct kos_xmem_free_args *)block;
+
+	if (!kos_syscall_block_ok(block, sizeof(*args)) ||
+	    xmem_lookup(args->handle, process_current_pid()) ==
+		    (struct xmem_object *)0) {
+		kos_syscall_error(KOS_EINVAL);
+		return;
+	}
+	xmem_drop((uint8_t)(args->handle >> 4));
+	kos_syscall_success(0);
+}
+
+/* SYS_XMEM_READ (`to_caller` set) and SYS_XMEM_WRITE: every range is
+ * checked, then one direct copy between the two page lists. */
+static void xmem_transfer(uint16_t block, uint8_t to_caller)
+{
+	struct kos_xmem_io_args *args = (struct kos_xmem_io_args *)block;
+	struct xmem_object *obj;
+	uint16_t allocated;
+	uint16_t offset;
+	uint16_t buffer;
+	uint16_t length;
+
+	if (!kos_syscall_block_ok(block, sizeof(*args))) {
+		kos_syscall_error(KOS_EINVAL);
+		return;
+	}
+	obj = xmem_lookup(args->handle, process_current_pid());
+	offset = args->offset;
+	length = args->length;
+	buffer = args->buffer;
+	if (obj == (struct xmem_object *)0 ||
+	    (length != 0u && !kos_syscall_buffer_ok(buffer, length))) {
+		kos_syscall_error(KOS_EINVAL);
+		return;
+	}
+	allocated = (uint16_t)((uint16_t)obj->count << KOS_DAT_PAGE_SHIFT);
+	if (offset > allocated ||
+	    length > (uint16_t)(allocated - offset)) {
+		kos_syscall_error(KOS_EINVAL);
+		return;
+	}
+	if (to_caller != 0u) {
+		kos_pages_copy(obj->pages, offset, kos_caller_map(), buffer,
+			       length);
+	} else {
+		kos_pages_copy(kos_caller_map(), buffer, obj->pages, offset,
+			       length);
+	}
+	kos_syscall_success(length);
+}
+
+void kos_xmem_read(uint16_t block)
+{
+	xmem_transfer(block, 1u);
+}
+
+void kos_xmem_write(uint16_t block)
+{
+	xmem_transfer(block, 0u);
+}
+
+void kos_xmem_info(uint16_t block)
+{
+	struct kos_xmem_info_args *args = (struct kos_xmem_info_args *)block;
+	struct xmem_object *obj;
+	uint8_t record[8];
+	uint16_t allocated;
+
+	if (!kos_syscall_block_ok(block, sizeof(*args)) ||
+	    !kos_syscall_buffer_ok(args->buffer,
+				   (uint16_t)sizeof(struct kos_xmem_info))) {
+		kos_syscall_error(KOS_EINVAL);
+		return;
+	}
+	obj = xmem_lookup(args->handle, process_current_pid());
+	if (obj == (struct xmem_object *)0) {
+		kos_syscall_error(KOS_EINVAL);
+		return;
+	}
+	allocated = (uint16_t)((uint16_t)obj->count << KOS_DAT_PAGE_SHIFT);
+	record[0] = (uint8_t)obj->requested;
+	record[1] = (uint8_t)(obj->requested >> 8);
+	record[2] = (uint8_t)allocated;
+	record[3] = (uint8_t)(allocated >> 8);
+	record[4] = obj->flags;
+	record[5] = 0u;
+	record[6] = obj->type;
+	record[7] = 0u;
+	kos_pages_copy((const uint8_t *)0, (uint16_t)record, kos_caller_map(),
+		       args->buffer, (uint16_t)sizeof(record));
+	kos_syscall_success(0);
+}
+
+/* SYS_XMEM_MAP: the far window's view of the object - its first two pages,
+ * or its one page and the caller's own A000h page - goes into its row,
+ * and the handle naming that row is returned with the window's address. */
+void kos_xmem_map(uint16_t block)
+{
+	struct kos_xmem_map_args *args = (struct kos_xmem_map_args *)block;
+	struct xmem_object *obj;
+	struct kos_far_row *row;
+	uint8_t index;
+
+	if (!kos_syscall_block_ok(block, sizeof(*args))) {
+		kos_syscall_error(KOS_EINVAL);
+		return;
+	}
+	obj = xmem_lookup(args->handle, process_current_pid());
+	if (obj == (struct xmem_object *)0 ||
+	    (obj->flags & KOS_XMEM_FLAG_MAPPABLE) == 0u) {
+		kos_syscall_error(KOS_EINVAL);
+		return;
+	}
+	index = (uint8_t)(args->handle >> 4);
+	row = &kos_far_table[index];
+	row->pages[0] = obj->pages[0];
+	row->pages[1] = (obj->count > 1u)
+		? obj->pages[1]
+		: kos_dat_images[obj->pid][KOS_DAT_FAR_ENTRY -
+					   KOS_DAT_ENTRIES + 1u];
+	row->gen = obj->gen;
+	args->address = KOS_XMEM_APERTURE_BASE;
+	kos_syscall_success((uint16_t)(((uint16_t)index << 4) | obj->gen));
+}
+
+void kos_xmem_dispatch(uint8_t number, uint16_t block)
+{
+	switch (number) {
+	case KOS_SYSCALL_XMEM_ALLOC:
+		kos_xmem_alloc(block);
+		return;
+	case KOS_SYSCALL_XMEM_FREE:
+		kos_xmem_free(block);
+		return;
+	case KOS_SYSCALL_XMEM_READ:
+		kos_xmem_read(block);
+		return;
+	case KOS_SYSCALL_XMEM_WRITE:
+		kos_xmem_write(block);
+		return;
+	case KOS_SYSCALL_XMEM_INFO:
+		kos_xmem_info(block);
+		return;
+	case KOS_SYSCALL_XMEM_MAP:
+		kos_xmem_map(block);
+		return;
+	default:
+		kos_syscall_error(KOS_ENOSYS);
+		return;
+	}
+}
+
+void kos_xmem_release_process(uint8_t pid)
+{
+	uint8_t index;
+
+	for (index = 0u; index < XMEM_MAX_OBJECTS; ++index) {
+		if (xmem_table[index].used != 0u &&
+		    xmem_table[index].pid == pid) {
+			xmem_drop(index);
+		}
+	}
+}
+
+#else /* Mk1 */
 
 #include "kos/syscall.h"
 #include "kos/xmem.h"
@@ -598,3 +900,5 @@ void kos_xmem_release_process(uint8_t pid)
 		}
 	}
 }
+
+#endif /* Mk1 */

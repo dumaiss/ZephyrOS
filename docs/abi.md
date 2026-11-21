@@ -477,6 +477,45 @@ offset 6  u16  flags    KOS_XMEM_FLAG_MAPPABLE for a mappable data segment
 The SDK wrappers are `seginfo`, `segmap`, `farcall`, the `__banked`
 trampoline and `farmap`/`farunmap` (`docs/sdk.md`).
 
+### 8.3 Zephyr-80 Mk2
+
+On the Mk2 board (architecture 2.7.6; `KOS_BOARD_MK2` selects the
+board-conditional parts of `kos/xmem.h`) the family keeps its numbers,
+blocks, records and error rules. An object is a list of 8 KiB pages;
+nothing about them is visible.
+
+- `ALLOC`: the size rounds up to whole 8 KiB units, at most
+  `KOS_XMEM_MAX_OBJECT` (56 KiB); a `MAPPABLE` object is at most 16 KiB,
+  the far window. A zero size, an unknown flag or a mappable size over
+  16 KiB is `-KOS_EINVAL`; a larger size, a full object table (32
+  objects system-wide) or too few free pages is `-KOS_ENOSPC`, and an
+  allocation takes all its pages or none. Contents are undefined.
+- `READ`, `WRITE`: the buffer lies in `0100h-DFFFh` and the range inside
+  the object (`-KOS_EINVAL`, checked before a byte moves). The buffer is
+  resolved through the caller's current mapping, far window included, so
+  it may also straddle the window's edges; the bytes move directly
+  between the caller's pages and the object's.
+- `INFO` reports `allocated` in whole 8 KiB units; `type` is
+  `KOS_XMEM_TYPE_RUNTIME`.
+- `MAP` returns in `HL` a **mapping handle** (nonzero, opaque) and
+  `address` = `8000h`. The far window (`8000h-BFFFh`) then shows the
+  object's first 16 KiB, or a one-unit object at `8000h` and the
+  program's own memory at `A000h`. A stale, foreign or non-mappable
+  handle is `-KOS_EINVAL`.
+- The window is opened by the platform's far-window operation, the common
+  routine `kos_far_map`: `HL` = a mapping handle in, `HL` = the handle in
+  force before out, carry clear; handle 0 is the program's own memory, so
+  passing the returned handle back closes what the call opened. A handle
+  that names no live mapping (its object freed, a malformed value) sets
+  carry and changes nothing. It preserves the caller's interrupt state and
+  clobbers `AF`, `BC`, `DE`. The handle in force is the program's own:
+  a child starts with handle 0 and its parent's window is unchanged when
+  it resumes.
+- `SEG_INFO`, `SEG_MAP`: `-KOS_ENOSYS` (the Mk2 loader places no
+  segments).
+- Handles are owner-tagged and generation-counted; a child inherits no
+  object, and exit releases every object and page the process owns.
+
 ## 9. Diagnostics
 
 For the monitor and the diagnostic tools; ordinary programs use drivers.

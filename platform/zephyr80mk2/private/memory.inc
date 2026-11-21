@@ -50,3 +50,15 @@ KOS_DAT_WORKING         = 0xEF18
 KOS_DAT_CONTROL         = 0xEF20
 KOS_DAT_CACHED          = 0xEF21
 KOS_DAT_STATE_SIZE      = 0x0013
+
+; The nucleus's copy windows: two system entries it remaps to move bytes
+; between pages (an object, a caller's buffer, a program image) without
+; staging them.  No interrupt path uses them.
+KOS_DAT_COPY_SRC_ENTRY  = 5
+KOS_DAT_COPY_SRC_BASE   = 0xA000
+KOS_DAT_COPY_DST_ENTRY  = 6
+KOS_DAT_COPY_DST_BASE   = 0xC000
+
+; The far window (logical 8000h-BFFFh): working entries 12-13.
+KOS_DAT_FAR_ENTRY       = 12
+KOS_DAT_FAR_BASE        = 0x8000

@@ -11,3 +11,6 @@ KOS_MK2_PLATFORM_DIR := platform/zephyr80mk2
 
 KOS_MK2_PLATFORM_ASFLAGS = -Iabi -Iplatform/zephyr80mk2/public \
                            -Iplatform/zephyr80mk2/private
+KOS_MK2_PLATFORM_CFLAGS  = -I abi -I kernel/include -I drivers/include \
+                           -I formats/include -I platform/zephyr80mk2/public \
+                           -I platform/zephyr80mk2/private

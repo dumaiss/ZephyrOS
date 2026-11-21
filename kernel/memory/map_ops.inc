@@ -26,6 +26,12 @@
 ;                          bank).  F.  2 bytes, 7 T.
 ;   KOS_MAP_IS_PROGRAM     A = mapping -> Z set when it names a program
 ;                          context (mode 10).  A, F.  4 bytes, 14 T.
+;   KOS_MAP_IS_SYSTEM      A = mapping -> Z set when it is the system
+;                          context (mode 11).  A, F.  4 bytes, 14 T.
+;   KOS_MAP_PROGRAM_CHECK fault
+;                          A = a launch request's context byte (a bank):
+;                          jump to fault unless it names a program bank
+;                          0-6.  F.  5 bytes, 17 T.
 ;   KOS_MAP_NO_PAGE        A = mapping -> A = the same mapping with the
 ;                          window/aperture page closed (mode and bank
 ;                          kept).  F.  2 bytes, 7 T.
@@ -76,6 +82,10 @@
 ;   KOS_MAP_ROM_AT p,b     the ROM view of the constant page p with writes
 ;                          to the constant bank b (the reset copier and
 ;                          the warm reboot).  A.  4 bytes, 18 T.
+;   KOS_MAP_GATE_SUSPEND   the launch of a child at depth kos_proc_index:
+;   KOS_MAP_GATE_RESUME    and the resume of that depth.  The latch is the
+;                          whole gate state, which the launch gate shadows
+;                          itself, so both expand to nothing.  0 bytes.
 ; -----------------------------------------------------------------------------
 
 	.macro	KOS_MAP_CURRENT
@@ -89,6 +99,16 @@
 	.macro	KOS_MAP_IS_PROGRAM
 	and	#KOS_MODE_MASK
 	cp	#KOS_MODE_APPLICATION
+	.endm
+
+	.macro	KOS_MAP_IS_SYSTEM
+	and	#KOS_MODE_MASK
+	cp	#KOS_MODE_OS
+	.endm
+
+	.macro	KOS_MAP_PROGRAM_CHECK fault
+	cp	#KOS_BANK_MASK
+	jp	nc,fault
 	.endm
 
 	.macro	KOS_MAP_NO_PAGE
@@ -177,4 +197,10 @@
 	.macro	KOS_MAP_ROM_AT page, bank
 	ld	a,#(((page) << KOS_ROM_PAGE_SHIFT) | KOS_MODE_BOOT | (bank))
 	out	(KOS_MEMCTL_PORT),a
+	.endm
+
+	.macro	KOS_MAP_GATE_SUSPEND
+	.endm
+
+	.macro	KOS_MAP_GATE_RESUME
 	.endm

@@ -49,15 +49,24 @@
 ;     site's return address, and the RET below resumes the launcher there.
 ;
 ; The whole resume path from the start of the LDIR until SP is restored
-; performs no CALL, PUSH, POP or interrupt enable: every value it needs
-; (saved SP, saved latch, saved IFF, frame source and the child's exit
-; status) is already in registers or common state before the copy begins.
+; performs no CALL, PUSH, POP or interrupt enable of its own: every value
+; it needs (saved SP, saved latch, saved IFF, frame source and the child's
+; exit status) is already in registers or common state before the copy
+; begins.  A mapping operation that calls a common routine (Mk2) runs with
+; SP below the restored frame, so its pushes land in the free part.
+;
+; The text above is the Mk1 board's.  Assembled for Mk2 (the mapping
+; operations of kernel/memory/mk2/map_ops.inc), "latch" reads "mapping
+; value" and "bank" the child's page-0 page: the child is entered through
+; its DAT image (_kos_dat_running, loaded into the working bank unless the
+; bank holds it), and the syscall gate's DAT block is kept per depth with
+; the rest of the gate state (architecture 2.7.6).
 ; -----------------------------------------------------------------------------
 
 	.module process_launch
 	.include "hardware.inc"
 	.include "memory.inc"
-	.include "kernel/memory/map_ops.inc"
+	.include "map_ops.inc"
 
 	.globl _kos_process_launch
 	.globl _kos_process_resume
@@ -96,8 +105,7 @@ _kos_process_launch::
 	; Read the request before any state change.  Bank 7 is not a
 	; process bank.
 	ld	a,(hl)
-	cp	#KOS_BANK_MASK
-	jp	nc,__kos_mode_fault
+	KOS_MAP_PROGRAM_CHECK __kos_mode_fault
 	ld	(kos_proc_bank),a
 	inc	hl
 	ld	e,(hl)
@@ -136,8 +144,7 @@ launch_iff1:
 	; Save the launcher latch; reject a caller that is not in OS mode.
 	KOS_MAP_CURRENT
 	ld	(kos_proc_latch_tmp),a
-	and	#KOS_MODE_MASK
-	cp	#KOS_MODE_OS
+	KOS_MAP_IS_SYSTEM
 	jp	nz,__kos_mode_fault
 
 	; saved_latch[index] = latch
@@ -200,6 +207,9 @@ launch_iff1:
 	ld	a,(kos_proc_gate_tmp+1)
 	ld	(hl),a
 002$:
+	; The board's own gate state, if any (Mk2: the crossing's DAT block),
+	; kept for this depth; the child starts with no open crossing.
+	KOS_MAP_GATE_SUSPEND
 
 	; saved_sp[index] = captured SP
 	ld	hl,#kos_proc_cont
@@ -428,6 +438,9 @@ _kos_process_resume::
 	ld	d,(hl)
 	ld	(kos_gate_saved_sp),de
 006$:
+	; The board's own gate state for this depth back (Mk2: the parent's
+	; crossing open again; at depth 0 the child's last one closed).
+	KOS_MAP_GATE_RESUME
 
 	; Restore the launcher SP; the next RET returns to the launch call
 	; site.  From here to RET there is no stack access.

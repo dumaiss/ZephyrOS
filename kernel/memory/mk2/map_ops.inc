@@ -30,6 +30,12 @@
 ;                          value itself.  0 bytes.
 ;   KOS_MAP_IS_PROGRAM     A = mapping -> Z set when it names a program
 ;                          context.  A, F.  4 bytes, 15 T.
+;   KOS_MAP_IS_SYSTEM      A = mapping -> Z set when it is the system
+;                          bank.  F.  1 byte, 4 T.
+;   KOS_MAP_PROGRAM_CHECK fault
+;                          A = a launch request's context byte (the
+;                          child's page-0 page): jump to fault unless it
+;                          names a program.  F.  4 bytes, 14 T.
 ;
 ; Installing operations:
 ;
@@ -46,6 +52,12 @@
 ;                          has no window page, so this is KOS_MAP_RESTORE.
 ;   KOS_MAP_SYSTEM         select the system bank (A ignored).  A, BC.
 ;                          10 bytes, 42 T.
+;   KOS_MAP_APP            enter the running program (A ignored): the
+;                          working bank gets the running image
+;                          (kos_dat_running) unless it holds it, then is
+;                          selected.  System bank, interrupts masked.
+;                          A, F.  3 bytes; kos_dat_enter 163 T when the
+;                          bank holds the image (+ KOS_DAT_LOAD_WORKING).
 ;   KOS_MAP_GATE_ENTER slot, fault
 ;                          the syscall gate's entry: slot = the caller's
 ;                          mapping value; anything but a program context
@@ -56,6 +68,19 @@
 ;                          page 0 as system entry 0 and selects the system
 ;                          bank.  Interrupts masked.  A, F, BC, DE, HL.
 ;                          242 T (a remapped working bank: +214 T).
+;   KOS_MAP_GATE_SUSPEND   the launch of a child from a syscall body at
+;                          depth kos_proc_index: the open crossing's state
+;                          (the gate's DAT block) is kept for that depth
+;                          and the crossing closed for the child (system
+;                          entry 0 back to the system page-0 image).
+;                          Interrupts masked.  A, F, BC, DE, HL.  6 bytes
+;                          + kos_dat_gate_suspend.
+;   KOS_MAP_GATE_RESUME    the resume of depth kos_proc_index: its kept
+;                          crossing is open again (kos_gate_saved_latch,
+;                          the parent's page 0, as system entry 0); at
+;                          depth 0 the exited child's crossing is closed.
+;                          Interrupts masked.  A, F, BC, DE, HL.  6 bytes
+;                          + kos_dat_gate_resume.
 ;
 ; DAT operations:
 ;
@@ -80,6 +105,9 @@
 	.globl	kos_gate_saved_image
 	.globl	kos_gate_open
 	.globl	kos_gate_image
+	.globl	kos_dat_enter
+	.globl	kos_dat_gate_suspend
+	.globl	kos_dat_gate_resume
 
 	.macro	KOS_MAP_CURRENT
 	ld	hl,#KOS_DAT_WORKING
@@ -96,6 +124,15 @@
 	add	a,#0xFF			; carry = (A != 0)
 	sbc	a,a
 	inc	a			; 0 (Z) for a program context
+	.endm
+
+	.macro	KOS_MAP_IS_SYSTEM
+	or	a
+	.endm
+
+	.macro	KOS_MAP_PROGRAM_CHECK fault
+	or	a
+	jp	z,fault
 	.endm
 
 	.macro	KOS_MAP_RESTORE
@@ -115,6 +152,10 @@
 	.macro	KOS_MAP_SYSTEM
 	ld	a,#KOS_DAT_CTL_SYSTEM
 	KOS_DAT_SELECT
+	.endm
+
+	.macro	KOS_MAP_APP
+	call	kos_dat_enter
 	.endm
 
 	.macro	KOS_DAT_SET n
@@ -159,4 +200,14 @@ have:
 	ld	a,(slot)
 	KOS_DAT_REMAP 0
 	KOS_MAP_SYSTEM
+	.endm
+
+	.macro	KOS_MAP_GATE_SUSPEND
+	ld	a,(kos_proc_index)
+	call	kos_dat_gate_suspend
+	.endm
+
+	.macro	KOS_MAP_GATE_RESUME
+	ld	a,(kos_proc_index)
+	call	kos_dat_gate_resume
 	.endm

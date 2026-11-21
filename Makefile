@@ -36,6 +36,7 @@
 #   make helloworld-image          SDK demo image (no kernel change)
 #   make mk2boot                   Zephyr-80 Mk2 boot proof image (test-only)
 #   make mk2trans                  Zephyr-80 Mk2 transitions image (test-only)
+#   make mk2proc                   Zephyr-80 Mk2 processes image (test-only)
 #   make clean    remove all generated files
 #
 # Builds are parallel by default (KOS_JOBS defaults to nproc); use
@@ -101,8 +102,9 @@ include platform/zephyr80mk2/config.mk
 # (the banking latch, the production board) or mk2 (the LS612 DAT mapper,
 # architecture 2.7).  A board is its platform include roots plus its
 # mapping operations (kernel/memory/map_ops.inc or kernel/memory/mk2/),
-# which the sources include as "map_ops.inc".  The Mk2 images are the
-# test images mk2boot and mk2trans; `make BOARD=mk2` builds mk2trans.
+# which the sources include as "map_ops.inc"; Mk2 C builds add
+# -DKOS_BOARD_MK2.  The Mk2 images are the test images mk2boot, mk2trans
+# and mk2proc; `make BOARD=mk2` builds mk2trans.
 BOARD ?= mk1
 KOS_BOARD_ASFLAGS.mk1 := $(KOS_PLATFORM_ASFLAGS) -Ikernel/memory
 KOS_BOARD_ASFLAGS.mk2 := $(KOS_MK2_PLATFORM_ASFLAGS) -Ikernel/memory/mk2
@@ -411,7 +413,7 @@ $(BUILD)/konaos.probe.ihx $(BUILD)/konaos.probe.map: \
 	subsystem-selftest process-selftest exe2-selftest \
 	console-serial-selftest \
 	fs-selftest ns-selftest ipc-selftest xmem-selftest helloworld-image \
-	phase-image mk2boot mk2trans \
+	phase-image mk2boot mk2trans mk2proc \
 	hardware-images \
 	smoke-hardware \
 	smoke-hardware-hwtest \
@@ -2033,6 +2035,55 @@ $(MK2TRANS_DIR)/mk1gate.rel: tests/target/mk2trans/mk1gate.asm
 $(MK2TRANS_DIR)/mk1gate.ihx: $(MK1GATE_RELS)
 	$(SDLDZ80) -m -w -i $@ -b _CODE=0x2000 -b _DATA=0x4000 \
 		-b _PROC=0x0100 -b _COMMON=0xE000 $(MK1GATE_RELS)
+
+# Zephyr-80 Mk2 processes image (test-only, BOARD=mk2): the nucleus's
+# page allocator, page copy, far window, launch gate, process lifecycle,
+# page loader and extended-memory family built for Mk2 (C with
+# -DKOS_BOARD_MK2 over the Mk2 platform roots), with the transitions
+# image's kernel sources, around a bootstrap, a C syscall dispatcher and
+# one program (tests/test_mk2_processes.py).  The image is the whole
+# 512 KiB flash.
+
+MK2PROC_DIR := build-mk2proc
+MK2PROC_CFLAGS := -mz80 -c --nostdinc --Werror $(KOS_SDCC_OPT) \
+	-DKOS_BOARD_MK2=1 -I . $(KOS_MK2_PLATFORM_CFLAGS)
+MK2PROC_ASM := tests/target/mk2proc/mk2proc.asm \
+	$(filter-out kernel/irq/code_end.asm,$(MK2TRANS_KERNEL)) \
+	kernel/process/launch.asm kernel/memory/mk2/far.asm \
+	kernel/memory/mk2/page_copy.asm kernel/runtime/sdcc_helpers.asm
+MK2PROC_C := tests/target/mk2proc/mk2proc_kernel.c \
+	kernel/memory/mk2/pages.c kernel/process/process.c \
+	kernel/process/exec.c kernel/syscall/xmem.c
+MK2PROC_H := $(wildcard abi/kos/*.h kernel/include/*.h \
+	kernel/memory/mk2/*.h kernel/syscall/*.h formats/include/*.h \
+	platform/zephyr80mk2/*/*.h)
+MK2PROC_REL = $(MK2PROC_DIR)/$(subst /,_,$(basename $(1))).rel
+MK2PROC_RELS := $(foreach src,$(MK2PROC_ASM) $(MK2PROC_C) \
+	kernel/irq/code_end.asm,$(call MK2PROC_REL,$(src)))
+MK2PROC_LINK := -b _CODE=0x2000 -b _DATA=0x6000 -b _PROG=0x0100 \
+	-b _BOOT=0x1000 -b _COMMON=0xE000
+
+mk2proc: $(MK2PROC_DIR)/mk2proc.bin $(SIM_CORE_LIB)
+	@echo "mk2proc image: $(MK2PROC_DIR)/mk2proc.bin"
+
+define MK2PROC_ASM_RULE
+$(call MK2PROC_REL,$(1)): $(1) $(MK2TRANS_INC)
+	@mkdir -p $(MK2PROC_DIR)
+	$(SDASZ80) -plosgff $(MK2TRANS_ASFLAGS) -o $$@ $$<
+endef
+$(foreach src,$(MK2PROC_ASM) kernel/irq/code_end.asm,$(eval $(call MK2PROC_ASM_RULE,$(src))))
+
+define MK2PROC_C_RULE
+$(call MK2PROC_REL,$(1)): $(1) $(MK2PROC_H)
+	@mkdir -p $(MK2PROC_DIR)
+	$(SDCC) $(MK2PROC_CFLAGS) -o $$@ $$<
+endef
+$(foreach src,$(MK2PROC_C),$(eval $(call MK2PROC_C_RULE,$(src))))
+
+$(MK2PROC_DIR)/mk2proc.bin: $(MK2PROC_RELS)
+	$(SDLDZ80) -m -w -i $(MK2PROC_DIR)/mk2proc.ihx $(MK2PROC_LINK) \
+		$(MK2PROC_RELS)
+	makebin -s 524288 $(MK2PROC_DIR)/mk2proc.ihx $@
 
 # --- physical-hardware serial smoke checks ----------------------------------
 # Requires the board connected at 115200 8N1 on SIO0/B and the matching image
