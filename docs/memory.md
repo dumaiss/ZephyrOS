@@ -332,6 +332,12 @@ Mode changes are assembly gates with common continuations, never C
 functions: a C return address in `2000h-DFFFh` would disappear when the
 mapping changes.
 
+Every latch access in the boot path and the nucleus, these helpers
+included, expands from the mapping operations in
+`kernel/memory/map_ops.inc` (architecture 2.1). They are in-place macros
+with no call and no stack, so a gate's footprint and timing are those of
+the instructions they stand for.
+
 ## 8. Checks
 
 - `tools/pack_image.py`: the 512 KiB image size, `FFh` fill, out-of-region
@@ -343,8 +349,9 @@ mapping changes.
   code, the stack and gate-stack sizes, the ROM-access placement, the IM2
   page, guard and state addresses, page zero, and the common ceiling.
 - `tests/test_source_layout.py`: constant parity between the C and assembly
-  descriptions of the platform, and that `platform/zephyr80/` holds no
-  executable code.
+  descriptions of the platform, that `platform/zephyr80/` holds no
+  executable code, and that nothing outside `kernel/memory/map_ops.inc` and
+  the SDK's `xmemgate.asm` and `vcall.asm` writes the latch.
 - At boot the kernel checks that it runs in mode 11 over bank 0 (an
   assembly read-back and a C check in `kernel_main()`); a failure prints on
   the early console and halts.

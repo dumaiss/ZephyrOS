@@ -14,7 +14,8 @@
 ;
 ; Latch (port 00h): D2..D0 selected SRAM bank, D4:D3 mode
 ;                   (00h ROM, 08h flat, 10h application, 18h OS),
-;                   D7:D5 selected ROM page.
+;                   D7:D5 selected ROM page.  Every access goes through
+;                   the mapping operations (kernel/memory/map_ops.inc).
 ;
 ; Register clobbers are documented per routine.  These helpers are internal
 ; KonaOS platform mechanisms, not a stable ABI.
@@ -23,6 +24,7 @@
 	.module banking
 	.include "hardware.inc"
 	.include "memory.inc"
+	.include "kernel/memory/map_ops.inc"
 
 	.globl _platform_memctl_read
 	.globl _platform_memctl_write
@@ -57,7 +59,7 @@
 
 ; uint8_t platform_memctl_read(void);  clobbers A, L
 _platform_memctl_read::
-	in	a,(KOS_MEMCTL_PORT)
+	KOS_MAP_CURRENT
 	ld	l,a
 	ret
 
@@ -65,13 +67,13 @@ _platform_memctl_read::
 ; WARNING: may change the mapping and hide the caller.  Only common-resident
 ; code (the gates below) may use this to alter mode bits.
 _platform_memctl_write::
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_RESTORE
 	ret
 
 ; uint8_t platform_bank_get(void);  clobbers A, L
 _platform_bank_get::
-	in	a,(KOS_MEMCTL_PORT)
-	and	#KOS_BANK_MASK
+	KOS_MAP_CURRENT
+	KOS_MAP_BANK_OF
 	ld	l,a
 	ret
 
@@ -84,10 +86,8 @@ _platform_bank_set::
 	cp	#KOS_BANK_MASK		; 7 -> reject
 	ret	z
 	ld	c,a
-	in	a,(KOS_MEMCTL_PORT)
-	and	#KOS_LATCH_NON_BANK_MASK
-	or	c
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_CURRENT
+	KOS_MAP_CALLER_WINDOW c
 	ret
 
 ; ---------------------------------------------------------------------------
@@ -112,21 +112,20 @@ kos_enter_os_mode::
 	add	hl,sp
 	ld	(kos_gate_saved_sp),hl
 	; Capture and validate the caller latch.
-	in	a,(KOS_MEMCTL_PORT)
+	KOS_MAP_CURRENT
 	ld	(kos_gate_saved_latch),a
 	and	#KOS_MODE_MASK
 	cp	#KOS_MODE_APPLICATION
 	jp	nz,__kos_mode_fault	; fault path is common-resident
 	ld	a,(kos_gate_saved_latch)
-	and	#KOS_BANK_MASK
+	KOS_MAP_BANK_OF
 	cp	#KOS_BANK_MASK		; bank 7 is not an application bank
 	jp	z,__kos_mode_fault
 	; Switch to the common gate stack BEFORE the mode changes.
 	ld	sp,#kos_gate_stack_top
 	; Enter OS mode over the caller bank.  The next instructions are
 	; fetched from common memory, which is mapped in both modes.
-	or	#KOS_MODE_OS
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_SYSTEM
 kos_os_continuation::
 	jp	_kernel_main		; the boot path continues into the
 					; kernel in mode 11
@@ -143,9 +142,8 @@ kos_os_continuation::
 ; ---------------------------------------------------------------------------
 kos_leave_os_mode::
 	ld	a,(kos_gate_saved_latch)
-	and	#KOS_BANK_MASK
-	or	#KOS_MODE_APPLICATION
-	out	(KOS_MEMCTL_PORT),a	; mode 10 over caller bank; next is common
+	KOS_MAP_BANK_OF
+	KOS_MAP_APP			; mode 10 over caller bank; next is common
 	ld	hl,(kos_gate_saved_sp)
 	ld	sp,hl			; caller stack is visible again in mode 10
 	ret				; pop the caller's saved PC
@@ -167,8 +165,7 @@ kos_leave_os_mode::
 ; ---------------------------------------------------------------------------
 _platform_reboot_now::
 	di
-	ld	a,#KOS_MODE_BOOT
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_ROM_AT 0, 0
 	jp	0x0000
 
 ; ---------------------------------------------------------------------------

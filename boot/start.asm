@@ -41,6 +41,7 @@
 	.module start
 	.include "hardware.inc"
 	.include "memory.inc"
+	.include "kernel/memory/map_ops.inc"
 
 	; Area declaration order = linker allocation order for unbased areas.
 	.area _CODE
@@ -80,14 +81,13 @@ _boot_common_entry::
 	; visible at 2000h-DFFFh; E000h-FFFFh stays in physical bank 0.
 	; This code continues from the common region, which is mapped in
 	; both modes.
-	ld	a,#KOS_MODE_OS
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_SYSTEM_AT 0
 
 	; Boot-time latch assertion: mode 11 over bank 0 must be active
 	; before any bank-7 code executes.  On failure, take the
 	; common-resident fault path (console + halt).
-	in	a,(KOS_MEMCTL_PORT)
-	and	#(KOS_MODE_MASK | KOS_BANK_MASK)
+	KOS_MAP_CURRENT
+	KOS_MAP_NO_PAGE
 	cp	#KOS_MODE_OS
 	jp	nz,__kos_mode_fault
 

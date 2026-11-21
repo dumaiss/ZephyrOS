@@ -22,6 +22,9 @@ Enforces docs/architecture.md section 1.3 and the source layout:
   implementations and no test-only SIO build variants;
 - each build class offers its exact include roots, and drivers and user
   programs see only their audience headers;
+- the memory latch has one writer per audience: the mapping operations
+  (kernel/memory/map_ops.inc) for boot, kernel and drivers, and the SDK's
+  two mapping members for user space;
 - every image is composed by a systems/<name>.json file;
 - root build* directories are generated output only: .gitignore covers
   every build variant and make clean removes them all.
@@ -59,6 +62,7 @@ OWNER_FILES = (
     "boot/start.asm",
     "boot/shadow_copy.asm",
     "kernel/memory/banking.asm",
+    "kernel/memory/map_ops.inc",
     "kernel/syscall/entry.asm",
     "kernel/syscall/page_zero.asm",
     "kernel/syscall/diag.c",
@@ -1285,6 +1289,142 @@ class TestConstantParity(unittest.TestCase):
                         cv, av,
                         "%s: C %s = %d, assembly %s = %d"
                         % (name, c[name], cv, asm[name], av))
+
+
+# The memory latch answers ports 00h-0Fh (architecture 2.1).  Only these
+# files may write it: the mapping operations every boot, kernel and driver
+# mapping change expands from, and the SDK's mapping members (user space
+# cannot call the nucleus).  The board headers only define the port.
+LATCH_WRITERS = (
+    "kernel/memory/map_ops.inc",
+    "user/sdk/src/xmemgate.asm",
+    "user/sdk/src/vcall.asm",
+)
+LATCH_PORT_DEFINITIONS = (
+    "platform/zephyr80/public/hardware.h",
+    "platform/zephyr80/public/hardware.inc",
+)
+LATCH_SCAN_ROOTS = ("boot", "kernel", "drivers", "platform", "formats",
+                    "abi", "user")
+LATCH_SCAN_SUFFIXES = (".asm", ".s", ".inc", ".c", ".h")
+LATCH_PORT_LAST = 0x0F
+_LATCH_EQUATE = re.compile(r"^\s*([A-Za-z_]\w*)\s*=\s*(\S+)", re.M)
+_LATCH_OUT = re.compile(r"\bout\s*\(\s*#?\s*([^)\s]+)\s*\)", re.I)
+_LATCH_SFR = re.compile(
+    r"__sfr\s+__at\s*\(?\s*([A-Za-z_0-9]+)\s*\)?\s*([A-Za-z_]\w*)")
+
+
+def _latch_number(token):
+    """The value of a literal port operand, or None for a symbol."""
+    token = token.strip().lstrip("#").rstrip("uU")
+    try:
+        if token.lower().startswith("0x"):
+            return int(token, 16)
+        if token.startswith("$"):
+            return int(token[1:], 16)
+        if token.lower().endswith("h"):
+            return int(token[:-1], 16)
+        return int(token, 10)
+    except ValueError:
+        return None
+
+
+def latch_writes(path, text):
+    """(line, text) of every latch write in one source: an OUT whose port
+    operand is a literal or a local equate in 00h-0Fh, or an assignment
+    to an __sfr declared there.  In assembly any mention of the port's
+    name counts too (it can feed OUT (C)), so assembly reads go through
+    the mapping operations as well; C may read the latch."""
+    is_asm = path.endswith((".asm", ".s", ".inc"))
+    if is_asm:
+        code = "\n".join(line.split(";")[0] for line in text.splitlines())
+    else:
+        code = re.sub(r"/\*.*?\*/",
+                      lambda m: "\n" * m.group(0).count("\n"), text,
+                      flags=re.S)
+        code = re.sub(r"//[^\n]*", "", code)
+    equates = {}
+    for name, value in _LATCH_EQUATE.findall(code):
+        number = _latch_number(value)
+        if number is not None:
+            equates[name] = number
+    def is_latch(operand):
+        if "MEMCTL" in operand:
+            return True
+        number = _latch_number(operand)
+        if number is None:
+            number = equates.get(operand)
+        return number is not None and number <= LATCH_PORT_LAST
+
+    sfrs = [match.group(2) for match in _LATCH_SFR.finditer(code)
+            if is_latch(match.group(1))]
+    stores = [re.compile(r"\b%s\s*([-+|&^]?=)(?!=)" % re.escape(name))
+              for name in sfrs]
+    found = []
+    for lineno, line in enumerate(code.splitlines(), start=1):
+        hit = is_asm and "MEMCTL" in line
+        if any(is_latch(operand) for operand in _LATCH_OUT.findall(line)):
+            hit = True
+        if any(store.search(line) for store in stores):
+            hit = True
+        if hit:
+            found.append((lineno, line.strip()))
+    return found
+
+
+class TestLatchWriters(unittest.TestCase):
+    """Every mapping change goes through one set of mapping operations, so
+    a board with another mapper supplies exactly those files."""
+
+    def test_the_scanner_sees_every_write_form(self):
+        for text in ("\tout\t(KOS_MEMCTL_PORT),a\n",
+                     "\tout\t(0x00),a\n",
+                     "\tout (0),a\n",
+                     "\tout\t(0Fh),a\n",
+                     "LATCH = 0x00\n\tout\t(LATCH),a\n",
+                     "\tld\tc,#MEMCTL_PORT\n\tout\t(c),a\n"):
+            with self.subTest(text=text):
+                self.assertTrue(latch_writes("x.asm", text))
+        self.assertTrue(latch_writes(
+            "x.c", "static __sfr __at 0x00 latch;\nvoid f(void)"
+            " { latch = 0x10; }\n"))
+        self.assertTrue(latch_writes(
+            "x.c", "__sfr __at KOS_MEMCTL_PORT m;\nvoid f(void)"
+            " { m |= 0x20; }\n"))
+        self.assertFalse(latch_writes(
+            "x.c", "__sfr __at 0x00 latch;\nint f(void)"
+            " { return latch == 0x10; }\n"))
+        for text in ("\tout\t(c),a\n",
+                     "\tout\t(KOS_SIO1B_CTRL),a\n",
+                     "\tout\t(0xE4),a\n",
+                     "\tout\t(0x10),a\n",
+                     "\tld\ta,#0\t; out (0x00),a\n"):
+            with self.subTest(text=text):
+                self.assertFalse(latch_writes("x.asm", text))
+
+    def test_only_the_mapping_operations_write_the_latch(self):
+        allowed = set(LATCH_WRITERS) | set(LATCH_PORT_DEFINITIONS)
+        offenders = []
+        for top in LATCH_SCAN_ROOTS:
+            for directory, _dirs, files in os.walk(os.path.join(ROOT, top)):
+                for name in sorted(files):
+                    if not name.endswith(LATCH_SCAN_SUFFIXES):
+                        continue
+                    path = os.path.join(directory, name)
+                    rel = os.path.relpath(path, ROOT)
+                    if rel in allowed:
+                        continue
+                    for lineno, line in latch_writes(path, _read(path)):
+                        offenders.append("%s:%d: %s" % (rel, lineno, line))
+        self.assertEqual(offenders, [],
+                         "latch access outside the mapping operations "
+                         "(kernel/memory/map_ops.inc) and the SDK mapping "
+                         "members:\n" + "\n".join(offenders))
+
+    def test_the_writers_exist(self):
+        for rel in LATCH_WRITERS:
+            self.assertTrue(latch_writes(rel, _read(os.path.join(ROOT, rel))),
+                            "%s writes no latch" % rel)
 
 
 class TestKernelNameComparison(unittest.TestCase):

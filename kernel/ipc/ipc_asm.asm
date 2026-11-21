@@ -23,6 +23,7 @@
 	.module ipc_asm
 	.include "hardware.inc"
 	.include "memory.inc"
+	.include "kernel/memory/map_ops.inc"
 	.include "kernel/runtime/fastcopy.inc"
 
 	.globl _ipc_latch
@@ -51,7 +52,7 @@ ipc_asm_begin::
 ; uint8_t ipc_latch(void);            read the banking latch (A)
 ; ---------------------------------------------------------------------------
 _ipc_latch::
-	in	a,(KOS_MEMCTL_PORT)
+	KOS_MAP_CURRENT
 	ret
 
 ; ---------------------------------------------------------------------------
@@ -76,12 +77,10 @@ _ipc_gate_latch::
 ; ---------------------------------------------------------------------------
 _ipc_domain_enter::
 	ld	b,a			; B = page bits
-	in	a,(KOS_MEMCTL_PORT)
+	KOS_MAP_CURRENT
 	ld	(_ipc_saved_latch),a
-	and	#KOS_BANK_MASK
-	or	#KOS_MODE_OS
-	or	b
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_BANK_OF
+	KOS_MAP_SYSTEM_WINDOW
 	ret
 
 ; ---------------------------------------------------------------------------
@@ -94,11 +93,9 @@ _ipc_domain_enter::
 ; ---------------------------------------------------------------------------
 _ipc_domain_set::
 	ld	b,a			; B = page bits
-	in	a,(KOS_MEMCTL_PORT)
-	and	#KOS_BANK_MASK
-	or	#KOS_MODE_OS
-	or	b
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_CURRENT
+	KOS_MAP_BANK_OF
+	KOS_MAP_SYSTEM_WINDOW
 	ret
 
 ; ---------------------------------------------------------------------------
@@ -106,7 +103,7 @@ _ipc_domain_set::
 ; ---------------------------------------------------------------------------
 _ipc_domain_exit::
 	ld	a,(_ipc_saved_latch)
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_RESTORE
 	ret
 
 ; ---------------------------------------------------------------------------
@@ -124,15 +121,13 @@ _ipc_bulk_map::
 	ld	a,(_ipc_bulk_open)
 	or	a
 	jr	nz,010$
-	in	a,(KOS_MEMCTL_PORT)
+	KOS_MAP_CURRENT
 	ld	b,a
-	and	#KOS_BANK_MASK
+	KOS_MAP_BANK_OF
 	or	#0x80
 	ld	(_ipc_bulk_open),a
 	ld	a,b
-	and	#~KOS_BANK_MASK
-	or	#IPC_ASM_DRIVER_BANK
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_CALLER_WINDOW #IPC_ASM_DRIVER_BANK
 	ld	de,#0
 	ret
 010$:
@@ -150,10 +145,8 @@ _ipc_bulk_unmap::
 	ret	z
 	and	#KOS_BANK_MASK
 	ld	b,a
-	in	a,(KOS_MEMCTL_PORT)
-	and	#~KOS_BANK_MASK
-	or	b
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_CURRENT
+	KOS_MAP_CALLER_WINDOW b
 	xor	a
 	ld	(_ipc_bulk_open),a
 	ret

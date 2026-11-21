@@ -34,6 +34,7 @@
 	.module upcall
 	.include "hardware.inc"
 	.include "memory.inc"
+	.include "kernel/memory/map_ops.inc"
 
 	.globl _kos_upcall
 	.globl kos_upcall_end
@@ -88,17 +89,12 @@ _kos_upcall::
 
 	; Save the exact latch, then select the page: only D7..D5 change, so
 	; the caller's mode and bank survive the call.
-	in	a,(KOS_MEMCTL_PORT)
+	KOS_MAP_CURRENT
 	ld	(kos_upcall_saved_latch),a
-	and	#(KOS_MODE_MASK | KOS_BANK_MASK)
+	KOS_MAP_NO_PAGE
 	ld	c,a
 	ld	a,(kos_upcall_page)
-	rrca
-	rrca
-	rrca
-	and	#KOS_ROM_PAGE_MASK
-	or	c
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_WINDOW
 
 	; One call into the window.  Z80 has no indirect call: push the
 	; return address, push the target, and let the target's RET return
@@ -117,7 +113,7 @@ kos_upcall_return:
 	; clobbers it.
 	ld	(_kos_upcall_ret_a),a
 	ld	a,(kos_upcall_saved_latch)
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_RESTORE
 	ld	(kos_upcall_result),hl
 	ld	hl,(kos_upcall_result_ptr)
 	ld	a,(kos_upcall_result)

@@ -331,6 +331,8 @@ MAME_IMAGE := $(BUILD)/zephyr80$(PK_SUFFIX).bin
 GEOMETRY_DIR       := $(BUILD)/geometry
 GEOMETRY_PROBE_DIR := $(BUILD)/probe
 ASM_MEMORY_INC     := $(KOS_PLATFORM_MEMORY_INC)
+# The mapping operations every latch access expands from.
+MAP_OPS_INC        := kernel/memory/map_ops.inc
 GEOMETRY_MEMORY    := $(GEOMETRY_DIR)/memory.inc
 MEMORY_INC         := $(GEOMETRY_MEMORY)
 
@@ -406,26 +408,26 @@ $(BUILD):
 # --- assemble ----------------------------------------------------------------
 
 $(BUILD)/reset.rel: boot/shadow_copy.asm \
-		platform/zephyr80/public/hardware.inc $(ASM_MEMORY_INC) | $(BUILD)
+		platform/zephyr80/public/hardware.inc $(ASM_MEMORY_INC) $(MAP_OPS_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/start.rel: boot/start.asm \
-		platform/zephyr80/public/hardware.inc $(ASM_MEMORY_INC) | $(BUILD)
+		platform/zephyr80/public/hardware.inc $(ASM_MEMORY_INC) $(MAP_OPS_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/banking.rel: kernel/memory/banking.asm \
-		platform/zephyr80/public/hardware.inc $(ASM_MEMORY_INC) | $(BUILD)
+		platform/zephyr80/public/hardware.inc $(ASM_MEMORY_INC) $(MAP_OPS_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/page_zero.rel: kernel/syscall/page_zero.asm | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/syscall_entry.rel: kernel/syscall/entry.asm \
-		platform/zephyr80/public/hardware.inc $(ASM_MEMORY_INC) | $(BUILD)
+		platform/zephyr80/public/hardware.inc $(ASM_MEMORY_INC) $(MAP_OPS_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/irq_entry.rel: kernel/irq/entry.asm platform/zephyr80/public/hardware.inc \
-		$(ASM_MEMORY_INC) platform/zephyr80/private/irq.inc | $(BUILD)
+		$(ASM_MEMORY_INC) platform/zephyr80/private/irq.inc $(MAP_OPS_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/irq_vectors.rel: kernel/irq/vectors.asm \
@@ -443,25 +445,25 @@ $(BUILD)/bank7_end.rel: kernel/memory/bank7_end.asm $(GEOMETRY_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -I$(dir $(GEOMETRY_INC)) -o $@ $<
 
 $(BUILD)/rom_access.rel: kernel/romfs/rom_access.asm \
-		platform/zephyr80/public/hardware.inc $(ASM_MEMORY_INC) | $(BUILD)
+		platform/zephyr80/public/hardware.inc $(ASM_MEMORY_INC) $(MAP_OPS_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/process_launch.rel: kernel/process/launch.asm \
-		platform/zephyr80/public/hardware.inc $(ASM_MEMORY_INC) | $(BUILD)
+		platform/zephyr80/public/hardware.inc $(ASM_MEMORY_INC) $(MAP_OPS_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/user_copy.rel: kernel/memory/user_copy.asm \
 		platform/zephyr80/public/hardware.inc \
-		kernel/runtime/fastcopy.inc $(ASM_MEMORY_INC) | $(BUILD)
+		kernel/runtime/fastcopy.inc $(ASM_MEMORY_INC) $(MAP_OPS_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/window_copy.rel: kernel/memory/window_copy.asm \
 		platform/zephyr80/public/hardware.inc \
-		kernel/runtime/fastcopy.inc $(ASM_MEMORY_INC) | $(BUILD)
+		kernel/runtime/fastcopy.inc $(ASM_MEMORY_INC) $(MAP_OPS_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/upcall.rel: kernel/memory/upcall.asm \
-		platform/zephyr80/public/hardware.inc $(ASM_MEMORY_INC) | $(BUILD)
+		platform/zephyr80/public/hardware.inc $(ASM_MEMORY_INC) $(MAP_OPS_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/diag_io.rel: kernel/syscall/diag_io.asm | $(BUILD)
@@ -469,7 +471,7 @@ $(BUILD)/diag_io.rel: kernel/syscall/diag_io.asm | $(BUILD)
 
 $(BUILD)/event_common.rel: kernel/event/event_common.asm \
 		platform/zephyr80/public/hardware.inc \
-		$(ASM_MEMORY_INC) kernel/event/event.h | $(BUILD)
+		$(ASM_MEMORY_INC) kernel/event/event.h $(MAP_OPS_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/irq_code_end.rel: kernel/irq/code_end.asm | $(BUILD)
@@ -913,12 +915,12 @@ $(BUILD)/ipc.rel: kernel/ipc/ipc.c kernel/ipc/ipc.h \
 
 $(BUILD)/ipc_asm.rel: kernel/ipc/ipc_asm.asm \
 		platform/zephyr80/public/hardware.inc \
-		kernel/runtime/fastcopy.inc $(ASM_MEMORY_INC) | $(BUILD)
+		kernel/runtime/fastcopy.inc $(ASM_MEMORY_INC) $(MAP_OPS_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/ipc_common.rel: kernel/ipc/ipc_common.asm \
 		platform/zephyr80/public/hardware.inc \
-		kernel/runtime/fastcopy.inc $(ASM_MEMORY_INC) | $(BUILD)
+		kernel/runtime/fastcopy.inc $(ASM_MEMORY_INC) $(MAP_OPS_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 
@@ -931,7 +933,7 @@ $(BUILD)/driver_loader.rel: kernel/driver/driver_loader.c \
 	$(SDCC) $(CFLAGS) $< -o $@
 
 $(BUILD)/driver_boot.rel: kernel/driver/driver_boot.asm \
-		platform/zephyr80/public/hardware.inc $(ASM_MEMORY_INC) | $(BUILD)
+		platform/zephyr80/public/hardware.inc $(ASM_MEMORY_INC) $(MAP_OPS_INC) | $(BUILD)
 	$(SDASZ80) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/romfs_test.rel: tests/target/romfs/romfs_test.c \

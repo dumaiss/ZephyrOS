@@ -21,7 +21,10 @@
 ;
 ; Mapping.  The home zone is the program's own bank: P = 0 in the latch
 ; (bits 7-5).  A far segment is its cached token (bcall.asm's cache: the
-; first call of a segment spends one SYS_SEG_MAP).
+; first call of a segment spends one SYS_SEG_MAP).  The home-zone close
+; and the latch restore below are the Zephyr-80 Mk1 implementation of the
+; SDK's mapping operations; with xmemgate.asm they are the only SDK latch
+; writes (tests/test_source_layout.py).
 ;
 ; Reentrancy.  The register scratch is used only while entering and
 ; leaving; veneer calls nest through the frame stack.  Nothing reenters

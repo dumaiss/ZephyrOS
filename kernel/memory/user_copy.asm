@@ -33,6 +33,7 @@
 	.module user_copy
 	.include "hardware.inc"
 	.include "memory.inc"
+	.include "kernel/memory/map_ops.inc"
 	.include "kernel/runtime/fastcopy.inc"
 
 	.globl _kos_bank_copy
@@ -128,11 +129,10 @@ user_copy_iff1:
 	inc	a
 004$:
 	ld	(kos_copy_saved_iff),a
-	in	a,(KOS_MEMCTL_PORT)
+	KOS_MAP_CURRENT
 	ld	(kos_copy_saved_latch),a
 	ld	a,(kos_copy_bank)
-	or	#KOS_MODE_APPLICATION
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_APP
 	; Everything below is fetched from common memory; both the
 	; application bank and the common data area are now mapped.
 	ld	a,(kos_copy_op)
@@ -164,7 +164,7 @@ user_copy_iff1:
 	ldir
 007$:
 	ld	a,(kos_copy_saved_latch)
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_RESTORE
 	ld	sp,(kos_copy_saved_sp)
 	ld	a,(kos_copy_saved_iff)
 	or	a

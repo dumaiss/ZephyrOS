@@ -182,7 +182,8 @@ class TestEventContract(unittest.TestCase):
         # DE', BC', AF', IY, IX, HL, DE, BC, AF, PC from its base upward.
         self.assertEqual(mnemonics(block(read(EVENT_ASM),
                                          "_kos_event_unwind::")),
-                         ["ld", "out", "ld", "pop", "exx", "pop", "pop",
+                         ["ld", "KOS_MAP_RESTORE", "ld", "pop", "exx",
+                          "pop", "pop",
                           "pop", "exx", "ex", "pop", "ex", "pop", "pop",
                           "pop", "pop", "pop", "pop", "ei", "ret"])
 

@@ -32,6 +32,7 @@
 	.module syscall_entry
 	.include "hardware.inc"
 	.include "memory.inc"
+	.include "kernel/memory/map_ops.inc"
 
 	.globl kos_syscall_entry
 	.globl kos_syscall_dispatch
@@ -104,13 +105,13 @@ entry_iff1:
 	; Validate the entry state: mode 10 over an application bank 0-6.
 	; Anything else takes the defined common-resident fatal path rather
 	; than returning through an unsafe mapping.
-	in	a,(KOS_MEMCTL_PORT)
+	KOS_MAP_CURRENT
 	ld	(kos_gate_saved_latch),a	; preserve the full caller latch
 	and	#KOS_MODE_MASK
 	cp	#KOS_MODE_APPLICATION
 	jp	nz,__kos_mode_fault
 	ld	a,(kos_gate_saved_latch)
-	and	#KOS_BANK_MASK
+	KOS_MAP_BANK_OF
 	cp	#KOS_BANK_MASK		; bank 7 is not an application bank
 	jp	z,__kos_mode_fault
 
@@ -118,9 +119,8 @@ entry_iff1:
 	; revision-13 page field is cleared and the whole bank-7 decode is
 	; visible (architecture 4.2: the syscall gate is P-normalizing).
 	ld	a,(kos_gate_saved_latch)
-	and	#KOS_BANK_MASK
-	or	#KOS_MODE_OS
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_BANK_OF
+	KOS_MAP_SYSTEM
 
 	; The body runs under the caller's interrupt state: the CTC holds one
 	; interrupt, so a body that ran masked for longer than two ticks would
@@ -166,7 +166,7 @@ entry_iff1:
 	; Back to application mode over the caller bank (common code; the
 	; next instructions are fetched from memory mapped in both modes).
 	ld	a,(kos_gate_saved_latch)
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_RESTORE
 
 	; Restore the exact caller SP; the caller stack is visible again.
 	ld	hl,(kos_gate_saved_sp)

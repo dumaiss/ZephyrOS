@@ -57,6 +57,7 @@
 	.module process_launch
 	.include "hardware.inc"
 	.include "memory.inc"
+	.include "kernel/memory/map_ops.inc"
 
 	.globl _kos_process_launch
 	.globl _kos_process_resume
@@ -133,7 +134,7 @@ launch_iff1:
 	ld	(kos_proc_sp_tmp),hl
 
 	; Save the launcher latch; reject a caller that is not in OS mode.
-	in	a,(KOS_MEMCTL_PORT)
+	KOS_MAP_CURRENT
 	ld	(kos_proc_latch_tmp),a
 	and	#KOS_MODE_MASK
 	cp	#KOS_MODE_OS
@@ -274,8 +275,7 @@ launch_iff1:
 	; Enter mode 10 over the child bank; everything after this OUT is
 	; fetched from common memory.
 	ld	a,(kos_proc_bank)
-	or	#KOS_MODE_APPLICATION
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_APP
 
 	; Build the child stack: SP = E000h, trap below it, entry on top.
 	; The first push lands at DFFEh-DFFFh inside the child bank, so the
@@ -305,9 +305,8 @@ launch_iff1:
 kos_process_return_trap::
 	di
 	ld	a,(kos_proc_bank)
-	or	#KOS_MODE_OS
 	ld	sp,#kos_gate_stack_top
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_SYSTEM
 	call	_process_abort
 	jp	__kos_mode_fault	; process_abort does not return
 
@@ -390,7 +389,7 @@ _kos_process_resume::
 	ld	d,#0
 	add	hl,de
 	ld	a,(hl)
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_RESTORE
 
 	; Put the resumed process's own syscall-gate transition state back;
 	; the child's last syscalls left theirs in the common single-depth

@@ -48,6 +48,7 @@
 	.module event_common
 	.include "hardware.inc"
 	.include "memory.inc"
+	.include "kernel/memory/map_ops.inc"
 
 	.globl _kos_event_irq_exit
 	.globl _kos_event_syscall_exit
@@ -196,8 +197,7 @@ _kos_event_enter::
 	ld	a,(_kos_event_latch)	; the exact latch, for EVENT_RETURN
 	ld	(hl),a
 	ld	a,(_kos_event_latch)
-	and	#(KOS_MODE_MASK | KOS_BANK_MASK)
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_HOME
 	sla	e			; the frame array is one word per process
 	rl	d
 	ld	hl,#_kos_event_frame
@@ -234,7 +234,7 @@ _kos_event_enter::
 ; ---------------------------------------------------------------------------
 _kos_event_unwind::
 	ld	a,(_kos_event_latch)
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_RESTORE
 	ld	sp,hl
 	pop	hl			; the (latch, 0) pair
 	exx

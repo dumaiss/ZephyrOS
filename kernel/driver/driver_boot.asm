@@ -35,6 +35,7 @@
 	.module driver_boot
 	.include "hardware.inc"
 	.include "memory.inc"
+	.include "kernel/memory/map_ops.inc"
 
 	.globl _kos_driver_run_boot
 	.globl kos_driver_boot_entry
@@ -82,13 +83,12 @@ driver_boot_iff1:
 002$:
 	ld	(kos_driver_boot_saved_iff),a
 
-	in	a,(KOS_MEMCTL_PORT)
+	KOS_MAP_CURRENT
 	ld	(kos_driver_boot_saved_latch),a
 
 	; Enter mode 10 over bank 6.  Everything below is fetched from
 	; common memory; bank 6 answers 0000h-DFFFh.
-	ld	a,#(KOS_MODE_APPLICATION | KOS_DRIVER_BANK)
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_APP_AT KOS_DRIVER_BANK
 
 	; One call into the boot entry: push the continuation, push the
 	; entry, and let the entry's RET return into the continuation.  Both
@@ -103,7 +103,7 @@ kos_driver_boot_return:
 	; Back to the caller's exact latch before touching anything on the
 	; bank-7 side; the state below is common memory, visible either way.
 	ld	a,(kos_driver_boot_saved_latch)
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_RESTORE
 	ld	a,(kos_driver_boot_saved_iff)
 	or	a
 	jr	z,003$

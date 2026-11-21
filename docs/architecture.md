@@ -149,9 +149,17 @@ Host tools are Python 3 standard library only.
 ### 2.1 The banking latch
 
 The memory latch is I/O port `00h` (the decoder answers `00h-0Fh`;
-software uses `00h`). Only the nucleus's banking code writes it, except
-that a program opens and closes the far aperture through the SDK
-(section 7).
+software uses `00h`). Every mapping change of the boot path, the nucleus
+and the drivers expands from one set of named mapping operations,
+`kernel/memory/map_ops.inc`: in-place assembly macros, one per purpose
+(save and restore the exact mapping, enter the system or an application
+mapping over a bank, select a window page, put a bank in the caller
+window, open the IPC aperture, enter the ROM view). In user space only the
+SDK's mapping members write it: `xmemgate.asm` opens and closes the far
+aperture and `vcall.asm` closes it for the home zone and restores the
+caller's latch (section 7). These are the Mk1 implementation of the
+mapping operations; a board with another mapper supplies its own (2.7.6).
+`tests/test_source_layout.py` rejects a latch write anywhere else.
 
 ```text
 D0-D2   Q   SRAM bank
