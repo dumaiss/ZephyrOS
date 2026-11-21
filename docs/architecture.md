@@ -541,6 +541,32 @@ the detailed `docs/memory.md`, `docs/boot.md`, `docs/abi.md` and
 `docs/exe-format.md` references. No pin map, PLD fitter choice or
 physical connection is frozen in this architecture section.
 
+#### 2.7.8 Option: an RT page at `C000h–DFFFh`
+
+**Status:** recorded option, **not** part of the Mk2 port packages. The
+real-time interrupt's buffers (section 4.12) live in common memory today:
+the PCM ring at `F000h–FBFFh` (12 × 256 bytes, about 192 ms at 16 kHz),
+the handler image at `FC10h` and the state cells. On Mk2 an RT owner may
+instead request one 8 KiB physical page mapped at logical page 6
+(`C000h–DFFFh`) for ring, handler and state: 512 ms at 16 kHz, and
+common memory freed. The program pays 8 KiB of logical space, so the page
+is a request with a size at RT open, never a default. Rules:
+
+1. **Visible wherever the NMI can fire.** The handler maps nothing (the
+   NMI rule, 2.7.6), so the page is mapped at `C000h` in the system DAT,
+   in the owner's working image, and in every image loaded into the
+   working bank while the RT interrupt is held. The nucleus pins entry 6
+   in both hardware banks before the RT clock starts and unpins it only
+   after the clock has stopped. `exec` while it is held either refuses or
+   adds the page to the child's image (a choice for the package that
+   implements the option).
+2. **The system DAT gives up logical page 6** while it is pinned: no
+   caller page, driver window or kernel mapping uses `C000h–DFFFh` on a
+   path that can run during RT ownership. The residency planner treats
+   this as an explicit constraint.
+3. **Ownership is unchanged:** one owner, mapped at RT open, unmapped at
+   RT close and at exit, with the existing automatic release.
+
 ---
 
 ## 3. Boot
