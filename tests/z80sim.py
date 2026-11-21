@@ -63,6 +63,7 @@ class IocCommandPeer:
 
     CMD_LINK_SYNC = 0x0C
     CMD_PING = 0x01
+    CMD_RESET = 0x02
     CMD_RT_CLOCK = 0x50
     RSP_RT_CLOCK = 0xD0
     RT_GAP_DEFAULT_US = 16      # src/rt_clock.h RT_CLOCK_GAP_DEFAULT_US
@@ -176,6 +177,7 @@ class IocCommandPeer:
         # already paused for.  rt_clock_supported False answers the
         # command as an older controller does (RSP_UNKNOWN_COMMAND).
         self.cpu = None
+        self.host_resets = 0    # CMD_RESET requests taken
         self.rt_clock_supported = True
         self.rt_hz = 0
         self.rt_gap_t = 0
@@ -440,10 +442,27 @@ class IocCommandPeer:
         self.requests.append((rtype, seq, status, bytes(data)))
         if self.stall:
             return
+        if rtype == self.CMD_RESET:
+            self._host_reset()
+            return
         self.reply_pending = (self._apply_fault(
             self._handle_request(rtype, seq, data), rtype) +
             self.reply_tail)
         self.reply_countdown = self.reply_delay
+
+    def _host_reset(self):
+        """CMD_RESET (Zephyr-80 Code/MCU/IOController src/handlers.c
+        handler_reset): no reply; the controller asserts the Z80 reset and
+        restarts itself, its RT clock stopped (src/main.c rt_clock_init),
+        then releases the reset.  The CPU board resets at the end of the
+        OUT that released RTS.  Not modelled: the hold time (no T-states
+        pass), the controller's own restart (its lane and filesystem state
+        persist) and the backplane reset of the other cards."""
+        self.host_resets += 1
+        self.reply_pending = None
+        self.rt_hz = 0
+        if self.cpu is not None:
+            self.cpu.board_reset()
 
     def _handle_request(self, rtype, seq, data):
         """Reply to one command, arming the bulk lane for READY replies."""
@@ -3328,6 +3347,7 @@ class Machine:
             if self.serial_link is not None:
                 self.serial_link.control(value, self.tstates)
         elif self.ioc_peer is not None:
+            self.ioc_peer.cpu = self
             if port == 0x32:
                 self.ioc_peer.data_write(value)
             elif port == 0x33:
@@ -3346,6 +3366,30 @@ class Machine:
 
 
 
+
+    # ---- reset ----
+    def board_reset(self):
+        """The Z80 /RESET: PC, I, IM and both IFFs zero, HALT left,
+        pending INT and NMI dropped, the RT clock stopped, and the CPU
+        board's memory decode back to its reset view (Mk2: the mapper's
+        reset, architecture 2.7.5; Mk1: latch 00h, docs/boot.md section
+        2).  The other registers keep their values (undefined after a
+        reset).  Not modelled: R, and the reset of the peripheral cards."""
+        self.pc = 0
+        self.i = 0
+        self.im = 0
+        self.iff1 = False
+        self.iff2 = False
+        self.ei_delay = 0
+        self.halted = False
+        self.int_pending = False
+        self.nmi_pending = False
+        self.rt_hz = 0
+        self.rt_acc = 0
+        if self.mapper is not None:
+            self.mapper.reset()
+        else:
+            self.latch = 0x00
 
     # ---- interrupts ----
     def assert_int(self, vector):

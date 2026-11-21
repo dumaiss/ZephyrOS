@@ -5,7 +5,8 @@ The expected values come from the LS612 DAT architecture (2.7.2-2.7.5):
 128 pages of 8 KiB, 00h-3Fh ROM and 40h-7Fh SRAM, sixteen entries (system
 0-7, working 8-15), `PA = page << 13 | (LA & 1FFFh)`, entry writes at low
 port 00h-0Fh with I/O A15 = 0, control at 800Fh (D0 DAT_BANK, D1
-MAP_ENABLE), pass mode at reset, ROM writes ignored.  `OUT (n),A` drives A
+MAP_ENABLE), pass mode at reset, ROM writes ignored; the IO controller's
+CMD_RESET request drives that reset.  `OUT (n),A` drives A
 on A8-A15, so the guest programs below write entries and control with real
 Z80 instructions, and the model under test decodes the 16-bit port.
 
@@ -164,6 +165,36 @@ class TestReset(unittest.TestCase):
         self.assertEqual(z.mapper.map_enable, 0)
         for la in range(RESERVED_LOW, 0x10000, 0x777):
             self.assertEqual(z.rd(la), ROM_IMAGE[la])
+
+    def test_ioc_reset_request_resets_the_board(self):
+        code = []
+        for i in range(16):
+            code += entry_write(i, 0x40 + i)
+        code += control(0x03) + [0xED, 0x5E, 0xFB] + HALT   # IM 2, EI
+        z = make(code)
+        go(z)
+        z.rt_hz = 8000
+        self.assertEqual((z.mapper.dat_bank, z.mapper.map_enable), (1, 1))
+        peer = z80sim.IocCommandPeer()
+        peer.cpu = z
+        body = bytes([0x03, 0x00, peer.CMD_RESET, 0x01, 0x00])
+        crc = z80sim.ioc_crc16(body)
+        frame = b"\xa5\x5a" + body + bytes([crc >> 8, crc & 0xFF])
+        peer.data_write(frame[0])               # preload, then RTS
+        peer.ctrl_write(0x05)
+        peer.ctrl_write(0x6A)
+        for value in frame[1:] + b"\xff\xff":
+            peer.data_write(value)
+        peer.ctrl_write(0x05)
+        peer.ctrl_write(0x00)                   # RTS released
+        self.assertEqual(peer.host_resets, 1)
+        self.assertIsNone(peer.reply_pending)
+        self.assertEqual(peer.replies, [])
+        self.assertEqual((z.pc, z.im, z.iff1, z.iff2, z.halted),
+                         (0, 0, False, False, False))
+        self.assertEqual(z.rt_hz, 0)
+        self.assertEqual((z.mapper.dat_bank, z.mapper.map_enable), (0, 0))
+        self.assertEqual(z.rd(0x0000), code[0])
 
 
 class TestTranslation(unittest.TestCase):

@@ -34,6 +34,7 @@
 #   make ns-selftest               namespace acceptance image
 #   make ipc-selftest              resident-driver IPC acceptance image
 #   make helloworld-image          SDK demo image (no kernel change)
+#   make mk2boot                   Zephyr-80 Mk2 boot proof image (test-only)
 #   make clean    remove all generated files
 #
 # Builds are parallel by default (KOS_JOBS defaults to nproc); use
@@ -389,7 +390,7 @@ $(BUILD)/konaos.probe.ihx $(BUILD)/konaos.probe.map: \
 	subsystem-selftest process-selftest exe2-selftest \
 	console-serial-selftest \
 	fs-selftest ns-selftest ipc-selftest xmem-selftest helloworld-image \
-	phase-image \
+	phase-image mk2boot \
 	hardware-images \
 	smoke-hardware \
 	smoke-hardware-hwtest \
@@ -1928,6 +1929,24 @@ helloworld-image: all
 		build-helloworld/zephyr80-helloworld.bin
 	$(PYTHON) -m unittest discover -s tests -p 'test_sdk.py' -v
 	@echo "helloworld image: build-helloworld/konaos-helloworld.bin"
+
+# Zephyr-80 Mk2 boot proof image (test-only, no nucleus): pass-mode start,
+# DAT programming, the common page, the ROM-to-RAM copy, the mapped handoff
+# and the IOC reset back to the ROM boot view (tests/test_mk2_boot.py).
+# The image is the whole 512 KiB flash (sim and MAME `-flash`).
+
+MK2BOOT_DIR := build-mk2boot
+
+mk2boot: $(MK2BOOT_DIR)/mk2boot.bin $(SIM_CORE_LIB)
+	@echo "mk2boot image: $(MK2BOOT_DIR)/mk2boot.bin"
+
+$(MK2BOOT_DIR)/mk2boot.bin: tests/target/mk2boot/mk2boot.asm \
+		platform/zephyr80/public/hardware.inc
+	@mkdir -p $(MK2BOOT_DIR)
+	$(SDASZ80) -plosgff -Iplatform/zephyr80/public \
+		-o $(MK2BOOT_DIR)/mk2boot.rel $<
+	$(SDLDZ80) -m -w -i $(MK2BOOT_DIR)/mk2boot.ihx $(MK2BOOT_DIR)/mk2boot.rel
+	makebin -s 524288 $(MK2BOOT_DIR)/mk2boot.ihx $@
 
 # --- physical-hardware serial smoke checks ----------------------------------
 # Requires the board connected at 115200 8N1 on SIO0/B and the matching image
