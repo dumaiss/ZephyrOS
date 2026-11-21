@@ -28,14 +28,18 @@
 #define KOS_PAGE_OWNER_FREE    0x00u
 #define KOS_PAGE_OWNER_NUCLEUS 0x80u
 
+/* The pid kos_pages_alloc takes for a nucleus page (the driver domain). */
+#define KOS_PAGE_PID_NUCLEUS   (KOS_PAGE_OWNER_NUCLEUS - 1u)
+
 extern uint8_t kos_page_owner[KOS_DAT_SRAM_PAGES];
 
 /* Every SRAM page free, then the nucleus's pages reserved: `nucleus` is
  * the build's list of SRAM pages, ended by 00h (a ROM page). */
 void kos_pages_init(const uint8_t *nucleus);
 
-/* `count` pages (1 or more) for `pid`, lowest free first, written to
- * `pages`; all or none.  0, -KOS_EINVAL or -KOS_ENOSPC. */
+/* `count` pages (1 or more) for `pid` (KOS_PAGE_PID_NUCLEUS: the
+ * nucleus), lowest free first, written to `pages`; all or none.  0,
+ * -KOS_EINVAL or -KOS_ENOSPC. */
 int kos_pages_alloc(uint8_t pid, uint8_t count, uint8_t *pages);
 
 /* Release the listed pages `pid` owns (others are left alone). */
@@ -74,6 +78,18 @@ void kos_pages_copy(const uint8_t *src_map, uint16_t src,
 
 /* Zero `length` bytes at `dst` through `dst_map`. */
 void kos_pages_zero(const uint8_t *dst_map, uint16_t dst, uint16_t length);
+
+/* --- system entries (dat_map.asm, cold_call.asm; fixed) ----------------- */
+
+/* Remap `count` system entries from `first` on to `pages`, mirror first
+ * (kos_dat_map's span argument: KOS_DAT_SPAN(first, count)). */
+#define KOS_DAT_SPAN(first, count) \
+	((uint16_t)((uint16_t)(first) | ((uint16_t)(count) << 8)))
+void kos_dat_map(const uint8_t *pages, uint16_t span);
+
+/* Empty the cold-set veneer stack (the syscall dispatcher's entry, where
+ * no cross-set call is live). */
+void kos_cold_reset(void);
 
 /* --- DAT images and the far window (banking.asm, far.asm; common) -------- */
 

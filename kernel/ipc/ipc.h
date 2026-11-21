@@ -69,6 +69,17 @@ extern uint8_t kos_driver_deps[KOS_IPC_DRIVER_MAX_DEPS];
 /* The boot bundle the loader hands a driver's init entry in HL. */
 const struct driver_boot *driver_boot(void);
 
+#if defined(KOS_BOARD_MK2)
+/* The driver domain's pages by domain logical page (entry 7 the common
+ * page): the loader allocates them as segments land. */
+extern uint8_t kos_driver_domain[];
+
+/* Run a driver's boot entry (`boot` 1: masked, the domain's page 0 at
+ * system entry 0 too) or its init entry (HL = `arg`) with the domain
+ * mapped; returns the entry's 8-bit result. */
+uint8_t ipc_driver_run(uint16_t entry, uint16_t arg, uint8_t boot);
+#endif
+
 /* --- in-process (nucleus) endpoints ------------------------------------
  *
  * Architecture 4.10: a namespace provider the nucleus serves itself -

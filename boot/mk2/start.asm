@@ -3,16 +3,17 @@
 ; (architecture 2.7.5, 2.7.6; docs/boot.md section 10).
 ;
 ; The linked image's logical page L is ROM page L (tools/pack_image.py):
-; ROM page 00h is the reset and boot view, 01h-04h the nucleus, 07h the
-; common page.  At reset the mapper is in pass mode: logical 0000h-FFFFh
+; ROM page 00h is the reset and boot view, 01h-04h the nucleus (the fixed
+; region and cold set 0), 05h-06h cold set 1, 07h the common page.  At reset the mapper is in pass mode: logical 0000h-FFFFh
 ; reads ROM 00000h-0FFFFh and nothing is writable, so the bootstrap is
 ; stackless until the common page is in SRAM:
 ;
 ;   1. program all sixteen entries (the boot DAT below) from ROM page 00h;
 ;   2. enable mapping on the system bank: entry 0 is ROM page 00h, so the
 ;      next fetch is the same ROM byte;
-;   3. copy every nucleus page and the common page from ROM to its SRAM
-;      page, one 8 KiB page at a time, through the source copy window
+;   3. copy every nucleus page (the fixed region and the cold sets) and
+;      the common page from ROM to its SRAM page, one 8 KiB page at a
+;      time, through the source copy window
 ;      (entry 5, the ROM page) and the destination window (entry 6, the
 ;      SRAM page);
 ;   4. build the RAM system page-0 image (SRAM KOS_SYSTEM_PAGE0) in the
@@ -21,7 +22,8 @@
 ;   5. jump into the common page, which loads the final system DAT
 ;      (entry 0 the page-0 image, entries 1-4 the nucleus's SRAM pages)
 ;      and the working bank's placeholder, mirror first, sets the stack,
-;      the DAT state and the C runtime, and calls kernel_main.
+;      the DAT state and the C runtime (each cold set's data zeroed with
+;      the set mapped), and calls kernel_main.
 ;
 ; Boot exception (architecture 2.7.6): the pass-mode OUTs come before any
 ; RAM, so their mirror stores go nowhere; step 5 writes every entry again
@@ -37,7 +39,8 @@
 ;
 ;     _CODE (2000h) -> _HOME -> _INITIALIZER -> _GSINIT -> _GSFINAL
 ;                   -> _DATA -> _INITIALIZED          fixed: 2000h-5EFFh
-;     _WINDOW (6000h) -> _WINDOW_DATA                  cold:  6000h-9FFFh
+;     _WINDOW (6000h) -> _WINDOW_DATA                  cold set 0: 6000h-9FFFh
+;     _COLD1 (16000h) -> _COLD1_DATA                   cold set 1: 6000h-9FFFh
 ;     _COMMON (E000h) -> _COMMON_DATA
 ; -----------------------------------------------------------------------------
 
@@ -55,6 +58,8 @@
 	.area _INITIALIZED
 	.area _WINDOW
 	.area _WINDOW_DATA
+	.area _COLD1
+	.area _COLD1_DATA
 	.area _COMMON
 	.area _COMMON_DATA
 
@@ -63,6 +68,8 @@
 	.globl _panic
 	.globl s__DATA, l__DATA
 	.globl s__WINDOW_DATA, l__WINDOW_DATA
+	.globl s__COLD1_DATA, l__COLD1_DATA
+	.globl _kos_cold_reset
 	.globl s__INITIALIZER, l__INITIALIZER
 	.globl s__INITIALIZED
 
@@ -153,18 +160,27 @@ boot_dat:
 	.db	KOS_NUCLEUS_FIRST_PAGE + 1, KOS_NUCLEUS_FIRST_PAGE + 2
 	.db	KOS_NUCLEUS_FIRST_PAGE + 3, 0x00, 0x00, KOS_COMMON_PAGE
 
-; ROM page -> SRAM page, FFh-terminated: the nucleus pages and the common
-; page (its code, initialized data and the vector cells the image holds).
+; ROM page -> SRAM page, FFh-terminated: the nucleus pages (the fixed
+; region and cold set 0), cold set 1 and the common page (its code,
+; initialized data and the vector cells the image holds).
 boot_copies:
 	.db	KOS_NUCLEUS_FIRST_ENTRY + 0, KOS_NUCLEUS_FIRST_PAGE + 0
 	.db	KOS_NUCLEUS_FIRST_ENTRY + 1, KOS_NUCLEUS_FIRST_PAGE + 1
 	.db	KOS_NUCLEUS_FIRST_ENTRY + 2, KOS_NUCLEUS_FIRST_PAGE + 2
 	.db	KOS_NUCLEUS_FIRST_ENTRY + 3, KOS_NUCLEUS_FIRST_PAGE + 3
+	.db	KOS_COLD_FIRST_ROM_PAGE + 2, KOS_COLD_FIRST_PAGE + 2
+	.db	KOS_COLD_FIRST_ROM_PAGE + 3, KOS_COLD_FIRST_PAGE + 3
 	.db	KOS_DAT_ENTRIES - 1, KOS_COMMON_PAGE
 	.db	0xFF
 
 	.ifne	KOS_NUCLEUS_ENTRIES - 4
 	.error	1	; boot_dat and boot_copies list four nucleus pages
+	.endif
+	.ifne	KOS_COLD_SETS - 2
+	.error	1	; boot_copies, the page list and boot_crt0 list two sets
+	.endif
+	.ifne	KOS_COLD_FIRST_PAGE - KOS_NUCLEUS_FIRST_PAGE - 2
+	.error	1	; cold set 0 is nucleus entries 3-4
 	.endif
 
 ; ---- the nucleus's SRAM pages (pages.h kos_pages_init) ---------------------
@@ -174,6 +190,7 @@ _kos_nucleus_pages::
 	.db	KOS_SYSTEM_PAGE0
 	.db	KOS_NUCLEUS_FIRST_PAGE + 0, KOS_NUCLEUS_FIRST_PAGE + 1
 	.db	KOS_NUCLEUS_FIRST_PAGE + 2, KOS_NUCLEUS_FIRST_PAGE + 3
+	.db	KOS_COLD_FIRST_PAGE + 2, KOS_COLD_FIRST_PAGE + 3
 	.db	KOS_COMMON_PAGE
 	.db	0x00
 
@@ -215,6 +232,7 @@ boot_common_entry:
 	ld	sp,#KOS_STACK_INIT_SP
 	call	_early_console_init
 	call	boot_crt0
+	call	_kos_cold_reset
 	call	_kernel_main
 	ld	hl,#boot_str_returned
 	call	_panic
@@ -226,8 +244,10 @@ boot_stop:
 boot_str_returned:
 	.asciz	"kernel_main returned"
 
-; The C runtime: zero _DATA and _WINDOW_DATA, copy _INITIALIZER to
-; _INITIALIZED, run _GSINIT.  Clobbers AF, BC, DE, HL.
+; The C runtime: zero _DATA, cold set 0's _WINDOW_DATA and, with set 1
+; mapped at entries 3-4 for the store, set 1's _COLD1_DATA (the linker
+; truncates its address to the 16 bits the set runs at), copy
+; _INITIALIZER to _INITIALIZED, run _GSINIT.  Clobbers AF, BC, DE, HL.
 boot_crt0:
 	ld	hl,#s__DATA
 	ld	bc,#l__DATA
@@ -235,6 +255,13 @@ boot_crt0:
 	ld	hl,#s__WINDOW_DATA
 	ld	bc,#l__WINDOW_DATA
 	call	boot_zero
+	FINAL_ENTRY KOS_COLD_FIRST_ENTRY, KOS_COLD_FIRST_PAGE+2
+	FINAL_ENTRY KOS_COLD_FIRST_ENTRY+1, KOS_COLD_FIRST_PAGE+3
+	ld	hl,#s__COLD1_DATA
+	ld	bc,#l__COLD1_DATA
+	call	boot_zero
+	FINAL_ENTRY KOS_COLD_FIRST_ENTRY, KOS_COLD_FIRST_PAGE
+	FINAL_ENTRY KOS_COLD_FIRST_ENTRY+1, KOS_COLD_FIRST_PAGE+1
 	ld	bc,#l__INITIALIZER
 	ld	a,b
 	or	a,c

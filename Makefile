@@ -2089,9 +2089,10 @@ $(MK2PROC_DIR)/mk2proc.bin: $(MK2PROC_RELS)
 
 # Zephyr-80 Mk2 production image (BOARD=mk2): the whole nucleus built for
 # Mk2 and laid out in the pages the system DAT maps (architecture 2.7.6,
-# config/residency-mk2.json): the fixed objects at 2000h-5EFFh (system
-# entries 1-2), the cold objects at 6000h-9FFFh (entries 3-4), the copy
-# windows A000h-DFFFh empty, common at E000h.  The board's source list
+# config/residency-mk2.json): the fixed objects at 2000h-5CFFh (system
+# entries 1-2), each cold set at 6000h-9FFFh (entries 3-4; set n >= 1
+# linked at n * 10000h + 6000h), the copy windows A000h-DFFFh empty,
+# common at E000h.  The board's source list
 # below is the Mk2 nucleus: the Mk1-only sources (the latch gates, the
 # mode-00 ROM access, the Mk1 copy and upcall primitives, the bank-6
 # driver crossing and the Mk1 boot) are not in it.  The image carries the
@@ -2115,9 +2116,11 @@ MK2_ASM_SRCS := start_mk2:boot/mk2/start.asm \
 	banking_mk2:kernel/memory/mk2/banking.asm \
 	far_mk2:kernel/memory/mk2/far.asm \
 	page_copy_mk2:kernel/memory/mk2/page_copy.asm \
+	dat_map_mk2:kernel/memory/mk2/dat_map.asm \
+	cold_call_mk2:kernel/memory/mk2/cold_call.asm \
 	process_launch:kernel/process/launch.asm \
 	sdcc_helpers:kernel/runtime/sdcc_helpers.asm \
-	diag_io:kernel/syscall/diag_io.asm
+	diag_io:kernel/syscall/diag_io.asm ipc_asm:kernel/ipc/ipc_asm.asm
 MK2_C_SRCS := main:kernel/main.c syscall:kernel/syscall.c \
 	diag:kernel/syscall/diag.c event:kernel/event/event.c \
 	event_syscall:kernel/event/event_syscall.c xmem:kernel/syscall/xmem.c \
@@ -2141,10 +2144,19 @@ MK2_H := $(wildcard abi/kos/*.h kernel/include/*.h kernel/*/*.h \
 	kernel/memory/mk2/*.h formats/include/*.h drivers/include/*.h \
 	platform/zephyr80mk2/*/*.h platform/zephyr80/public/hardware.h)
 MK2_INC := $(MK2TRANS_INC) platform/zephyr80mk2/private/irq.inc
-# The link order: the bootstrap first, irq_code_end last in _CODE.
-MK2_RELS := $(foreach s,$(MK2_ASM_SRCS) $(MK2_C_SRCS) $(MK2_COMMON_C_SRCS),\
+# The compiled objects, and the link's: tools/mapcheck.py mk2 --link
+# copies them to $(MK2_LINK_DIR) with each cold set's areas named and every
+# reference into a set from outside it renamed to its veneer, and writes
+# the veneers (config/residency-mk2.json).  The link order: the bootstrap
+# first, the veneers and irq_code_end last in _CODE.
+MK2_OBJS := $(foreach s,$(MK2_ASM_SRCS) $(MK2_C_SRCS) $(MK2_COMMON_C_SRCS),\
 	$(MK2_DIR)/$(call MK2_STEM,$(s)).rel) $(MK2_DIR)/irq_code_end.rel
-MK2_LINK := -b _CODE=0x2000 -b _WINDOW=0x6000 -b _COMMON=0xE000
+MK2_LINK_DIR := $(MK2_DIR)/link
+MK2_RELS := $(foreach s,$(MK2_ASM_SRCS) $(MK2_C_SRCS) $(MK2_COMMON_C_SRCS),\
+	$(MK2_LINK_DIR)/$(call MK2_STEM,$(s)).rel) \
+	$(MK2_LINK_DIR)/cold_veneers.rel $(MK2_LINK_DIR)/irq_code_end.rel
+MK2_LINK := -b _CODE=0x2000 -b _WINDOW=0x6000 -b _COLD1=0x16000 \
+	-b _COMMON=0xE000
 
 mk2: $(MK2_IMAGE) $(SIM_CORE_LIB)
 	@echo "mk2 image: $(MK2_IMAGE)"
@@ -2173,7 +2185,19 @@ $(MK2_DIR)/boot_program.h: $(BOOT_PROGRAM_H)
 	@mkdir -p $(MK2_DIR)
 	cp $< $@
 
-$(MK2_DIR)/konaos-mk2.ihx $(MK2_DIR)/konaos-mk2.map: $(MK2_RELS)
+$(MK2_LINK_DIR)/cold_veneers.asm: $(MK2_OBJS) $(MK2_RESIDENCY) \
+		tools/mapcheck.py platform/zephyr80mk2/private/memory.inc
+	rm -rf $(MK2_LINK_DIR)
+	$(PYTHON) tools/mapcheck.py mk2 --link $(MK2_RESIDENCY) \
+		platform/zephyr80mk2/private/memory.inc $(MK2_DIR) \
+		$(MK2_LINK_DIR) $@.tmp
+	mv $@.tmp $@
+
+$(MK2_LINK_DIR)/cold_veneers.rel: $(MK2_LINK_DIR)/cold_veneers.asm
+	$(SDASZ80) -plosgff $(MK2TRANS_ASFLAGS) -o $@ $<
+
+$(MK2_DIR)/konaos-mk2.ihx $(MK2_DIR)/konaos-mk2.map &: \
+		$(MK2_LINK_DIR)/cold_veneers.rel
 	$(SDLDZ80) -n -m -w -i $(MK2_DIR)/konaos-mk2.ihx $(MK2_LINK) \
 		$(MK2_RELS)
 

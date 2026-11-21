@@ -93,11 +93,18 @@
 ;                          entry.  0-7: KOS_DAT_SET.  8-15 also marks
 ;                          the working bank as holding no image first:
 ;                          HL; 10 bytes, 44 T.
+;   KOS_DAT_SET_AT         A = page, C = system entry 0-7 (a register): write
+;                          it, mirror first, OUT (C),A with B = A.  F, B,
+;                          HL.  9 bytes, 52 T.
 ;   KOS_DAT_LOAD_WORKING   HL = an 8-byte image: load it into the working
 ;                          bank, which must not be selected.  Interrupts
 ;                          masked.  A, F.  3 bytes, kos_dat_load_working
 ;                          371 T.
 ; -----------------------------------------------------------------------------
+
+; Defined by this board's operations: a source shared with the Mk1 board
+; assembles its Mk1-only parts under .ifndef KOS_MAP_DAT.
+KOS_MAP_DAT = 1
 
 	.globl	kos_dat_restore
 	.globl	kos_dat_load_working
@@ -161,6 +168,18 @@
 	.macro	KOS_DAT_SET n
 	ld	(KOS_DAT_SYSTEM + (n)),a
 	out	(KOS_DAT_SYSTEM_PORT + (n)),a
+	.endm
+
+	.macro	KOS_DAT_SET_AT
+	.ifne	KOS_DAT_SYSTEM_PORT
+	.error	1	; C is the entry and its port
+	.endif
+	ld	hl,#KOS_DAT_SYSTEM
+	ld	b,#0
+	add	hl,bc
+	ld	(hl),a
+	ld	b,a
+	out	(c),a
 	.endm
 
 	.macro	KOS_DAT_REMAP n

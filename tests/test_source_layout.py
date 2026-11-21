@@ -72,6 +72,8 @@ OWNER_FILES = (
     "kernel/memory/mk2/banking.asm",
     "kernel/memory/mk2/far.asm",
     "kernel/memory/mk2/page_copy.asm",
+    "kernel/memory/mk2/dat_map.asm",
+    "kernel/memory/mk2/cold_call.asm",
     "kernel/memory/mk2/pages.c",
     "kernel/memory/mk2/pages.h",
     "kernel/syscall/entry.asm",

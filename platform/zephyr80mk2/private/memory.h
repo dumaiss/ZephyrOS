@@ -27,7 +27,8 @@
 #define KOS_COMMON_PAGE             0x7Fu
 
 /* The ROM image: 512 KiB, 64 pages; ROM pages 00h-07h hold the linked
- * image's logical pages, the recovery store follows (see memory.inc). */
+ * image's logical pages and cold set 1, the recovery store follows (see
+ * memory.inc). */
 #define KOS_ROM_IMAGE_SIZE          0x80000u
 #define KOS_ROM_IMAGE_PAGES         0x08u
 #define KOS_ROMFS_FIRST_PAGE        0x08u
@@ -35,6 +36,28 @@
 #define KOS_ROMFS_WINDOW_SIZE       0x2000u
 #define KOS_ROMFS_CAPACITY          0x48000u
 #define KOS_ROMFS_STAGING_SIZE      128u
+
+/* The cold sets: page pairs linked at 6000h-9FFFh and mapped at system
+ * entries KOS_COLD_FIRST_ENTRY-+1; set n is ROM pages
+ * KOS_COLD_FIRST_ROM_PAGE + 2n, + 2n + 1, copied at boot to SRAM
+ * KOS_COLD_FIRST_PAGE + 2n, + 2n + 1 (see memory.inc). */
+#define KOS_COLD_SETS               2u
+#define KOS_COLD_FIRST_ENTRY        3u
+#define KOS_COLD_FIRST_ROM_PAGE     0x03u
+#define KOS_COLD_FIRST_PAGE         0x43u
+
+/* The driver domain: the bank-6 layout on up to KOS_DRIVER_DOMAIN_PAGES
+ * allocated pages, its pages 3-6 mapped at system entries
+ * KOS_DRIVER_DOMAIN_FIRST_ENTRY onwards for a driver's code (see
+ * memory.inc). */
+#define KOS_DRIVER_DOMAIN_PAGES     7u
+#define KOS_DRIVER_DOMAIN_FIRST_ENTRY 3u
+#define KOS_DRIVER_DOMAIN_ENTRIES   4u
+
+/* The driver stack: every driver call runs on it, below the ISR stack. */
+#define KOS_DRIVER_STACK_BASE       0x5D00u
+#define KOS_DRIVER_STACK_TOP        0x5F00u
+#define KOS_DRIVER_STACK_SIZE       0x0200u
 
 /* The system bank's ISR stack: the top of logical page 2. */
 #define KOS_IRQ_ISR_STACK_BASE      0x5F00u

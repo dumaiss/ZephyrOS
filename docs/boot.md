@@ -266,8 +266,10 @@ production store and boot setting.
 ROM page 00h        the reset and boot view: DI; JP at 0000h, the
                     0030h syscall vector, the 0066h NMI entry, the
                     bootstrap from 0100h
-ROM pages 01h-04h   the nucleus: logical 2000h-9FFFh as linked
-ROM pages 05h-06h   FFh (the copy windows hold no linked byte)
+ROM pages 01h-04h   the nucleus: logical 2000h-9FFFh as linked (the
+                    fixed region and cold set 0)
+ROM pages 05h-06h   cold set 1: logical 6000h-9FFFh, linked at
+                    16000h-19FFFh
 ROM page 07h        the common page: E000h-FFFFh as linked
 ROM pages 08h-2Bh   the recovery store (the Mk1 build's recovery.romfs),
                     logical byte L at page 08h + L / 2000h
@@ -281,36 +283,41 @@ ROM pages 08h-2Bh   the recovery store (the Mk1 build's recovery.romfs),
 |---|---|---|---|
 | 1 | ROM 00h | pass | all 16 entries: system 00h-04h (identity ROM), 01h / 41h in the copy windows, 7Fh common; working: the placeholder below |
 | 2 | ROM 00h | pass to system | `MAP_ENABLE` on, `DAT_BANK` 0 |
-| 3 | ROM 00h | system | ROM 01h-04h to SRAM 41h-44h and ROM 07h to SRAM 7Fh, 8 KiB each, entry 5 the source and entry 6 the destination |
+| 3 | ROM 00h | system | ROM 01h-06h to SRAM 41h-46h and ROM 07h to SRAM 7Fh, 8 KiB each, entry 5 the source and entry 6 the destination |
 | 4 | ROM 00h | system | SRAM 40h, the system page-0 image: 0000h-00FFh zero, the 0030h and 0066h stubs |
-| 5 | common | system | the final DAT, mirror first; the cached-image identity none; `SP = 0000h`; the early console; the C runtime (`_DATA`, `_WINDOW_DATA` zeroed, initializers, static init); `kernel_main` |
+| 5 | common | system | the final DAT, mirror first; the cached-image identity none; `SP = 0000h`; the early console; the C runtime (`_DATA`, `_WINDOW_DATA` and, with set 1 mapped at entries 3-4 for the store, `_COLD1_DATA` zeroed, initializers, static init); the veneer stack emptied; `kernel_main` |
 
 The final DAT:
 
 ```text
-system   40h 41h 42h 43h 44h 00h 00h 7Fh    entries 5-6: the copy windows
+system   40h 41h 42h 43h 44h 00h 00h 7Fh    entries 3-4: cold set 0;
+                                            5-6: the copy windows
 working  40h 41h 42h 43h 44h 00h 00h 7Fh    a placeholder; exec loads images
 ```
 
 ### 10.3 The boot sequence
 
-`kernel_main` checks the system DAT, reserves the nucleus's SRAM pages
-(40h-44h, 7Fh) in the page allocator, clears the event table, sets the
-real-time vector, starts the IRQ executive and prints the banner with
-`platform: Zephyr-80 Mk2`.  The ROMFS reader validates the store through
-the source copy window, and the driver loader reads `drivers.man` and
-refuses the first image, because the Mk2 system DAT maps no driver
-domain:
+`kernel_main` (fixed region) checks the system DAT, reserves the
+nucleus's SRAM pages (40h-46h, 7Fh) in the page allocator, clears the
+event table, sets the real-time vector, starts the IRQ executive and
+prints the banner with `platform: Zephyr-80 Mk2`; it reaches the
+initializers in the cold sets through their veneers.  The ROMFS reader
+validates the store through the source copy window, and the driver
+loader reads `drivers.man` and loads each image into the driver domain's
+pages (architecture 2.7.6), running its boot and init entries with the
+domain mapped.  The console driver binds and the launcher starts
+`/system/shell.exe`, whose image the EXE loader copies from the store's
+ROM pages into the shell's pages.  The early console shows:
 
 ```text
 KonaOS 0.0
 platform: Zephyr-80 Mk2
 kernel entry: OK
 serial: OK
-driver loader: sio.mod: copy
-drivers: unavailable 0x07
-console: driver failed
 ```
 
-The boot ends there in the controlled halt.  `tests/test_mk2_nucleus.py`
-replays it on the simulator's Mk2 board.
+and the console (the V9958) `console: driver OK`, the shell's banner and
+its prompt.  `tests/test_mk2_nucleus.py` replays the boot on the
+simulator's Mk2 board and `tests/test_mk2_shell.py` drives the shell,
+programs, and `reboot`, which resets the board through the IO controller
+back to step 1.

@@ -32,7 +32,8 @@ KOS_COMMON_PAGE         = 0x7F
 ; The ROM image: 512 KiB, 64 pages.  ROM page L (00h-07h) holds the
 ; linked image's logical page L: 00h the reset and boot view (the
 ; bootstrap and the low entry stubs), 01h-04h the nucleus, 07h the common
-; page.  The recovery store follows, read through the copy windows.
+; page; 05h-06h cold set 1.  The recovery store follows, read through
+; the copy windows.
 KOS_ROM_IMAGE_SIZE      = 0x80000
 KOS_ROM_IMAGE_PAGES     = 0x08
 KOS_ROMFS_FIRST_PAGE    = 0x08
@@ -40,6 +41,31 @@ KOS_ROMFS_PAGE_COUNT    = 36
 KOS_ROMFS_WINDOW_SIZE   = 0x2000
 KOS_ROMFS_CAPACITY      = 0x48000
 KOS_ROMFS_STAGING_SIZE  = 128
+
+; The cold sets (architecture 2.7.6): page pairs linked at 6000h-9FFFh and
+; mapped at system entries KOS_COLD_FIRST_ENTRY-+1 for the code that runs
+; in them.  Set n is ROM pages KOS_COLD_FIRST_ROM_PAGE + 2n, + 2n + 1,
+; copied at boot to SRAM KOS_COLD_FIRST_PAGE + 2n, + 2n + 1; set 0 is the
+; one the boot DAT maps (nucleus entries 3-4).
+KOS_COLD_SETS           = 2
+KOS_COLD_FIRST_ENTRY    = 3
+KOS_COLD_FIRST_ROM_PAGE = 0x03
+KOS_COLD_FIRST_PAGE     = 0x43
+
+; The driver domain: the resident drivers' memory, the bank-6 layout of
+; architecture 5.2 on up to KOS_DRIVER_DOMAIN_PAGES allocated pages
+; (domain logical page n holds the linked addresses n * 2000h).  A driver
+; call, handler or init maps domain pages 3-6 at system entries
+; KOS_DRIVER_DOMAIN_FIRST_ENTRY onwards (the hot tier 6000h-DFFFh as
+; linked), a bulk-map span or a boot entry its page 0 at entry 0.
+KOS_DRIVER_DOMAIN_PAGES = 7
+KOS_DRIVER_DOMAIN_FIRST_ENTRY = 3
+KOS_DRIVER_DOMAIN_ENTRIES = 4
+
+; The driver stack: every driver call runs on it, below the ISR stack.
+KOS_DRIVER_STACK_BASE   = 0x5D00
+KOS_DRIVER_STACK_TOP    = 0x5F00
+KOS_DRIVER_STACK_SIZE   = 0x0200
 
 ; The system bank's ISR stack: the top of logical page 2, a nucleus page.
 KOS_IRQ_ISR_STACK_BASE  = 0x5F00

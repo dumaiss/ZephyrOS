@@ -976,14 +976,18 @@ def pack(ihx_text, map_text, build_dir, suffix="", romfs=None,
 #
 #   ROM page L, L = 00h-07h   the linked image's logical page L: 00h the
 #                             reset and boot view, 01h-04h the nucleus
-#                             pages, 07h the common page (the bootstrap
-#                             copies 01h-04h and 07h to SRAM)
+#                             pages (the fixed region and cold set 0),
+#                             07h the common page
+#   ROM pages 05h-06h         cold set 1, linked at 16000h-19FFFh (logical
+#                             6000h-9FFFh); the bootstrap copies 01h-07h
+#                             to SRAM
 #   ROM page KOS_ROMFS_FIRST_PAGE on   the recovery store, logical byte L
 #                             at page first + L / 2000h, offset L % 2000h
 #
-# The linked image may hold bytes only in the boot view's page 0, the
-# nucleus pages and the common page: never in logical pages 5-6, the copy
-# windows.  Every other byte is FFh.
+# The linked image's first 64 KiB may hold bytes only in the boot view's
+# page 0, the nucleus pages and the common page: never in logical pages
+# 5-6, the copy windows, whose ROM pages hold cold set 1.  Every other
+# byte is FFh.
 
 MK2_PAGE = 0x2000
 
@@ -999,7 +1003,9 @@ def mk2_layout(memory_inc):
                  "KOS_ROMFS_FIRST_PAGE", "KOS_ROMFS_PAGE_COUNT",
                  "KOS_ROMFS_WINDOW_SIZE", "KOS_ROMFS_CAPACITY",
                  "KOS_NUCLEUS_FIRST_ENTRY", "KOS_NUCLEUS_ENTRIES",
-                 "KOS_DAT_COPY_SRC_ENTRY", "KOS_DAT_COPY_DST_ENTRY"):
+                 "KOS_DAT_COPY_SRC_ENTRY", "KOS_DAT_COPY_DST_ENTRY",
+                 "KOS_COLD_SETS", "KOS_COLD_FIRST_ENTRY",
+                 "KOS_COLD_FIRST_ROM_PAGE"):
         if name not in values:
             raise LayoutError("%s defines no %s" % (memory_inc, name))
     return values
@@ -1010,19 +1016,45 @@ def pack_mk2(ihx_text, romfs, memory_inc):
     lay = mk2_layout(memory_inc)
     if lay["KOS_ROMFS_WINDOW_SIZE"] != MK2_PAGE:
         raise LayoutError("the Mk2 store window is one 8 KiB page")
-    mem = parse_ihx(ihx_text)
+    sets = lay["KOS_COLD_SETS"]
+    mem = parse_ihx(ihx_text, top=sets * 0x10000)
     loaded = {0, lay["KOS_DAT_COPY_DST_ENTRY"] + 1}
     loaded |= set(range(lay["KOS_NUCLEUS_FIRST_ENTRY"],
                         lay["KOS_NUCLEUS_FIRST_ENTRY"] +
                         lay["KOS_NUCLEUS_ENTRIES"]))
-    for addr in sorted(mem):
-        if addr // MK2_PAGE not in loaded:
-            raise LayoutError("linked byte at %04Xh in logical page %d, "
-                              "which the image does not load"
-                              % (addr, addr // MK2_PAGE))
+    # Cold set n >= 1 links at n * 10000h + its logical address in the
+    # cold entries; its ROM pages follow set 0's.
+    cold = lay["KOS_COLD_FIRST_ENTRY"]
     image = bytearray(b"\xFF" * lay["KOS_ROM_IMAGE_SIZE"])
-    for addr, value in mem.items():
-        image[addr] = value
+    rom_pages = set()
+    for addr in sorted(mem):
+        index, logical = addr >> 16, addr & 0xFFFF
+        page = logical // MK2_PAGE
+        if index == 0:
+            if page not in loaded:
+                raise LayoutError("linked byte at %04Xh in logical page %d, "
+                                  "which the image does not load"
+                                  % (addr, page))
+            rom = addr
+        else:
+            if page not in (cold, cold + 1):
+                raise LayoutError("cold set %d byte at %05Xh outside the "
+                                  "cold entries" % (index, addr))
+            rom = (lay["KOS_COLD_FIRST_ROM_PAGE"] + 2 * index +
+                   page - cold) * MK2_PAGE + (logical % MK2_PAGE)
+        rom_pages.add(rom // MK2_PAGE)
+        image[rom] = mem[addr]
+    if max(rom_pages) >= lay["KOS_ROM_IMAGE_PAGES"]:
+        raise LayoutError("the linked image reaches ROM page %02Xh, past "
+                          "its %d pages" % (max(rom_pages),
+                                            lay["KOS_ROM_IMAGE_PAGES"]))
+    for index in range(1, sets):
+        first = lay["KOS_COLD_FIRST_ROM_PAGE"] + 2 * index
+        if first < lay["KOS_DAT_COPY_SRC_ENTRY"] or \
+                first + 1 > lay["KOS_DAT_COPY_DST_ENTRY"]:
+            raise LayoutError("cold set %d's ROM pages %02Xh-%02Xh are "
+                              "not the copy windows' free pages"
+                              % (index, first, first + 1))
     capacity = lay["KOS_ROMFS_CAPACITY"]
     if capacity != lay["KOS_ROMFS_PAGE_COUNT"] * MK2_PAGE:
         raise LayoutError("store capacity is not its pages")

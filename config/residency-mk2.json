@@ -1,19 +1,20 @@
 {
-  "format": "kos-residency-mk2/1",
-  "note": "Zephyr-80 Mk2 nucleus residency (architecture 2.7.6). The system DAT is fixed after the boot except the entries `system_dat` marks remapped; every nucleus object links into the fixed region (system entries 1-2) or the cold region (entries 3-4), and nothing links into the copy windows. The cold objects are Mk1 cold-tier objects (config/residency.json), so a code path that must stay mapped while another page set occupies entries 3-4 is fixed on both boards; the fixed region also holds cold-tier objects the cold region has no room for. tools/mapcheck.py mk2 enforces the regions, the lists and the common-page budget.",
+  "format": "kos-residency-mk2/2",
+  "note": "Zephyr-80 Mk2 nucleus residency (architecture 2.7.6). Every nucleus object links into the fixed region (system entries 1-2) or into one cold set; a cold set is a 16 KiB page pair linked at 6000h-9FFFh and mapped at entries 3-4 for the code that runs in it. tools/mapcheck.py mk2 --link rewrites every reference that enters a cold set from outside it (the fixed region, common or another set) to a fixed-region veneer that maps the set for the call (kernel/memory/mk2/cold_call.asm), places set n >= 1 at n * 10000h + 6000h in the link and refuses a data reference into a set from outside it. The objects under driver_api are the ones a resident driver's code reaches (the bootstrap table, the IRQ trampoline and their callees); they may not reference a cold set, because the driver domain occupies entries 3-6 while a driver runs. tools/mapcheck.py mk2 enforces the regions, the sets, the lists and the common-page budget.",
   "system_dat": [
-    {"entry": 0, "logical": "0x0000", "holds": "the system page-0 image (SRAM 40h): the low entry stubs", "remapped": "by the syscall gate to the caller's page 0 for each crossing, and per exec depth by the launch gate"},
+    {"entry": 0, "logical": "0x0000", "holds": "the system page-0 image (SRAM 40h): the low entry stubs", "remapped": "by the syscall gate to the caller's page 0 for each crossing, per exec depth by the launch gate, and to the driver domain's page 0 for a bulk-map span or a driver boot entry"},
     {"entry": 1, "logical": "0x2000", "holds": "nucleus fixed region (SRAM 41h)", "remapped": "never"},
-    {"entry": 2, "logical": "0x4000", "holds": "nucleus fixed region (SRAM 42h), the ISR stack at 5F00h", "remapped": "never"},
-    {"entry": 3, "logical": "0x6000", "holds": "nucleus cold region (SRAM 43h)", "remapped": "never"},
-    {"entry": 4, "logical": "0x8000", "holds": "nucleus cold region (SRAM 44h)", "remapped": "never"},
-    {"entry": 5, "logical": "0xA000", "holds": "the source copy window", "remapped": "by kernel/memory/mk2/page_copy.asm per chunk (a caller's, an object's or a ROM page)"},
-    {"entry": 6, "logical": "0xC000", "holds": "the destination copy window", "remapped": "by kernel/memory/mk2/page_copy.asm per chunk"},
+    {"entry": 2, "logical": "0x4000", "holds": "nucleus fixed region (SRAM 42h), the driver stack at 5D00h, the ISR stack at 5F00h", "remapped": "never"},
+    {"entry": 3, "logical": "0x6000", "holds": "a cold set's first page (set 0: SRAM 43h, set 1: 45h)", "remapped": "by a cold-set veneer per call, and to the driver domain for a driver call or handler"},
+    {"entry": 4, "logical": "0x8000", "holds": "a cold set's second page (set 0: SRAM 44h, set 1: 46h)", "remapped": "with entry 3"},
+    {"entry": 5, "logical": "0xA000", "holds": "the source copy window", "remapped": "by kernel/memory/mk2/page_copy.asm per chunk (a caller's, an object's, a driver's or a ROM page), and to the driver domain for a driver call or handler"},
+    {"entry": 6, "logical": "0xC000", "holds": "the destination copy window", "remapped": "by kernel/memory/mk2/page_copy.asm per chunk, and to the driver domain for a driver call or handler"},
     {"entry": 7, "logical": "0xE000", "holds": "the common page (SRAM 7Fh), also working entry 15", "remapped": "never"}
   ],
   "regions": {
     "page0": ["0x0000", "0x2000"],
-    "fixed": ["0x2000", "0x5F00"],
+    "fixed": ["0x2000", "0x5D00"],
+    "driver_stack": ["0x5D00", "0x5F00"],
     "isr_stack": ["0x5F00", "0x6000"],
     "cold": ["0x6000", "0xA000"],
     "copy_windows": ["0xA000", "0xE000"],
@@ -22,14 +23,19 @@
   "fixed": [
     "start_mk2", "page_zero", "syscall_entry", "irq_entry", "irq_vectors",
     "platform_irq", "event_common", "banking_mk2", "far_mk2",
-    "page_copy_mk2", "process_launch", "sdcc_helpers", "irq_code_end",
-    "early_console", "panic", "event", "irq", "irq_sources", "romfs",
-    "name", "vfs_workspace", "ipc", "pages_mk2",
-    "vfs_path", "vfs_router", "vfs_system", "object"
+    "page_copy_mk2", "dat_map_mk2", "cold_call_mk2", "process_launch",
+    "sdcc_helpers", "irq_code_end", "early_console", "panic", "event",
+    "irq", "irq_sources", "romfs", "name", "vfs_workspace", "ipc",
+    "ipc_asm", "pages_mk2", "syscall", "process", "main"
   ],
-  "cold": [
-    "vfs_handles", "vfs_dev", "vfs_fs", "diag", "diag_io", "xmem", "rt",
-    "main", "process", "process_exec", "syscall", "event_syscall",
-    "driver_loader"
+  "cold_sets": [
+    ["object", "vfs_router", "vfs_dev", "vfs_fs", "vfs_handles",
+     "vfs_system", "vfs_path", "event_syscall", "process_exec"],
+    ["diag", "diag_io", "xmem", "rt", "driver_loader"]
+  ],
+  "driver_api": [
+    "ipc", "ipc_asm", "event", "event_common", "irq", "irq_entry",
+    "pages_mk2", "page_copy_mk2", "dat_map_mk2", "early_console",
+    "banking_mk2", "sdcc_helpers", "irq_code_end"
   ]
 }

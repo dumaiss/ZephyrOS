@@ -34,6 +34,10 @@
 #define IOC_CMD_PING          0x01u
 #define IOC_RSP_PING          0x81u
 
+/* RESET: the controller resets the Z80 board (it holds the reset, stops
+ * the RT clock and releases it); no reply follows. */
+#define IOC_CMD_RESET         0x02u
+
 /* PING request/reply DATA layout. */
 #define IOC_PING_ECHO_BYTES   16u /* echoed request bytes             */
 #define IOC_PING_DATA_ECHO    0u

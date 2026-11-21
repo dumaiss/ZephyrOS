@@ -32,10 +32,11 @@ class LayoutError(Exception):
     """A linked image violates the KonaOS memory-layout contract."""
 
 
-def parse_ihx(text, multi=False):
+def parse_ihx(text, multi=False, top=MEM_TOP):
     """Parse Intel HEX text into a dict of address -> byte.
 
-    Raises LayoutError for records outside 0000h-FFFFh, bad checksums, and
+    Raises LayoutError for records at or above `top` (0000h-FFFFh unless a
+    caller links areas above 64 KiB on purpose), bad checksums, and
     conflicting writes to the same address (bytes the packer would
     otherwise silently discard or place ambiguously).
 
@@ -69,10 +70,10 @@ def parse_ihx(text, multi=False):
         if rectype == 0x00:
             for i, byte in enumerate(data):
                 addr = upper + offset + i
-                if addr >= MEM_TOP:
+                if addr >= top:
                     raise LayoutError(
-                        "IHX line %d: address %04X outside the 16-bit space"
-                        % (lineno, addr)
+                        "IHX line %d: address %04X outside the %X-byte space"
+                        % (lineno, addr, top)
                     )
                 if multi:
                     mem.setdefault(addr, []).append(byte)

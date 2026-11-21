@@ -11,6 +11,11 @@
 ; itself.  All validation, tables, frames and descriptors live in the
 ; nucleus C object (kernel/ipc/ipc.c); this file must not grow policy.
 ;
+; Assembled for Mk2 (kernel/memory/mk2/map_ops.inc defines KOS_MAP_DAT)
+; only the driver-stack calls and the stack remain: the Mk2
+; driver domain is mapped through kos_dat_map (kernel/ipc/ipc.c), and
+; descriptor copies run through the page copy.
+;
 ; Calling conventions are SDCC sdcccall(1), the kernel's own:
 ;   16-bit return in DE, 8-bit return in A, first 16-bit argument in HL,
 ;   second 16-bit argument in DE, first 8-bit argument in A.
@@ -23,21 +28,23 @@
 	.module ipc_asm
 	.include "hardware.inc"
 	.include "memory.inc"
-	.include "kernel/memory/map_ops.inc"
+	.include "map_ops.inc"
 	.include "kernel/runtime/fastcopy.inc"
 
+	.globl _ipc_invoke, _ipc_invoke_here
+	.globl kos_driver_stack, kos_driver_stack_top
+	.globl ipc_asm_begin, ipc_asm_end
+	.ifndef KOS_MAP_DAT
 	.globl _ipc_latch
 	.globl _ipc_gate_latch
 	.globl _ipc_domain_enter, _ipc_domain_set, _ipc_domain_exit
 	.globl _ipc_copy_req, _ipc_copy_run
-	.globl _ipc_invoke, _ipc_invoke_here
 	.globl _ipc_saved_latch
 	.globl _ipc_bulk_map, _ipc_bulk_unmap
 	.globl _ipc_bulk_open, _ipc_bulk_faults
 	.globl kos_gate_saved_latch
-	.globl kos_driver_stack, kos_driver_stack_top
-	.globl ipc_asm_begin, ipc_asm_end
 	.globl ipc_domain_switch_end
+	.endif
 
 ; Bank 6, the resident driver domain (architecture 2.3), and the busy
 ; answer of a nested span (abi/kos/errno.h KOS_EBUSY).
@@ -48,6 +55,7 @@ IPC_ASM_EBUSY       = 4
 
 ipc_asm_begin::
 
+	.ifndef KOS_MAP_DAT
 ; ---------------------------------------------------------------------------
 ; uint8_t ipc_latch(void);            read the banking latch (A)
 ; ---------------------------------------------------------------------------
@@ -190,6 +198,7 @@ _ipc_copy_run::
 	KOS_FASTCOPY
 	ld	de,(_ipc_len)
 	ret
+	.endif
 
 ; ---------------------------------------------------------------------------
 ; int16_t ipc_invoke(uint16_t entry, struct kos_ipc_frame *frame);
@@ -250,6 +259,7 @@ ipc_asm_end::
 ; disappears while a domain is open.
 ; ---------------------------------------------------------------------------
 	.area _DATA
+	.ifndef KOS_MAP_DAT
 _ipc_saved_latch::
 	.ds	1
 ; The bulk-map span: 0 when closed, 80h | the replaced bank field when
@@ -259,12 +269,14 @@ _ipc_bulk_open::
 	.ds	1
 _ipc_bulk_faults::
 	.ds	2
+	.endif
 _ipc_entry::
 	.ds	2
 _ipc_saved_sp::
 	.ds	2
 _ipc_result::
 	.ds	2
+	.ifndef KOS_MAP_DAT
 _ipc_src::
 	.ds	2
 _ipc_dst::
@@ -273,6 +285,7 @@ _ipc_len::
 	.ds	2
 _ipc_copy_req::
 	.ds	6
+	.endif
 
 ; ---------------------------------------------------------------------------
 ; The driver-domain stack (architecture 4.9): 512 bytes in the fixed

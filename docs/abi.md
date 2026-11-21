@@ -211,6 +211,13 @@ bring-up therefore programs its device fully from any state rather than
 from power-on defaults, which is what makes the reboot indistinguishable
 from a cold start (`docs/devices.md` section 15).
 
+On the Mk2 board (architecture 2.7.5) `REBOOT` is a reset: the IOC
+driver sends the IO controller its reset command, the controller holds
+the Z80 in reset, stops the real-time clock and releases it into the
+pass-mode ROM view, and the bootstrap runs from the first instruction.
+The call returns only when no reset came: `KOS_ENODEV` in a build without
+the IOC driver, `KOS_EIO` when the controller did not take the command.
+
 The SDK wrapper is `void reboot(void)`; it does not return. The monitor's
 `B` command and the shell's `reboot` built-in call it.
 
@@ -512,7 +519,8 @@ nothing about them is visible.
   a child starts with handle 0 and its parent's window is unchanged when
   it resumes.
 - `SEG_INFO`, `SEG_MAP`: `-KOS_ENOSYS` (the Mk2 loader places no
-  segments).
+  segments), and `EXEC` refuses a container with far-code or data
+  segments (`KOS_EINVAL`).
 - Handles are owner-tagged and generation-counted; a child inherits no
   object, and exit releases every object and page the process owns.
 

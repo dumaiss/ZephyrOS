@@ -21,6 +21,8 @@
 #include "kernel/syscall/diag.h"
 #include "kernel/syscall/xmem.h"
 #include "kernel/memory/mk2/pages.h"
+#include "kernel/vfs/vfs.h"
+#include "romfs.h"
 
 extern const struct process_program mk2proc_program;
 extern const uint8_t mk2proc_nucleus[];
@@ -73,6 +75,70 @@ uint8_t kos_syscall_buffer_ok(uint16_t addr, uint16_t len)
 void vfs_process_exit(uint8_t pid)
 {
 	(void)pid;
+}
+
+/* The EXE container loader's VFS and store calls (kernel/process/exec.c):
+ * the image loads its one program with process_prepare_program, so the
+ * container path finds no file. */
+uint8_t kos_user_copy_staging[KOS_SYSCALL_STAGE_SIZE];
+
+uint8_t vfs_owner_current(void)
+{
+	return process_current_pid();
+}
+
+int vfs_ns_bind(uint8_t pid, const char *norm, uint16_t flags,
+		uint8_t *type)
+{
+	(void)pid;
+	(void)norm;
+	(void)flags;
+	(void)type;
+	return -KOS_ENOENT;
+}
+
+int vfs_ns_unbind(uint8_t pid, uint8_t handle)
+{
+	(void)pid;
+	(void)handle;
+	return -KOS_EINVAL;
+}
+
+struct vfs_handle_entry *vfs_handle_find(uint8_t pid, uint8_t number)
+{
+	(void)pid;
+	(void)number;
+	return (struct vfs_handle_entry *)0;
+}
+
+int16_t vfs_ns_file_call(uint8_t handle, uint8_t object,
+			 struct kos_ipc_frame *frame, uint16_t length,
+			 uint8_t dir)
+{
+	(void)handle;
+	(void)object;
+	(void)frame;
+	(void)length;
+	(void)dir;
+	return -KOS_EINVAL;
+}
+
+int vfs_process_start(uint8_t pid, uint8_t parent_pid)
+{
+	(void)pid;
+	(void)parent_pid;
+	return 0;
+}
+
+int romfs_read_pages(const romfs_file_t *file, uint32_t offset,
+		     const uint8_t *dst_map, uint16_t dst, uint16_t length)
+{
+	(void)file;
+	(void)offset;
+	(void)dst_map;
+	(void)dst;
+	(void)length;
+	return -KOS_EINVAL;
 }
 
 void kos_rt_release_process(uint8_t pid)

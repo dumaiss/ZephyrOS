@@ -40,6 +40,10 @@
 #include "kos/ipc.h"
 #include "kos/seg.h"
 #include "process.h"
+#if defined(KOS_BOARD_MK2)
+#include "kos/protocol.h"
+#include "ioc_protocol.h"
+#endif
 
 #include "kernel/event/event.h"
 #include "kernel/ipc/ipc.h"
@@ -280,9 +284,27 @@ static void syscall_getinfo(uint16_t block)
 static void syscall_reboot(void)
 {
 #if defined(KOS_BOARD_MK2)
-	/* The Mk2 board reboots through the IOC reset (architecture 2.7.5),
-	 * which the nucleus does not drive: the call is refused. */
-	syscall_error(KOS_ENOSYS);
+	/* The Mk2 board reboots through the IOC (architecture 2.7.5): the
+	 * IOC driver sends RESET, the controller holds the Z80 in reset,
+	 * stops the RT clock and releases it into the pass-mode ROM view
+	 * (the reset also stops the CTC through the backplane).  The call
+	 * returns only when no reset came: a build without the IOC driver
+	 * (KOS_ENODEV) or a controller that did not take the command
+	 * (KOS_EIO). */
+	struct kos_ipc_frame frame;
+	uint8_t ioc = vfs_ns_publication_endpoint("/ioc");
+
+	if (ioc == 0u) {
+		syscall_error(KOS_ENODEV);
+		return;
+	}
+	frame.op = KIOC_OP_COMMAND;
+	frame.flags = 0u;
+	frame.desc = KOS_IPC_DESC_NONE;
+	frame.arg0 = IOC_CMD_RESET;
+	frame.arg1 = 0u;
+	(void)ipc_nucleus_call(ioc, &frame);
+	syscall_error(KOS_EIO);
 #else
 	/* The reset path runs the ROM mode, which serves no NMI: a program
 	 * holding the real-time interrupt must release it first. */
@@ -379,6 +401,13 @@ static void syscall_exec(uint16_t block)
 
 void kernel_syscall_dispatch(void)
 {
+#if defined(KOS_BOARD_MK2)
+	/* The dispatcher is fixed code and the outermost nucleus frame of
+	 * the call: each body is reached through its cold set's veneer
+	 * (kernel/memory/mk2/cold_call.asm), and a body that left without
+	 * returning (an event return, an exit) left its frame behind. */
+	kos_cold_reset();
+#endif
 	/* Default: an unassigned number returns KOS_ENOSYS. */
 	syscall_error(KOS_ENOSYS);
 

@@ -34,7 +34,7 @@ int kos_pages_alloc(uint8_t pid, uint8_t count, uint8_t *pages)
 	uint8_t owner = (uint8_t)(pid + 1u);
 	uint8_t i;
 
-	if (count == 0u || owner >= KOS_PAGE_OWNER_NUCLEUS) {
+	if (count == 0u || owner > KOS_PAGE_OWNER_NUCLEUS) {
 		return -KOS_EINVAL;
 	}
 	if (count > page_free) {

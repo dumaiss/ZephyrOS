@@ -101,42 +101,48 @@ static int romfs_window(uint32_t logical, uint8_t *page, uint16_t *offset)
 	return 0;
 }
 
-/* Copy `length` (1..65535) staged bytes from a logical stream offset.
- * Splits at window boundaries and at the common staging size so the
- * ROM-access primitive is never asked for an out-of-window request. */
-static int romfs_copy_logical(uint32_t logical, uint8_t *dst, uint16_t length)
-{
 #if defined(KOS_BOARD_MK2)
-	/* Each chunk is one ROM page's part, copied straight to dst. */
+/* Copy `length` bytes from a logical stream offset to `dst` through
+ * `dst_map` (pages.h; 0: a nucleus address).  Each chunk is one ROM
+ * page's part, moved straight from the source window to the destination
+ * (the destination window too, for a page). */
+static int romfs_copy_pages(uint32_t logical, const uint8_t *dst_map,
+			    uint16_t dst, uint16_t length)
+{
 	while (length > 0) {
-		struct kos_page_copy_req copy;
+		uint8_t page[1];
 		uint16_t chunk = length;
 		uint32_t logical_end = logical + chunk;
-		uint8_t page;
 		uint16_t offset;
 		int result;
 
 		if (logical_end < logical || logical_end > KOS_ROMFS_CAPACITY) {
 			return -KOS_EIO;
 		}
-		result = romfs_window(logical, &page, &offset);
+		result = romfs_window(logical, &page[0], &offset);
 		if (result != 0) {
 			return result;
 		}
 		if (chunk > (uint16_t)(KOS_ROMFS_WINDOW_SIZE - offset)) {
 			chunk = (uint16_t)(KOS_ROMFS_WINDOW_SIZE - offset);
 		}
-		copy.src_page = page;
-		copy.dst_page = KOS_PAGE_DIRECT;
-		copy.src = offset;
-		copy.dst = (uint16_t)dst;
-		copy.length = chunk;
-		kos_page_copy(&copy);
+		kos_pages_copy(page, offset, dst_map, dst, chunk);
 		dst += chunk;
 		logical += chunk;
 		length -= chunk;
 	}
 	return 0;
+}
+#endif
+
+/* Copy `length` (1..65535) staged bytes from a logical stream offset.
+ * Splits at window boundaries and at the common staging size so the
+ * ROM-access primitive is never asked for an out-of-window request. */
+static int romfs_copy_logical(uint32_t logical, uint8_t *dst, uint16_t length)
+{
+#if defined(KOS_BOARD_MK2)
+	return romfs_copy_pages(logical, (const uint8_t *)0, (uint16_t)dst,
+				length);
 #else
 	/* The ROM mode serves no NMI: while a program holds the real-time
 	 * interrupt (architecture 4.12) the store is busy. */
@@ -388,6 +394,41 @@ int romfs_entry_at(uint16_t index, romfs_file_t *out, char *name,
 	}
 	return 0;
 }
+#if defined(KOS_BOARD_MK2)
+int romfs_read_pages(const romfs_file_t *file, uint32_t offset,
+		     const uint8_t *dst_map, uint16_t dst, uint16_t length)
+{
+	int result;
+
+	if (romfs_ready == 0 || file == (const romfs_file_t *)0) {
+		return -KOS_EINVAL;
+	}
+	if (dst_map == (const uint8_t *)0 && dst == 0u && length != 0) {
+		return -KOS_EINVAL;
+	}
+	if (offset > file->size) {
+		return -KOS_EINVAL;
+	}
+	if ((uint32_t)length > (file->size - offset)) {
+		return -KOS_EINVAL; /* bounded: never read past EOF */
+	}
+	if (length == 0) {
+		return 0; /* clean EOF read */
+	}
+	result = romfs_copy_pages(file->offset + offset, dst_map, dst, length);
+	if (result != 0) {
+		return result;
+	}
+	return (int)length;
+}
+
+int romfs_read(const romfs_file_t *file, uint32_t offset, void *dst,
+	       uint16_t length)
+{
+	return romfs_read_pages(file, offset, (const uint8_t *)0,
+				(uint16_t)dst, length);
+}
+#else
 int romfs_read(const romfs_file_t *file, uint32_t offset, void *dst,
 	       uint16_t length)
 {
@@ -415,6 +456,7 @@ int romfs_read(const romfs_file_t *file, uint32_t offset, void *dst,
 	}
 	return (int)length;
 }
+#endif
 
 /* --- bootstrap resource reads -------------------------------------------
  * Narrow, kernel-owned wrappers: resolve by name, require exactly
