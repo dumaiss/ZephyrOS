@@ -358,6 +358,13 @@ or modified image loads its entries before execution. The nucleus owns
 page allocation, the DAT software mirrors, cache validity and transition
 discipline. Context selection alone does not provide memory protection.
 
+Cost model: a `DAT_BANK` switch is one control write. Loading a full
+eight-entry image is eight separate `OUT (n),A` writes (about 200 T-states
+with the loads): `OTIR` cannot do it, because it keeps C fixed while B
+counts down, so every byte would land in the same register. Remapping one
+window is one write. The cached-image shortcut therefore matters most on
+paths taken per call (syscalls, IPC, far calls), not per process switch.
+
 #### 2.7.4 Mapper programming and control
 
 Mk2 retains the existing low-byte pBITz device-select convention:
@@ -399,7 +406,13 @@ physical page values or the LS612 register encoding.
 #### 2.7.5 Boot, reset and reboot
 
 1. Hardware reset selects `DAT_BANK=0` and **pass mode**, independent of
-   unknown LS612 power-on register contents.
+   unknown LS612 power-on register contents. The IO controller owns the
+   Z80 reset (the reset switch resets the IOC; the keyboard reset
+   combination and `SYS_REBOOT`'s IOC command take the same path): it
+   holds the Z80 in reset, restarts, and stops the RT clock (section
+   4.12) before releasing it. **No NMI can arrive before the bootstrap
+   has a RAM stack**, which matters because pass mode shows only ROM.
+   IOC firmware must keep this invariant.
 2. The intended reset view makes logical `0000h–FFFFh` read the first
    64 KiB of physical ROM, including the first instruction at `0000h`.
    This is a boot view, **not** Mk1 mode-00 ROM/RAM shadowing.
@@ -443,6 +456,26 @@ return must recover the interrupted DAT and SP, including interrupts
 taken in the system or service context. Bounded interrupt-masking rules
 from sections 4.3–4.5 still apply.
 
+**NMI rule** (the Mk2 counterpart of "an NMI never changes the latch"):
+an NMI handler never changes `DAT_BANK`, a DAT entry or a software
+mirror; it runs on whatever mapping is active, from common memory. Since
+the hardware is not read back and an NMI cannot be masked, code that
+switches context or remaps an entry **updates the software mirror before
+the `OUT`**, in an order that is consistent at every instruction boundary.
+Maskable-interrupt paths follow the same ordering.
+
+**Buffer identity** (the Mk2 form of section 4.9): a caller address is
+resolved through the caller's **current** working mapping, far window
+included, not through its process's default image. The nucleus may map
+the caller's pages into the system DAT to move bytes directly instead of
+staging them through common memory.
+
+**Page-zero NMI shadow store:** an NMI fetches `0066h` only through the
+current mapping's logical page 0. Pages of an extended-memory object are
+never seen there by an NMI unless the object is mapped at `0000h`, so the
+Mk1 shadow store for objects starting at slot 0 (`kos_aux_copy`, section
+4.12) has no Mk2 counterpart; only mapped page-0 images need the entry stub.
+
 Initially, retain the existing **`8000h–BFFFh` 16 KiB far aperture**
 as an *OS logical convention*, implemented by changing two 8 KiB
 entries. This avoids coupling a hardware change to a simultaneous
@@ -454,6 +487,15 @@ possible; represent mappings logically and implement their realization
 through a platform-owned operation. ABI changes, if required, must be
 documented rather than assuming Mk1 binary compatibility.
 
+An extended-memory object becomes **a list of physical pages**. The Mk1
+object classes have no Mk2 meaning and are not carried over: the 32 KiB
+plain / 16 KiB `MAPPABLE` limits and one-mappable-object-per-bank rule,
+the slow (slots 0–2, mode-10 gate) versus window-speed (slots 3, 6) copy
+paths, and the rule that a bank holding an auxiliary slot cannot become a
+primary bank. Copies between a caller buffer and an object map both
+pages and move the bytes directly. Object size limits that remain are
+software choices, stated with the Mk2 ABI.
+
 No hardware-enforced page permissions, user/kernel isolation or
 preemptive scheduling are added by this mapper.
 
@@ -463,6 +505,10 @@ The Mk2 memory model is a separate CPU-board configuration from Mk1;
 the emulator must **not** implement it as a new value of the old latch
 mode field. Keep the existing peripheral models and I/O device-select
 behavior unless the SBC configuration explicitly substitutes devices.
+"Emulator" means both MAME (the `zephyr80` driver's memory decode) and
+KonaOS's own simulator (`tests/z80sim.py` and the C core in
+`tests/simcore/`), on which the KonaOS test suite runs; each needs the
+Mk2 decoder alongside Mk1's.
 
 Before a PCB is designed, demonstrate:
 
