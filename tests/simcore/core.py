@@ -1,8 +1,8 @@
-"""The C Z80 core behind the Python `Z80` API (ctypes side).
+"""The simulator's C Z80 core (ctypes side).
 
-`make_core_class(Z80, Ctc)` returns a subclass of the Python `Z80` whose
-registers and counters live in the C `struct core` (z80core.h) and whose
-`step()` runs the C core.  Memory stays the Python bytearrays: the core
+`make_core_class(Machine, Ctc, tables)` returns `z80sim.Z80`: a subclass of
+the board class `z80sim.Machine` whose registers and counters live in the
+C `struct core` (z80core.h) and whose `step()` and `run()` run the C core.  Memory stays the Python bytearrays: the core
 writes through their buffers, so `z.bank0[...]` and `z.rd()` see the same
 bytes.  A board="mk2" instance keeps its mapper state (16 entries, the
 control bits) in the C struct and the 1 MiB physical array in `z.phys`;
@@ -107,12 +107,12 @@ _lib = None
 
 def library():
     """The loaded core library; a missing build is an error naming its
-    target, never a silent fallback to the Python core."""
+    target."""
     global _lib
     if _lib is None:
         if not os.path.isfile(LIBRARY):
             raise RuntimeError(
-                "KOS_SIM_CORE=c: %s is missing; run `make sim-core`"
+                "the simulator core %s is missing; run `make sim-core`"
                 % LIBRARY)
         lib = ctypes.CDLL(LIBRARY)
         lib.core_step.argtypes = [ctypes.POINTER(CoreState)]
@@ -253,8 +253,9 @@ class _EntryView:
         return repr(list(self._a))
 
 
-def make_core_class(Z80, Ctc, tables):
-    """The C-core subclass of the Python `Z80`.  `tables` is
+def make_core_class(Machine, Ctc, tables):
+    """The simulator's `Z80`: the board class `Machine` (z80sim.py) with
+    the C core's registers, stepping, interrupts and clock.  `tables` is
     (ONE_BYTE_T, ED_T, DD_T, ED_BLOCK, INTERRUPT_TSTATES)."""
     one_t, ed_t, dd_t, ed_block, interrupt_tstates = tables
     lib = library()
@@ -273,7 +274,7 @@ def make_core_class(Z80, Ctc, tables):
         def advance(self, tstates):
             raise AssertionError("a C-bound CTC is advanced by the core")
 
-    class MapperView(Z80.Mapper):
+    class MapperView(Machine.Mapper):
         """A Mk2Mapper whose state lives in the C core and whose
         translation runs there; reset, I/O decode and the entry pattern
         are the Python reference's."""
@@ -305,8 +306,8 @@ def make_core_class(Z80, Ctc, tables):
         def physical(self, la):
             return lib.core_translate(ctypes.byref(self._s), int(la))
 
-    class CZ80(Z80):
-        """The Python Z80 API over the C core."""
+    class CZ80(Machine):
+        """The board with the C core as its CPU."""
 
         CORE = "c"
 
@@ -477,7 +478,13 @@ def make_core_class(Z80, Ctc, tables):
 
         def run(self, limit, stops=None, delay=None, check_first=True,
                 out_port=None, halt=False):
-            """See the Python Z80.run.  Returns (reason, iterations)."""
+            """Up to `limit` iterations of: a stop check (PC in the
+            StopSet `stops`; not on the first iteration unless
+            `check_first`), the serial-connect skip (`delay` = (address,
+            latch), Mk1 only), then one step.  After the step the run also
+            ends when it wrote `out_port`, or when `halt` is set and the CPU
+            is halted.  Returns (reason, iterations done): "limit", "stop"
+            (before that iteration), "out" or "halt" (after it)."""
             self._sync()
             c = self._c
             done = ctypes.c_int64(0)

@@ -1608,14 +1608,11 @@ $(MAME_IMAGE): $(IMAGE)
 	cp $< $@
 
 # --- simulator core ----------------------------------------------------------
-# The simulator's Z80 core in C (tests/simcore), the default the replays
-# run on; tests/z80sim.py loads it.  SIM_CORE selects the core for the
-# test targets: c, or python (the reference the C core is proven
-# against, tests/test_sim_core.py): `make check SIM_CORE=python`.  `all`
-# builds the library, so the application suites find it after `make`.
+# The simulator's Z80 core in C (tests/simcore), which every replay runs
+# on; tests/z80sim.py loads it and tests/test_sim_trace.py pins its
+# behaviour.  `all` builds the library, so the application suites find it
+# after `make`.
 
-SIM_CORE ?= $(or $(KOS_SIM_CORE),c)
-export KOS_SIM_CORE := $(SIM_CORE)
 SIM_CORE_LIB := build/sim/libz80core.so
 
 all: $(SIM_CORE_LIB)

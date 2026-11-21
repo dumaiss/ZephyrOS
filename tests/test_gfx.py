@@ -413,7 +413,7 @@ class VdpClockUnit(unittest.TestCase):
     duration model keeps CE busy for the modeled T-states."""
 
     def test_register_write_timestamps_are_tstates(self):
-        z = z80sim.PythonZ80(bytearray(0x10000), bytearray(0x10000))
+        z = z80sim.Z80(bytearray(0x10000), bytearray(0x10000))
         z.vdp_peer = z80sim.V9958Peer()
         z.latch = 0x08  # flat SRAM: writes and fetches hit bank 0
         # ld a,2Eh (7) ; out (A1h),a (11) ; ld a,AEh (7) ;

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Minimal Z80 simulator to replay the KonaOS selftest flows.
+"""The Zephyr-80 simulator that replays the KonaOS images: the board
+model (`Machine`, its memory and device peers) around the C Z80 core
+(`Z80`, tests/simcore).
 
 Models the banking latch (MEM_DECODER rev 12):
   mode 00: 0000-FFFF reads from the selected ROM page; writes target the
@@ -11,8 +13,6 @@ Models the banking latch (MEM_DECODER rev 12):
 
 Boot pages 0/1 come from the provided images; the recovery pages 2-7
 are supplied separately (rom_pages) when a replay exercises ROMFS boot.
-
-Usage: sim.py <selftest-image> [start-pc] [trace]
 """
 
 import os
@@ -3134,7 +3134,12 @@ def opcode_cost(z):
     return ONE_BYTE_T.get(op, 4)
 
 
-class Z80:
+class Machine:
+    """The simulated board around the CPU: memory (Mk1 banks and ROM pages,
+    or the Mk2 physical array and mapper), the device peers and the port
+    model.  The CPU itself is the C core (tests/simcore): `Z80`, below, is
+    this class with the core's registers, stepping, interrupts and clock.
+    """
     Mapper = Mk2Mapper
 
     def __init__(self, page0, page1, rom_pages=None, decoder_revision=13,
@@ -3243,19 +3248,6 @@ class Z80:
         self._stop_out_port = None
         self._out_hit = False
 
-    def accept_interrupt(self, vector):
-        """Accept one maskable IM2 interrupt and fetch its linked target."""
-        if not self.iff1 or self.im != 2:
-            raise AssertionError("interrupt not enabled in IM2")
-        self.halted = False
-        # Interrupt acceptance clears both flip-flops; RETI/RETN restore
-        # IFF1 from IFF2, so the exit path needs its own EI.
-        self.iff1 = False
-        self.iff2 = False
-        self._clock(INTERRUPT_TSTATES)
-        self.push16(self.pc)
-        pointer = ((self.i << 8) | (vector & 0xFF)) & 0xFFFF
-        self.pc = self.rd16(pointer)
 
     # ---- I/O ports ----
     def io_in(self, port):
@@ -3346,40 +3338,14 @@ class Z80:
                 self.ioc_peer.bulk_ctrl_write(value)
 
     # ---- flags ----
-    def _sf(self, bit, on):
-        self.f = (self.f | bit) if on else (self.f & ~bit)
 
-    @property
-    def CF(self):
-        return (self.f >> 0) & 1
 
-    @CF.setter
-    def CF(self, v):
-        self._sf(1, v)
 
-    @property
-    def ZF(self):
-        return (self.f >> 6) & 1
 
-    @ZF.setter
-    def ZF(self, v):
-        self._sf(0x40, v)
 
-    @property
-    def SNF(self):
-        return (self.f >> 7) & 1
 
-    @SNF.setter
-    def SNF(self, v):
-        self._sf(0x80, v)
 
-    @property
-    def PV(self):
-        return (self.f >> 2) & 1
 
-    @PV.setter
-    def PV(self, v):
-        self._sf(0x04, v)
 
     # ---- interrupts ----
     def assert_int(self, vector):
@@ -3388,32 +3354,10 @@ class Z80:
         self.int_vector = vector & 0xFF
         self.int_pending = True
 
-    def _accept_interrupt(self):
-        self.int_pending = False
-        self.iff1 = False
-        self.iff2 = False
-        self._clock(INTERRUPT_TSTATES)
-        self.push16(self.pc)
-        self.pc = self.rd16(((self.i << 8) | self.int_vector) & 0xFFFF)
-        self.halted = False
 
-    def _interrupt_check(self):
-        if self.int_pending and self.iff1 and not self.ei_delay and self.im == 2:
-            self._accept_interrupt()
-            return True
-        return False
 
-    def _cond(self, cc):
-        return {0: not self.ZF, 1: self.ZF, 2: not self.CF, 3: self.CF,
-                4: not self.PV, 5: self.PV, 6: not self.SNF, 7: self.SNF}[cc]
 
-    @property
-    def PF(self):
-        return (self.f >> 2) & 1
 
-    @PF.setter
-    def PF(self, v):
-        self._sf(0x04, v)
 
     # ---- memory mapping ----
     def _sram(self, bank):
@@ -3482,402 +3426,22 @@ class Z80:
         self.sp = (self.sp + 2) & 0xFFFF
         return v
 
-    def fetch(self):
-        op = self.rd(self.pc)
-        self.pc = (self.pc + 1) & 0xFFFF
-        return op
 
-    def fetch16(self):
-        lo = self.fetch()
-        hi = self.fetch()
-        return lo | (hi << 8)
 
-    def set_rr(self, code, v):
-        if code == 0: self.b, self.c = (v >> 8) & 0xFF, v & 0xFF
-        elif code == 1: self.d, self.e = (v >> 8) & 0xFF, v & 0xFF
-        elif code == 2: self.h, self.l = (v >> 8) & 0xFF, v & 0xFF
-        else: self.sp = v
 
-    def get_rr(self, code):
-        if code == 0: return (self.b << 8) | self.c
-        if code == 1: return (self.d << 8) | self.e
-        if code == 2: return (self.h << 8) | self.l
-        return self.sp
 
     # ---- 8-bit register-file helpers (r codes 0-7; 6 is (HL)) ----
-    def read_r(self, code):
-        if code == 0: return self.b
-        if code == 1: return self.c
-        if code == 2: return self.d
-        if code == 3: return self.e
-        if code == 4: return self.h
-        if code == 5: return self.l
-        if code == 6: return self.rd(self.hl)
-        return self.a
 
-    def write_r(self, code, value):
-        value &= 0xFF
-        if code == 0: self.b = value
-        elif code == 1: self.c = value
-        elif code == 2: self.d = value
-        elif code == 3: self.e = value
-        elif code == 4: self.h = value
-        elif code == 5: self.l = value
-        elif code == 6: self.wr(self.hl, value)
-        else: self.a = value
 
-    def parity(self, value):
-        """P/V for IN r,(C): set on even parity."""
-        return 0 if bin(value & 0xFF).count("1") % 2 else 1
 
-    def _clock(self, tstates):
-        """Advance the elapsed-clock counters, then an attached CTC: a
-        request it raises is pending before the next instruction."""
-        self.tstates += tstates
-        if self.ctc is not None:
-            self.ctc.advance(tstates)
-        if self.rt_hz:
-            self.rt_acc += tstates * self.rt_hz
-            while self.rt_acc >= 10000000:
-                self.rt_acc -= 10000000
-                self.rt_ticks += 1
-                self.nmi_pending = True
-        if self.vdp_peer is not None and self.vdp_peer.frame_period:
-            self.vdp_peer.advance(tstates, self)
 
     BLOCK_WORD = (0xB0, 0xB8)               # ldir, lddr: BC counts
     BLOCK_BYTE = (0xB2, 0xB3, 0xBA, 0xBB)   # inir, otir, indr, otdr: B
 
-    def _block_slice(self):
-        """One iteration of a repeating block instruction, as a real Z80
-        runs it: the count set to 1 for the step, then the rest restored
-        and the PC moved back to the instruction (21 T-states instead of
-        16).  Only while the RT clock runs: an NMI must be able to land
-        between iterations, and every other replay keeps the whole-block
-        step it was calibrated with.  True when it ran the iteration."""
-        if not self.rt_hz or self.rd(self.pc) != 0xED:
-            return False
-        second = self.rd((self.pc + 1) & 0xFFFF)
-        word = second in self.BLOCK_WORD
-        if not word and second not in self.BLOCK_BYTE:
-            return False
-        n = ((self.b << 8) | self.c) if word else self.b
-        if n == 0:
-            n = 0x10000 if word else 0x100
-        if n <= 1:
-            return False
-        if word:
-            self.b, self.c = 0, 1
-        else:
-            self.b = 1
-        self.cycles += 1
-        self._clock(opcode_cost(self) + 5)
-        self.fetch()                        # the ED prefix
-        self.step_ed()
-        n -= 1
-        if word:
-            self.b, self.c = (n >> 8) & 0xFF, n & 0xFF
-            self._sf(0x04, 1)
-        else:
-            self.b = n & 0xFF
-            self.ZF = 0
-        self.pc = (self.pc - 2) & 0xFFFF
-        return True
 
-    def _accept_nmi(self):
-        """The NMI: IFF1 cleared, IFF2 kept (RETN restores IFF1 from it),
-        the restart at 0066h; it wakes a HALT and is never masked."""
-        self.nmi_pending = False
-        self.nmi_count += 1
-        self.iff1 = False
-        self._clock(11)
-        self.push16(self.pc)
-        self.pc = 0x0066
-        self.halted = False
 
-    def step(self):
-        if self.nmi_pending:
-            self._accept_nmi()
-            return
-        # HALT: only an accepted interrupt wakes the CPU; the clock keeps
-        # running, so an attached CTC keeps counting through the halt.
-        if self.halted:
-            if self.int_pending and self.iff1:
-                self._accept_interrupt()
-            else:
-                self._clock(4)
-            return
-        # IM2 acceptance before the next instruction (blocked for exactly
-        # one instruction after EI).
-        if self._interrupt_check():
-            return
-        if self._block_slice():
-            if self.ei_delay:
-                self.ei_delay -= 1
-            return
-        self.cycles += 1
-        self._clock(opcode_cost(self))
-        op = self.fetch()
-        x, y, z, p, q = (op >> 6) & 3, (op >> 3) & 7, op & 7, (op >> 4) & 3, (op >> 5) & 1
-        if op == 0x00: pass
-        elif op == 0x07:  # rlca
-            c = (self.a >> 7) & 1
-            self.a = ((self.a << 1) | c) & 0xFF
-            self.CF = c
-        elif op == 0x0F:  # rrca
-            c = self.a & 1
-            self.a = ((self.a >> 1) | (c << 7)) & 0xFF
-            self.CF = c
-        elif op == 0x17:  # rla
-            c = (self.a >> 7) & 1
-            self.a = ((self.a << 1) | (1 if self.CF else 0)) & 0xFF
-            self.CF = c
-        elif op == 0x1F:  # rra
-            c = self.a & 1
-            self.a = ((self.a >> 1) | ((1 if self.CF else 0) << 7)) & 0xFF
-            self.CF = c
-        elif op == 0x76: self.halted = True
-        elif op == 0xF3: self.iff1 = self.iff2 = False
-        elif op == 0xFB:
-            self.iff1 = self.iff2 = True
-            # EI admits an interrupt only after the following instruction.
-            # The per-step countdown below consumes one tick for EI itself.
-            self.ei_delay = 2
-        elif op == 0x08:  # ex af,af'
-            self.a, self.f, self.alt_a, self.alt_f = \
-                self.alt_a, self.alt_f, self.a, self.f
-        elif op == 0x10:  # djnz d
-            off = self.fetch()
-            if off & 0x80: off -= 256
-            self.b = (self.b - 1) & 0xFF
-            if self.b:
-                self.pc = (self.pc + off) & 0xFFFF
-        elif op == 0xD9:  # exx
-            self.b, self.c, self.alt_b, self.alt_c = \
-                self.alt_b, self.alt_c, self.b, self.c
-            self.d, self.e, self.alt_d, self.alt_e = \
-                self.alt_d, self.alt_e, self.d, self.e
-            self.h, self.l, self.alt_h, self.alt_l = \
-                self.alt_h, self.alt_l, self.h, self.l
-        elif op == 0xF9:  # ld sp,hl
-            self.sp = (self.h << 8) | self.l
-        elif op == 0xED and False: pass
-        elif op == 0xC9:  # ret
-            self.pc = self.pop16()
-        elif op == 0xC3: self.pc = self.fetch16()
-        elif op == 0xE9:  # jp (hl)
-            self.pc = (self.h << 8) | self.l
-        elif op in (0x18, 0x28, 0x20, 0x38, 0x30):
-            off = self.fetch()
-            if off & 0x80: off -= 256
-            if op == 0x18 or (op == 0x28 and self.ZF) or (op == 0x20 and not self.ZF) \
-               or (op == 0x38 and self.CF) or (op == 0x30 and not self.CF):
-                self.pc = (self.pc + off) & 0xFFFF
-        elif op in (0xC2, 0xCA, 0xD2, 0xDA, 0xE2, 0xEA, 0xF2, 0xFA):
-            nn = self.fetch16()
-            cond = {
-                0xC2: not self.ZF, 0xCA: self.ZF,
-                0xD2: not self.CF, 0xDA: self.CF,
-                0xE2: not self.PF, 0xEA: self.PF,
-                0xF2: not self.SNF, 0xFA: self.SNF,
-            }[op]
-            if cond:
-                self.pc = nn
-        elif op in (0xC4, 0xCC, 0xD4, 0xDC, 0xE4, 0xEC, 0xF4, 0xFC):
-            nn = self.fetch16()
-            if self._cond((op >> 3) & 7):
-                self.push16(self.pc)
-                self.pc = nn
-        elif op in (0xC0, 0xC8, 0xD0, 0xD8, 0xE0, 0xE8, 0xF0, 0xF8):
-            if self._cond((op >> 3) & 7):
-                self.pc = self.pop16()
-        elif op == 0xCD:  # call
-            target = self.fetch16()
-            self.push16(self.pc)
-            self.pc = target
-        elif op == 0xC7 or (0xC7 <= op <= 0xFF and (op & 0xC7) == 0xC7):
-            self.push16(self.pc)
-            self.pc = op & 0x38
-        elif op in (0xC5, 0xD5, 0xE5, 0xF5):
-            vals = {0xC5: (self.b << 8) | self.c, 0xD5: (self.d << 8) | self.e,
-                    0xE5: (self.h << 8) | self.l, 0xF5: (self.a << 8) | self.f}
-            self.push16(vals[op])
-        elif op in (0xC1, 0xD1, 0xE1, 0xF1):
-            v = self.pop16()
-            if op == 0xC1: self.b, self.c = v >> 8, v & 0xFF
-            elif op == 0xD1: self.d, self.e = v >> 8, v & 0xFF
-            elif op == 0xE1: self.h, self.l = v >> 8, v & 0xFF
-            else: self.a, self.f = v >> 8, v & 0xFF
-        elif op in (0xDD, 0xFD):
-            self.step_prefix(op)
-        elif op == 0xCB:
-            self.step_cb()
-        elif op in (0xD3, 0xDB):
-            port = self.fetch()
-            self.io_high = self.a
-            if op == 0xD3:
-                self.io_out(port, self.a)
-            else:
-                self.a = self.io_in(port)
-        elif op in (0x01, 0x11, 0x21, 0x31):
-            self.set_rr((op >> 4) & 3, self.fetch16())
-        elif op == 0x09:  # add hl,bc
-            self.hl = self._add16(self.get_rr(2), self.get_rr(0))
-        elif op == 0x19:  # add hl,de
-            self.hl = self._add16(self.get_rr(2), self.get_rr(1))
-        elif op == 0x29:  # add hl,hl
-            self.hl = self._add16(self.get_rr(2), self.get_rr(2))
-        elif op == 0x22:  # ld (nn),hl
-            self.wr16(self.fetch16(), (self.h << 8) | self.l)
-        elif op == 0x2A:  # ld hl,(nn)
-            self.hl = self.rd16(self.fetch16())
-        elif op == 0x32:  # ld (nn),a
-            self.wr(self.fetch16(), self.a)
-        elif op == 0x3A:  # ld a,(nn)
-            self.a = self.rd(self.fetch16())
-        elif op == 0x36:  # ld (hl),n
-            self.wr((self.h << 8) | self.l, self.fetch())
-        elif op == 0x34:  # inc (hl)
-            addr = (self.h << 8) | self.l
-            old = self.rd(addr)
-            v = (old + 1) & 0xFF
-            self.wr(addr, v)
-            self._inc_flags(old, v)
-        elif op == 0x35:  # dec (hl)
-            addr = (self.h << 8) | self.l
-            old = self.rd(addr)
-            v = (old - 1) & 0xFF
-            self.wr(addr, v)
-            self._dec_flags(old, v)
-        elif op == 0x39:  # add hl,sp
-            hl = (self.h << 8) | self.l
-            res = hl + self.sp
-            self.hl = res
-            self._sf(1, (res & 0x10000) != 0)
-        elif op in (0x47, 0x4F, 0x57, 0x5F, 0x67, 0x6F, 0x78, 0x79, 0x7A, 0x7B, 0x7C, 0x7D,
-                    0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D,
-                    0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x58, 0x59, 0x5A, 0x5B, 0x5C, 0x5D,
-                    0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x68, 0x69, 0x6A, 0x6B, 0x6C, 0x6D):
-            self.ld_reg(op)
-        elif op in (0x46, 0x4E, 0x56, 0x5E, 0x66, 0x6E):  # ld r,(hl)
-            regs = {0x46: 'b', 0x4E: 'c', 0x56: 'd', 0x5E: 'e', 0x66: 'h', 0x6E: 'l'}
-            setattr(self, regs[op], self.rd((self.h << 8) | self.l))
-        elif op in (0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x77):  # ld (hl),r
-            regs = {0x70: 'b', 0x71: 'c', 0x72: 'd', 0x73: 'e',
-                    0x74: 'h', 0x75: 'l', 0x77: 'a'}
-            self.wr((self.h << 8) | self.l, getattr(self, regs[op]))
-        elif op == 0x7E: self.a = self.rd((self.h << 8) | self.l)
-        elif op == 0x77: self.wr((self.h << 8) | self.l, self.a)
-        elif op == 0x02: self.wr((self.b << 8) | self.c, self.a)
-        elif op == 0x0A: self.a = self.rd((self.b << 8) | self.c)
-        elif op == 0x12: self.wr((self.d << 8) | self.e, self.a)
-        elif op == 0x1A: self.a = self.rd((self.d << 8) | self.e)
-        elif op == 0x3E: self.a = self.fetch()
-        elif op in (0x06, 0x0E, 0x16, 0x1E, 0x26, 0x2E):
-            regs = {0x06: 'b', 0x0E: 'c', 0x16: 'd', 0x1E: 'e', 0x26: 'h', 0x2E: 'l'}
-            setattr(self, regs[op], self.fetch())
-        elif op == 0x17:  # rla
-            oldc = self.CF
-            self.CF = (self.a >> 7) & 1
-            self.a = ((self.a << 1) | oldc) & 0xFF
-        elif op == 0x1F:  # rra
-            oldc = self.CF
-            self.CF = self.a & 1
-            self.a = ((self.a >> 1) | (oldc << 7)) & 0xFF
-        elif op == 0x2F: self.a ^= 0xFF
-        elif op == 0x37: self.CF = 1
-        elif op == 0x3F: self.CF ^= 1
-        elif op == 0xAF: self.a = 0
-        elif op == 0xA7: self._logic(self.a & self.a)
-        elif op == 0xB7: self._logic(self.a | self.a)
-        elif op == 0x87:
-            self.alu(op)
-        elif 0x80 <= op <= 0xBF:
-            self.alu(op)
-        elif op == 0xE6: self.a = self._logic(self.a & self.fetch())
-        elif op == 0xEE: self.a = self._logic(self.a ^ self.fetch())
-        elif op == 0xF6: self.a = self._logic(self.a | self.fetch())
-        elif op == 0xFE:  # cp n
-            n = self.fetch()
-            self._logic(self.a - n, sub=True, operand=n, left=self.a)
-        elif op == 0xD6: self._sub(self.fetch())
-        elif op == 0xDE:  # sbc a,n
-            self._sub(self.fetch(), 1 if self.CF else 0)
-        elif op == 0xC6: self._add(self.fetch())
-        elif op == 0xCE:  # adc a,n
-            self._add(self.fetch(), 1 if self.CF else 0)
-        elif op == 0xEB:  # ex de,hl
-            self.d, self.e, self.h, self.l = self.h, self.l, self.d, self.e
-        elif op == 0xE3:  # ex (sp),hl
-            hl = (self.h << 8) | self.l
-            self.hl = self.rd16(self.sp)
-            self.wr16(self.sp, hl)
-        elif op == 0x0B: self.set_rr(0, (self.get_rr(0) - 1) & 0xFFFF)
-        elif op == 0x1B: self.set_rr(1, (self.get_rr(1) - 1) & 0xFFFF)
-        elif op == 0x2B: self.hl = (self.get_rr(2) - 1) & 0xFFFF
-        elif op in (0x04, 0x0C, 0x14, 0x1C, 0x24, 0x2C, 0x3C):  # inc r
-            regs = {0x04: 'b', 0x0C: 'c', 0x14: 'd', 0x1C: 'e',
-                    0x24: 'h', 0x2C: 'l', 0x3C: 'a'}
-            old = getattr(self, regs[op])
-            v = (old + 1) & 0xFF
-            setattr(self, regs[op], v)
-            self._inc_flags(old, v)
-        elif op in (0x05, 0x0D, 0x15, 0x1D, 0x25, 0x2D, 0x3D):  # dec r
-            regs = {0x05: 'b', 0x0D: 'c', 0x15: 'd', 0x1D: 'e',
-                    0x25: 'h', 0x2D: 'l', 0x3D: 'a'}
-            old = getattr(self, regs[op])
-            v = (old - 1) & 0xFF
-            setattr(self, regs[op], v)
-            self._dec_flags(old, v)
-        elif op == 0x3B: self.sp = (self.sp - 1) & 0xFFFF
-        elif op == 0x03: self.set_rr(0, (self.get_rr(0) + 1) & 0xFFFF)
-        elif op == 0x13: self.set_rr(1, (self.get_rr(1) + 1) & 0xFFFF)
-        elif op == 0x23: self.hl = (self.get_rr(2) + 1) & 0xFFFF
-        elif op == 0x33: self.sp = (self.sp + 1) & 0xFFFF
-        elif op == 0xED:
-            self.step_ed()
-        else:
-            raise SystemExit("sim: unsupported opcode %02X at %04X" % (op, (self.pc - 1) & 0xFFFF))
-        # The one-instruction EI delay must survive the EI step itself:
-        # EI sets the delay, the instruction after EI runs while the check
-        # is blocked, and only then does the delay expire.
-        if self.ei_delay and op != 0xFB:
-            self.ei_delay -= 1
 
-    def run(self, limit, stops=None, delay=None, check_first=True,
-            out_port=None, halt=False):
-        """Up to `limit` iterations of: a stop check (PC in the StopSet
-        `stops`; not on the first iteration unless `check_first`), the
-        serial-connect skip (`delay` = (address, latch), as
-        `skip_serial_connect_delay`), then one `step()`.  After the step
-        the run also ends when it wrote `out_port`, or when `halt` is
-        set and the CPU is halted.  Returns (reason, iterations done):
-        "limit", "stop" (before that iteration), "out" or "halt" (after
-        it).  The C core runs the same loop natively."""
-        self._stop_out_port = out_port
-        try:
-            for n in range(limit):
-                if (stops is not None and (n or check_first) and
-                        self.pc in stops):
-                    return "stop", n
-                if (delay is not None and self.mapper is None and
-                        self.latch == delay[1] and
-                        self.pc == delay[0]):
-                    self.pc = self.pop16()
-                self._out_hit = False
-                self.step()
-                if self._out_hit:
-                    return "out", n + 1
-                if halt and self.halted:
-                    return "halt", n + 1
-            return "limit", limit
-        finally:
-            self._stop_out_port = None
 
-    def _add16(self, hl, rr):
-        res = hl + rr
-        self._sf(1, (res & 0x10000) != 0)
-        return res & 0xFFFF
 
     @property
     def hl(self):
@@ -3887,272 +3451,13 @@ class Z80:
     def hl(self, v):
         self.h, self.l = (v >> 8) & 0xFF, v & 0xFF
 
-    def ld_reg(self, op):
-        dst = {0x47: 'b', 0x4F: 'c', 0x57: 'd', 0x5F: 'e', 0x67: 'h', 0x6F: 'l',
-               0x78: 'a', 0x79: 'a', 0x7A: 'a', 0x7B: 'a', 0x7C: 'a', 0x7D: 'a'}.get(op)
-        src = {0x47: 'a', 0x4F: 'a', 0x57: 'a', 0x5F: 'a', 0x67: 'a', 0x6F: 'a',
-               0x78: 'b', 0x79: 'c', 0x7A: 'd', 0x7B: 'e', 0x7C: 'h', 0x7D: 'l'}.get(op)
-        if op & 0xF8 == 0x40:  # 40h-47h: ld b,*
-            dst = 'b'
-            src = ['b', 'c', 'd', 'e', 'h', 'l', None, 'a'][op & 7]
-            if src is None:
-                return
-        elif op & 0xF8 == 0x48:  # 48h-4Fh: ld c,*
-            dst = 'c'
-            src = ['b', 'c', 'd', 'e', 'h', 'l', None, 'a'][op & 7]
-            if src is None:
-                return
-        elif op & 0xF8 == 0x50:  # 50h-57h: ld d,*
-            dst = 'd'
-            src = ['b', 'c', 'd', 'e', 'h', 'l', None, 'a'][op & 7]
-            if src is None:
-                return
-        elif op & 0xF8 == 0x58:  # 58h-5Fh: ld e,*
-            dst = 'e'
-            src = ['b', 'c', 'd', 'e', 'h', 'l', None, 'a'][op & 7]
-            if src is None:
-                return
-        elif op & 0xF8 == 0x60:  # 60h-67h: ld h,*
-            dst = 'h'
-            src = ['b', 'c', 'd', 'e', 'h', 'l', None, 'a'][op & 7]
-            if src is None:
-                return
-        elif op & 0xF8 == 0x68:  # 68h-6Fh: ld l,*
-            dst = 'l'
-            src = ['b', 'c', 'd', 'e', 'h', 'l', None, 'a'][op & 7]
-            if src is None:
-                return
-        if dst and src:
-            setattr(self, dst, getattr(self, src))
 
-    def _logic(self, res, sub=False, add=False, operand=0, left=0):
-        raw = res
-        res = raw & 0xFF
-        self.ZF = res == 0
-        self.SNF = (res & 0x80) != 0
-        if sub:
-            self._sf(0x10, ((left ^ operand ^ res) & 0x10) != 0)
-            self._sf(0x02, 1)           # N = 1
-            self.CF = raw < 0
-            # Signed overflow for SBC/SUB/CP.  SDCC's signed comparison
-            # idioms test P/V, so a stale value mis-runs valid code.
-            self.PV = ((left ^ operand) & (left ^ res) & 0x80) != 0
-        elif add:
-            self._sf(0x10, ((left ^ operand ^ res) & 0x10) != 0)
-            self._sf(0x02, 0)           # N = 0
-            self.CF = raw > 0xFF
-            self.PV = ((left ^ res) & (operand ^ res) & 0x80) != 0
-        else:
-            self._sf(0x10, 0)
-            self._sf(0x02, 0)           # N = 0
-            self.CF = 0
-            self.PV = (bin(res).count('1') & 1) == 0
-        return res
 
-    def _sub(self, n, carry=0):
-        left = self.a
-        v = left - n - carry
-        self.a = self._logic(v, sub=True, operand=n, left=left)
 
-    def _add(self, n, carry=0):
-        left = self.a
-        v = left + n + carry
-        self.a = self._logic(v, add=True, operand=n, left=left)
 
-    def _inc_flags(self, old, res):
-        self.ZF = res == 0
-        self.SNF = (res & 0x80) != 0
-        self._sf(0x10, (old & 0x0F) == 0x0F)
-        self._sf(0x02, 0)
-        self.PV = res == 0x80
 
-    def _dec_flags(self, old, res):
-        self.ZF = res == 0
-        self.SNF = (res & 0x80) != 0
-        self._sf(0x10, (old & 0x0F) == 0x00)
-        self._sf(0x02, 1)
-        self.PV = res == 0x7F
 
-    def alu(self, op):
-        srcs = {0: 'b', 1: 'c', 2: 'd', 3: 'e', 4: 'h', 5: 'l', 7: 'a'}
-        r = op & 7
-        if r == 6:  # (hl)
-            v = self.rd((self.h << 8) | self.l)
-        else:
-            v = getattr(self, srcs[r])
-        grp = op & 0xF8
-        if grp == 0x80:
-            self._add(v)
-        elif grp == 0x88:  # adc
-            self._add(v, 1 if self.CF else 0)
-        elif grp == 0x90:
-            self._sub(v)
-        elif grp == 0x98:  # sbc
-            self._sub(v, 1 if self.CF else 0)
-        elif grp == 0xA0:
-            self.a = self._logic(self.a & v)
-        elif grp == 0xA8:
-            self.a = self._logic(self.a ^ v)
-        elif grp == 0xB0:
-            self.a = self._logic(self.a | v)
-        elif grp == 0xB8:  # cp r: flags only, A unchanged
-            self._logic(self.a - v, sub=True, operand=v, left=self.a)
-        else:
-            raise SystemExit("sim: unsupported alu op %02X" % op)
 
-    def step_ed(self):
-        op = self.fetch()
-        if op == 0xB0:  # ldir
-            bc = (self.b << 8) | self.c
-            while bc:
-                self.wr((self.d << 8) | self.e, self.rd((self.h << 8) | self.l))
-                self.hl = (self.get_rr(2) + 1) & 0xFFFF
-                de = (self.d << 8) | self.e
-                self.d, self.e = ((de + 1) >> 8) & 0xFF, (de + 1) & 0xFF
-                bc -= 1
-                self.b, self.c = (bc >> 8) & 0xFF, bc & 0xFF
-                self.cycles += 1
-            self.ZF = 0
-        elif op == 0xB8:  # lddr: (DE) <- (HL), HL--, DE--, BC-- to zero
-            bc = (self.b << 8) | self.c
-            while bc:
-                self.wr((self.d << 8) | self.e, self.rd((self.h << 8) | self.l))
-                self.hl = (self.get_rr(2) - 1) & 0xFFFF
-                de = (((self.d << 8) | self.e) - 1) & 0xFFFF
-                self.d, self.e = de >> 8, de & 0xFF
-                bc -= 1
-                self.b, self.c = (bc >> 8) & 0xFF, bc & 0xFF
-                self.cycles += 1
-            self._sf(0x10, 0)
-            self._sf(0x02, 0)
-            self._sf(0x04, 0)
-        elif op == 0xB1:  # cpir: compare A with (HL), HL++, BC--, until
-            # a match or BC = 0; Z on a match, P/V while BC is not zero
-            bc = (self.b << 8) | self.c
-            found = False
-            while True:
-                value = self.rd((self.h << 8) | self.l)
-                self.hl = (self.get_rr(2) + 1) & 0xFFFF
-                bc = (bc - 1) & 0xFFFF
-                self.cycles += 1
-                if value == self.a:
-                    found = True
-                    break
-                if bc == 0:
-                    break
-            self.b, self.c = bc >> 8, bc & 0xFF
-            self._sf(0x40, found)
-            self._sf(0x04, bc != 0)
-            self._sf(0x02, 1)
-        elif op == 0xA0:  # ldi: (DE) <- (HL), HL++, DE++, BC--
-            self.wr((self.d << 8) | self.e, self.rd((self.h << 8) | self.l))
-            self.hl = (self.get_rr(2) + 1) & 0xFFFF
-            de = (((self.d << 8) | self.e) + 1) & 0xFFFF
-            self.d, self.e = de >> 8, de & 0xFF
-            bc = (((self.b << 8) | self.c) - 1) & 0xFFFF
-            self.b, self.c = bc >> 8, bc & 0xFF
-            # H and N reset, P/V set while BC is not zero; S, Z and C
-            # are kept (the unrolled copies loop on JP PE).
-            self._sf(0x10, 0)
-            self._sf(0x02, 0)
-            self._sf(0x04, bc != 0)
-        elif op == 0x7B:  # ld sp,(nn)
-            self.sp = self.rd16(self.fetch16())
-        elif op == 0x73:  # ld (nn),sp
-            self.wr16(self.fetch16(), self.sp)
-        elif op == 0x5B:  # ld de,(nn)
-            self.de = self.rd16(self.fetch16())
-        elif op == 0x4B:  # ld bc,(nn)
-            self.bc = self.rd16(self.fetch16())
-        elif op == 0x53:  # ld (nn),de
-            self.wr16(self.fetch16(), (self.d << 8) | self.e)
-        elif op == 0x43:  # ld (nn),bc
-            self.wr16(self.fetch16(), (self.b << 8) | self.c)
-        elif op == 0x47:  # ld i,a
-            self.i = self.a
-        elif op == 0x57:  # ld a,i (P/V reflects IFF2)
-            self.a = self.i
-            self._sf(0x04, self.iff2)
-        elif op == 0x5F:  # ld a,r (refresh value; P/V reflects IFF2)
-            # The simulator does not otherwise expose the refresh register.
-            # Instruction count supplies the changing low seven bits needed
-            # by software that uses LD A,R as a cheap entropy source.
-            self.a = self.cycles & 0x7F
-            self._sf(0x04, self.iff2)
-        elif op in (0x46, 0x56, 0x5E):
-            self.im = {0x46: 0, 0x56: 1, 0x5E: 2}[op]
-        elif op == 0x4D:  # reti: IFF1 <- IFF2
-            self.pc = self.pop16()
-            self.iff1 = self.iff2
-        elif op == 0x45:  # retn: IFF1 <- IFF2
-            self.pc = self.pop16()
-            self.iff1 = self.iff2
-        elif op in (0x42, 0x52, 0x62, 0x72,
-                    0x4A, 0x5A, 0x6A, 0x7A):  # sbc/adc hl,rr
-            rr = (op >> 4) & 3
-            carry = 1 if self.CF else 0
-            if op & 0x08:  # adc hl,rr
-                res = self.hl + self.get_rr(rr) + carry
-                self.CF = res > 0xFFFF
-            else:          # sbc hl,rr
-                res = self.hl - self.get_rr(rr) - carry
-                self.CF = res < 0
-            self.hl = res & 0xFFFF
-            self.ZF = self.hl == 0
-            self.SNF = (self.hl & 0x8000) != 0
-        elif op == 0xA2:  # ini: (HL) <- in(C), HL++, B--
-            self.io_high = self.b
-            value = self.io_in(self.c)
-            self.wr((self.h << 8) | self.l, value)
-            self.hl = (self.hl + 1) & 0xFFFF
-            self.b = (self.b - 1) & 0xFF
-            self.ZF = self.b == 0
-            self.SNF = (value & 0x80) != 0
-            self._sf(0x02, 1)
-            self.PV = self.parity(value)
-        elif op == 0xA3:  # outi: out(C) <- (HL), HL++, B--
-            value = self.rd((self.h << 8) | self.l)
-            self.io_high = (self.b - 1) & 0xFF   # B counts down first
-            self.io_out(self.c, value)
-            self.hl = (self.hl + 1) & 0xFFFF
-            self.b = (self.b - 1) & 0xFF
-            self.ZF = self.b == 0
-            self.SNF = (value & 0x80) != 0
-            self._sf(0x02, 1)
-            self.PV = self.parity(value)
-        elif op == 0xB3:  # otir: outi until B is zero, one step per byte
-            while True:
-                value = self.rd((self.h << 8) | self.l)
-                self.io_high = (self.b - 1) & 0xFF
-                self.io_out(self.c, value)
-                self.hl = (self.hl + 1) & 0xFFFF
-                self.b = (self.b - 1) & 0xFF
-                self.cycles += 1
-                if self.b == 0:
-                    break
-            self.ZF = True
-            self.SNF = False
-            self._sf(0x02, 1)
-        elif (op & 0xC7) == 0x40:  # in r,(c); op 70h reads and discards
-            self.io_high = self.b
-            value = self.io_in(self.c)
-            code = (op >> 3) & 7
-            if code != 6:
-                self.write_r(code, value)
-            self.ZF = value == 0
-            self.SNF = (value & 0x80) != 0
-            self.PV = self.parity(value)
-        elif (op & 0xC7) == 0x41:  # out (c),r; op 71h writes zero
-            code = (op >> 3) & 7
-            value = 0 if op == 0x71 else self.read_r(code)
-            self.io_high = self.b
-            self.io_out(self.c, value)
-        elif op == 0x44:  # neg is an exact 0 - A subtract
-            old = self.a
-            self.a = 0
-            self._sub(old, carry=0)
-        else:
-            raise SystemExit("sim: unsupported ED %02X at %04X" % (op, (self.pc - 2) & 0xFFFF))
 
     @property
     def de(self):
@@ -4170,222 +3475,7 @@ class Z80:
     def bc(self, v):
         self.b, self.c = (v >> 8) & 0xFF, v & 0xFF
 
-    def step_cb(self):
-        op = self.fetch()
-        regs = {0: 'b', 1: 'c', 2: 'd', 3: 'e', 4: 'h', 5: 'l', 7: 'a'}
-        r = op & 7
-        mem = r == 6
-        value = self.rd(self.hl) if mem else getattr(self, regs[r])
-        if op < 0x40:  # rotate/shift (flags approximated; Z/S accurate)
-            grp = (op >> 3) & 7
-            if grp == 0:    # rlc
-                c = (value >> 7) & 1
-                value = ((value << 1) | c) & 0xFF
-                self.CF = c
-            elif grp == 1:  # rrc
-                c = value & 1
-                value = ((value >> 1) | (c << 7)) & 0xFF
-                self.CF = c
-            elif grp == 2:  # rl
-                c = (value >> 7) & 1
-                value = ((value << 1) | self.CF) & 0xFF
-                self.CF = c
-            elif grp == 3:  # rr
-                c = value & 1
-                value = ((value >> 1) | (self.CF << 7)) & 0xFF
-                self.CF = c
-            elif grp == 4:  # sla
-                c = (value >> 7) & 1
-                value = (value << 1) & 0xFF
-                self.CF = c
-            elif grp == 5:  # sra
-                c = value & 1
-                value = (value >> 1) | (value & 0x80)
-                self.CF = c
-            else:           # srl
-                c = value & 1
-                value = value >> 1
-                self.CF = c
-            if mem:
-                self.wr(self.hl, value)
-            else:
-                setattr(self, regs[r], value)
-            self.ZF = value == 0
-            self.SNF = (value & 0x80) != 0
-            self.PV = (bin(value).count('1') & 1) == 0
-        elif op < 0x80:  # bit n,r / bit n,(hl): Z = !bit
-            bit = (op >> 3) & 7
-            self.ZF = not ((value >> bit) & 1)
-        elif op < 0xC0:  # res n,r / res n,(hl)
-            bit = (op >> 3) & 7
-            value = value & ~(1 << bit) & 0xFF
-            if mem:
-                self.wr(self.hl, value)
-            else:
-                setattr(self, regs[r], value)
-        else:            # set n,r / set n,(hl)
-            bit = (op >> 3) & 7
-            value = value | (1 << bit)
-            if mem:
-                self.wr(self.hl, value)
-            else:
-                setattr(self, regs[r], value)
 
-    def step_prefix(self, op):
-        op2 = self.fetch()
-        if op == 0xDD:
-            reg = self.ix
-        else:
-            reg = self.iy
-        if op2 == 0xCB:  # DD/FD CB d op: rotate/bit/res/set on (ix+d)
-            off = self.fetch()
-            if off & 0x80: off -= 256
-            addr = (reg + off) & 0xFFFF
-            op3 = self.fetch()
-            v = self.rd(addr)
-            regs = {0: 'b', 1: 'c', 2: 'd', 3: 'e', 4: 'h', 5: 'l', 7: 'a'}
-            if op3 < 0x40:  # rotate/shift memory, copy to register
-                grp = (op3 >> 3) & 7
-                if grp == 0:    # rlc
-                    c = (v >> 7) & 1
-                    v = ((v << 1) | c) & 0xFF
-                    self.CF = c
-                elif grp == 1:  # rrc
-                    c = v & 1
-                    v = ((v >> 1) | (c << 7)) & 0xFF
-                    self.CF = c
-                elif grp == 2:  # rl
-                    c = (v >> 7) & 1
-                    v = ((v << 1) | self.CF) & 0xFF
-                    self.CF = c
-                elif grp == 3:  # rr
-                    c = v & 1
-                    v = ((v >> 1) | (self.CF << 7)) & 0xFF
-                    self.CF = c
-                elif grp == 4:  # sla
-                    c = (v >> 7) & 1
-                    v = (v << 1) & 0xFF
-                    self.CF = c
-                elif grp == 5:  # sra
-                    c = v & 1
-                    v = (v >> 1) | (v & 0x80)
-                    self.CF = c
-                else:           # srl
-                    c = v & 1
-                    v = v >> 1
-                    self.CF = c
-                self.wr(addr, v)
-                r = op3 & 7
-                if r != 6:
-                    setattr(self, regs[r], v)
-                self.ZF = v == 0
-                self.SNF = (v & 0x80) != 0
-                self.PV = (bin(v).count('1') & 1) == 0
-            elif op3 < 0x80:  # bit n,(ix+d)
-                bit = (op3 >> 3) & 7
-                self.ZF = not ((v >> bit) & 1)
-            elif op3 < 0xC0:  # res n,(ix+d)
-                bit = (op3 >> 3) & 7
-                self.wr(addr, v & ~(1 << bit) & 0xFF)
-            else:             # set n,(ix+d)
-                bit = (op3 >> 3) & 7
-                self.wr(addr, v | (1 << bit))
-        elif op2 == 0x21:
-            if op == 0xDD:
-                self.ix = self.fetch16()
-            else:
-                self.iy = self.fetch16()
-        elif op2 == 0x2A:  # ld ix/iy,(nn)
-            v = self.rd16(self.fetch16())
-            if op == 0xDD:
-                self.ix = v
-            else:
-                self.iy = v
-        elif op2 == 0x22:  # ld (nn),ix/iy
-            self.wr16(self.fetch16(), reg)
-        elif op2 == 0x23:  # inc ix/iy
-            if op == 0xDD:
-                self.ix = (self.ix + 1) & 0xFFFF
-            else:
-                self.iy = (self.iy + 1) & 0xFFFF
-        elif op2 == 0x2B:  # dec ix/iy
-            if op == 0xDD:
-                self.ix = (self.ix - 1) & 0xFFFF
-            else:
-                self.iy = (self.iy - 1) & 0xFFFF
-        elif op2 == 0xE5:  # push ix/iy
-            self.push16(self.ix if op == 0xDD else self.iy)
-        elif op2 == 0xE1:  # pop ix/iy
-            v = self.pop16()
-            if op == 0xDD:
-                self.ix = v
-            else:
-                self.iy = v
-        elif op2 == 0xE9:  # jp (ix)/(iy)
-            self.pc = reg
-        elif op2 == 0xF9:  # ld sp,ix/iy
-            self.sp = reg
-        elif op2 in (0x09, 0x19, 0x29, 0x39):  # add ix/iy,rr (flags approx.)
-            rr = (op2 >> 4) & 3
-            # The prefixed forms answer the index register where the
-            # unprefixed encoding selects HL (add iy,iy is FD 29).
-            res = reg + (reg if rr == 2 else self.get_rr(rr))
-            if op == 0xDD:
-                self.ix = res & 0xFFFF
-            else:
-                self.iy = res & 0xFFFF
-            self._sf(1, (res & 0x10000) != 0)
-        elif op2 == 0x36:  # ld (ix+d),n
-            off = self.fetch()
-            if off & 0x80: off -= 256
-            self.wr((reg + off) & 0xFFFF, self.fetch())
-        elif op2 in (0x46, 0x4E, 0x56, 0x5E, 0x66, 0x6E, 0x7E):  # ld r,(ix+d)
-            off = self.fetch()
-            if off & 0x80: off -= 256
-            v = self.rd((reg + off) & 0xFFFF)
-            regs = {0x46: 'b', 0x4E: 'c', 0x56: 'd', 0x5E: 'e',
-                    0x66: 'h', 0x6E: 'l', 0x7E: 'a'}
-            setattr(self, regs[op2], v)
-        elif op2 in (0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x77):  # ld (ix+d),r
-            off = self.fetch()
-            if off & 0x80: off -= 256
-            regs = {0x70: 'b', 0x71: 'c', 0x72: 'd', 0x73: 'e',
-                    0x74: 'h', 0x75: 'l', 0x77: 'a'}
-            self.wr((reg + off) & 0xFFFF, getattr(self, regs[op2]))
-        elif op2 in (0x86, 0x8E, 0x96, 0x9E, 0xA6, 0xAE, 0xB6, 0xBE):  # alu a,(ix+d)
-            off = self.fetch()
-            if off & 0x80: off -= 256
-            v = self.rd((reg + off) & 0xFFFF)
-            grp = op2 & 0xF8
-            if grp == 0x80:
-                self._add(v)
-            elif grp == 0x88:
-                self._add(v, 1 if self.CF else 0)  # adc (ix+d)
-            elif grp == 0x90:
-                self._sub(v)
-            elif grp == 0x98:
-                self._sub(v, 1 if self.CF else 0)  # sbc (ix+d)
-            elif grp == 0xA0:
-                self.a = self._logic(self.a & v)
-            elif grp == 0xA8:
-                self.a = self._logic(self.a ^ v)
-            elif grp == 0xB0:
-                self.a = self._logic(self.a | v)
-            else:
-                self._logic(self.a - v, sub=True)  # cp
-        elif op2 in (0x34, 0x35):  # inc/dec (ix+d)
-            off = self.fetch()
-            if off & 0x80: off -= 256
-            addr = (reg + off) & 0xFFFF
-            old = self.rd(addr)
-            v = (old + 1) & 0xFF if op2 == 0x34 else (old - 1) & 0xFF
-            self.wr(addr, v)
-            if op2 == 0x34:
-                self._inc_flags(old, v)
-            else:
-                self._dec_flags(old, v)
-        else:
-            raise SystemExit("sim: unsupported %02X %02X" % (op, op2))
 
 
 # The nucleus mapping (mode 11, page field zero) the serial connect delay
@@ -4430,21 +3520,13 @@ def skip_serial_connect_delay(cpu, delay_address):
     return False
 
 
-# The core selection: KOS_SIM_CORE=c (the default: the C core,
-# tests/simcore, built by `make` or `make sim-core`) or python (the
-# reference it is proven against).  `Z80` is the selected class;
-# `PythonZ80` is always the Python core.
-PythonZ80 = Z80
-SIM_CORE = os.environ.get("KOS_SIM_CORE", "c")
-if SIM_CORE == "c":
-    if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
-        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from simcore.core import make_core_class
-    Z80 = make_core_class(PythonZ80, Ctc,
-                          (ONE_BYTE_T, ED_T, DD_T, ED_BLOCK,
-                           INTERRUPT_TSTATES))
-elif SIM_CORE != "python":
-    raise RuntimeError("KOS_SIM_CORE=%s: expected python or c" % SIM_CORE)
+# The CPU: the C core (tests/simcore, built by `make` or `make sim-core`)
+# over the board above.
+if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from simcore.core import make_core_class  # noqa: E402
+Z80 = make_core_class(Machine, Ctc,
+                      (ONE_BYTE_T, ED_T, DD_T, ED_BLOCK, INTERRUPT_TSTATES))
 
 
 def read_symbols(map_path):

@@ -9,12 +9,10 @@ MAP_ENABLE), pass mode at reset, ROM writes ignored.  `OUT (n),A` drives A
 on A8-A15, so the guest programs below write entries and control with real
 Z80 instructions, and the model under test decodes the 16-bit port.
 
-The selected core (KOS_SIM_CORE) runs every test; the equivalence tests
-also run the C core against the Python core when the C library is built.
+Every test runs on the simulator's C core.
 """
 
 import os
-import random
 import sys
 import unittest
 
@@ -22,7 +20,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 import z80sim  # noqa: E402
-from z80sim import PythonZ80, Z80  # noqa: E402
+from z80sim import Z80  # noqa: E402
 
 ROM_SIZE = 0x80000
 SRAM_BASE = 0x80000
@@ -449,133 +447,6 @@ class TestBoardSelection(unittest.TestCase):
         self.assertEqual(len(z.phys), 0x100000)
         with self.assertRaises(ValueError):
             Z80(bytes(ROM_SIZE + 1), b"", board="mk2")
-
-
-# ---- equivalence of the Python and C cores ---------------------------------
-
-def core_classes():
-    if z80sim.Z80 is not PythonZ80:
-        return PythonZ80, z80sim.Z80
-    try:
-        from simcore.core import make_core_class
-        c_class = make_core_class(
-            PythonZ80, z80sim.Ctc,
-            (z80sim.ONE_BYTE_T, z80sim.ED_T, z80sim.DD_T, z80sim.ED_BLOCK,
-             z80sim.INTERRUPT_TSTATES))
-    except RuntimeError:
-        return PythonZ80, None
-    return PythonZ80, c_class
-
-
-PY_CLASS, C_CLASS = core_classes()
-
-
-@unittest.skipIf(C_CLASS is None, "C core library not built")
-class TestCoreEquivalence(unittest.TestCase):
-    def pair(self, code, seed=7):
-        return (make(code, PY_CLASS, seed), make(code, C_CLASS, seed))
-
-    def same_state(self, py, c):
-        self.assertEqual(list(py.mapper.entries), list(c.mapper.entries))
-        self.assertEqual((py.mapper.dat_bank, py.mapper.map_enable),
-                         (c.mapper.dat_bank, c.mapper.map_enable))
-        self.assertEqual(py.phys, c.phys)
-
-    def test_reset_patterns_match(self):
-        py, c = self.pair(HALT, seed=11)
-        for _ in range(4):
-            self.same_state(py, c)
-            py.mapper.reset()
-            c.mapper.reset()
-
-    def test_api_sequence(self):
-        rng = random.Random(1304)
-        py, c = self.pair(HALT)
-        for step in range(6000):
-            kind = rng.randrange(8)
-            if kind < 3:
-                low = rng.choice([rng.randrange(0x20), rng.randrange(256)])
-                port = (rng.randrange(256) << 8) | low
-                value = rng.randrange(256)
-                self.assertEqual(py.mapper.io_write(port, value),
-                                 c.mapper.io_write(port, value))
-            elif kind < 6:
-                la = rng.randrange(0x10000)
-                self.assertEqual(py.mapper.translate(la),
-                                 c.mapper.translate(la))
-                self.assertEqual(py.rd(la), c.rd(la), "step %d" % step)
-            elif kind == 6:
-                la = rng.randrange(0x10000)
-                value = rng.randrange(256)
-                py.wr(la, value)
-                c.wr(la, value)
-            elif rng.randrange(40) == 0:
-                py.mapper.reset()
-                c.mapper.reset()
-        self.same_state(py, c)
-
-    def guest_program(self, rng, count):
-        """A straight-line program in ROM page 0 over the Mk2 ports."""
-        code = []
-        a = b = 0
-
-        def safe(high, low):
-            # Entries 0 and 8 hold the code page; leave them alone.
-            return high >= 0x80 or low not in (0, 8)
-
-        def pick_low(high):
-            while True:
-                low = rng.choice([rng.randrange(0x14), rng.randrange(256)])
-                if safe(high, low):
-                    return low
-
-        for _ in range(count):
-            kind = rng.randrange(10)
-            if kind == 0:
-                a = rng.randrange(256)
-                code += ld_a(a)
-            elif kind == 1:
-                b = rng.randrange(256)
-                code += ld_b(b)
-            elif kind == 2:
-                low = pick_low(a)
-                code += out_n(low)
-            elif kind == 3:
-                low = pick_low(b)
-                code += [0x0E, low] + OUT_C_A
-            elif kind == 4:
-                low = pick_low((b - 1) & 0xFF)
-                code += ld_hl(rng.randrange(0x10000)) + [0x0E, low] + OUTI
-                b = (b - 1) & 0xFF
-            elif kind == 5:
-                code += ld_hl(rng.randrange(0x10000)) + [0x56]   # LD D,(HL)
-            elif kind == 6:
-                code += ld_hl(rng.randrange(0x10000)) + [0x72]   # LD (HL),D
-            elif kind == 7:
-                code += st_a(rng.randrange(0x10000))
-            elif kind == 8:
-                a = rng.randrange(4)
-                code += ld_bc((b << 8) | 0x0F) + ld_a(a) + OUT_C_A
-            else:
-                code += [0x1E, rng.randrange(256)]           # LD E,n
-        return code + HALT
-
-    def test_guest_instruction_sequences(self):
-        for seed in range(1, 9):
-            rng = random.Random(seed * 977)
-            prologue = entry_write(0, 0) + entry_write(8, 0)
-            body = self.guest_program(rng, 700)
-            code = prologue + body
-            self.assertLess(len(code), 0x2000)
-            py, c = self.pair(code, seed)
-            go(py)
-            go(c)
-            self.assertEqual(
-                [py.a, py.b, py.c, py.d, py.e, py.h, py.l, py.pc, py.f],
-                [c.a, c.b, c.c, c.d, c.e, c.h, c.l, c.pc, c.f],
-                "seed %d" % seed)
-            self.assertEqual(py.tstates, c.tstates)
-            self.same_state(py, c)
 
 
 if __name__ == "__main__":
