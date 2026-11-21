@@ -41,6 +41,13 @@
  * Single-tasking: the call depth, the descriptor table and the boundary
  * frame are nucleus state, serialised by the syscall gate and the
  * non-reentrant IRQ entry.
+ *
+ * On Mk2 (KOS_BOARD_MK2) the nucleus has no resident driver domain: the
+ * endpoint table holds the in-process endpoints only, which run in place,
+ * and a descriptor copy is refused (KOS_ENOSYS).  The driver-domain half
+ * - endpoint installation, the domain crossing, the copy paths, the
+ * driver bootstrap interface and the IRQ trampoline - is the Mk1
+ * board's.
  */
 
 #include "kos/ipc.h"
@@ -58,6 +65,7 @@
 #include "kernel/memory/upcall.h"
 #include "kernel/syscall/diag.h"
 
+#if !defined(KOS_BOARD_MK2)
 /* Fixed-region primitives (kernel/ipc/ipc_asm.asm). */
 extern uint8_t ipc_latch(void);
 extern void ipc_domain_enter(uint8_t page_bits);
@@ -76,10 +84,15 @@ extern void ipc_bulk_unmap(void);
 extern uint8_t ipc_bulk_open;
 extern uint16_t ipc_bulk_faults;
 
-/* The common-resident application-bank copy gate and its staging buffer
- * (kernel/memory/user_copy.asm; declared with the syscall helpers). */
+/* The common-resident application-bank copy gate (kernel/memory/
+ * user_copy.asm; declared with the syscall helpers). */
 uint8_t kos_bank_copy(const struct kos_bank_copy_req *req);
+#endif /* !KOS_BOARD_MK2 */
+/* The staging buffer (kernel/memory/user_copy.asm; Mk2: kernel/
+ * syscall.c). */
 extern uint8_t kos_user_copy_staging[];
+
+#if !defined(KOS_BOARD_MK2)
 
 /* Revision-13 page values (architecture 2.2): page 1 shows bank 6, the
  * resident driver domain; page 0 is the nucleus's own cold half.  The
@@ -110,6 +123,7 @@ _Static_assert(KOS_EBUSY == 4, "ipc_asm.asm IPC_ASM_EBUSY");
  * path, and counted as slow. */
 #define IPC_DRIVER_IO_BASE IPC_APERTURE_BASE
 #define IPC_DRIVER_IO_END  IPC_APERTURE_END
+#endif /* !KOS_BOARD_MK2 */
 
 /* Frames and descriptors are bounded tables in fixed data.  The endpoint
  * table holds one record per endpoint of the image's whole boot set plus
@@ -205,11 +219,27 @@ uint16_t ipc_copy_slow;
  * driver owns two channels - its tick and its event timer - and each needs
  * its own in-image handler.  Every handler runs in bank 6, so the window
  * selection is one constant for all of them. */
+#if !defined(KOS_BOARD_MK2)
 static uint16_t irq_handler_entry[IRQ_SOURCE_COUNT];
 static uint16_t irq_handler_context[IRQ_SOURCE_COUNT];
 static uint8_t ipc_irq_active;
+#endif
 
 /* --- copy path helpers -------------------------------------------------- */
+
+#if defined(KOS_BOARD_MK2)
+/* No driver domain: a descriptor copy is refused. */
+static int16_t copy_move(const struct ipc_desc *desc, uint16_t driver_addr,
+			 uint16_t offset, uint16_t length, uint8_t dir)
+{
+	(void)desc;
+	(void)driver_addr;
+	(void)offset;
+	(void)length;
+	(void)dir;
+	return -KOS_ENOSYS;
+}
+#else
 
 static uint8_t in_driver_window(uint16_t addr, uint16_t length)
 {
@@ -462,6 +492,7 @@ path_b:
 	return copy_staged(caller_bank, caller_addr, driver_addr, length,
 			   dir);
 }
+#endif /* KOS_BOARD_MK2 */
 
 /* --- descriptor capture and lookup -------------------------------------- */
 
@@ -488,20 +519,25 @@ static int8_t desc_capture(uint8_t latch, uint16_t addr, uint16_t length,
 			   uint8_t dir)
 {
 	uint8_t index;
+#if !defined(KOS_BOARD_MK2)
 	uint8_t page = (uint8_t)((latch & KOS_ROM_PAGE_MASK) >>
 				 KOS_ROM_PAGE_SHIFT);
 	uint16_t end;
+#endif
 
 	if (length == 0u || length > KOS_IPC_DESC_MAX || dir > 1u) {
 		return (int8_t)-1;
 	}
+#if !defined(KOS_BOARD_MK2)
 	if ((latch & KOS_BANK_MASK) >= KOS_BANK_MASK) {
 		return (int8_t)-1;
 	}
+#endif
 	if (addr < KOS_USER_BUFFER_BASE ||
 	    (uint32_t)addr + length > 0x10000u) {
 		return (int8_t)-1;
 	}
+#if !defined(KOS_BOARD_MK2)
 	if (page != 0u) {
 		end = (uint16_t)(addr + length);
 		if (addr < IPC_APERTURE_END && end > IPC_APERTURE_BASE &&
@@ -509,6 +545,7 @@ static int8_t desc_capture(uint8_t latch, uint16_t addr, uint16_t length,
 			return (int8_t)-1;
 		}
 	}
+#endif
 	for (index = 0u; index < IPC_DESC_MAX; ++index) {
 		if (!descs[index].active) {
 			descs[index].active = 1u;
@@ -517,7 +554,9 @@ static int8_t desc_capture(uint8_t latch, uint16_t addr, uint16_t length,
 			descs[index].latch = latch;
 			descs[index].addr = addr;
 			descs[index].length = length;
+#if !defined(KOS_BOARD_MK2)
 			desc_classify(&descs[index]);
+#endif
 			return (int8_t)index;
 		}
 	}
@@ -585,6 +624,7 @@ uint8_t ipc_endpoint_flags(uint8_t number)
 	return (ep != (const struct ipc_endpoint *)0) ? ep->flags : 0u;
 }
 
+#if !defined(KOS_BOARD_MK2)
 /* Install one host-built endpoint record (architecture 5.3).  Only the
  * loader calls this, before any driver code runs; the checks protect the
  * nucleus table and the fixed driver window. */
@@ -620,6 +660,7 @@ int8_t ipc_install_endpoint(const struct ipc_endpoint_record *record)
 	endpoint_map(record->number, endpoint_count);
 	return 0;
 }
+#endif /* !KOS_BOARD_MK2 */
 
 /* The bound instance the dispatch that is running was entered for (see the
  * in-process endpoint block below). */
@@ -630,6 +671,22 @@ static int16_t ipc_call_endpoint(uint8_t number, struct kos_ipc_frame *frame);
 static int16_t api_copy(uint8_t id, uint16_t offset, uint16_t driver_addr,
 			uint16_t length, uint8_t dir);
 
+#if defined(KOS_BOARD_MK2)
+/* An in-process endpoint runs in place; nothing else is installed. */
+static int16_t invoke_endpoint(const struct ipc_endpoint *ep,
+			       struct kos_ipc_frame *frame, uint8_t nested)
+{
+	int16_t (*dispatch)(uint8_t, uint8_t, struct kos_ipc_frame *);
+
+	(void)nested;
+	if ((ep->flags & IPC_EP_NUCLEUS) == 0u) {
+		return -KOS_ENODEV;
+	}
+	dispatch = (int16_t (*)(uint8_t, uint8_t,
+				struct kos_ipc_frame *))ep->dispatch;
+	return dispatch(nucleus_call_handle, nucleus_call_object, frame);
+}
+#else
 /* A span never outlives the operation that opened it (architecture 5.2):
  * a dispatch that returns with one open is closed here and counted. */
 static void ipc_span_close(void)
@@ -695,6 +752,7 @@ static int16_t invoke_endpoint(const struct ipc_endpoint *ep,
 	}
 	return result;
 }
+#endif /* KOS_BOARD_MK2 */
 
 /* Dispatch one call.  At the outermost level (call_depth == 0) the caller
  * may be an application or cold nucleus code whose frame is outside the
@@ -925,9 +983,11 @@ static int16_t api_copy(uint8_t id, uint16_t offset, uint16_t driver_addr,
 {
 	struct ipc_desc *desc;
 
+#if !defined(KOS_BOARD_MK2)
 	if (ipc_irq_active | ipc_bulk_open) {
 		return -KOS_EBUSY;
 	}
+#endif
 	desc = desc_lookup(id);
 	if (desc == (struct ipc_desc *)0 || desc->dir != dir) {
 		return -KOS_EINVAL;
@@ -935,6 +995,7 @@ static int16_t api_copy(uint8_t id, uint16_t offset, uint16_t driver_addr,
 	return copy_move(desc, driver_addr, offset, length, dir);
 }
 
+#if !defined(KOS_BOARD_MK2)
 int16_t api_call(uint8_t dependency_ref, uint8_t op,
 			struct kos_ipc_frame *frame)
 {
@@ -1190,6 +1251,7 @@ const struct driver_boot *driver_boot(void)
 {
 	return &driver_boot_bundle;
 }
+#endif /* !KOS_BOARD_MK2 */
 
 /* --- syscall entry ------------------------------------------------------- */
 

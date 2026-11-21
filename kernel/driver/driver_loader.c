@@ -37,6 +37,11 @@
  * Boot-tier code runs with bank 7 unmapped (see kernel/driver/
  * driver_boot.asm): the boot entry may touch bank 6, the common region
  * and I/O ports, and it must not call the bootstrap interface.
+ *
+ * On Mk2 (KOS_BOARD_MK2) the system DAT maps no driver domain: the
+ * manifest and each image's header are read and checked as above, and
+ * the image is then refused as a copy (MOD_ENOTSUP), so the boot stops
+ * on the early console at the first driver.
  */
 
 #include "mod.h"
@@ -175,6 +180,15 @@ static void driver_fail(const uint8_t *name, int result)
 	driver_puts("\r\n");
 }
 
+#if defined(KOS_BOARD_MK2)
+static int driver_load_image(const romfs_file_t *file,
+			      const struct mod_header *header)
+{
+	(void)file;
+	(void)header;
+	return MOD_ENOTSUP;
+}
+#else
 /* --- container reads ----------------------------------------------------- */
 
 /* Read one plan record of `size` bytes at `at`, advancing `at`.  The
@@ -477,6 +491,7 @@ static int driver_load_image(const romfs_file_t *file,
 #endif
 	return MOD_OK;
 }
+#endif /* KOS_BOARD_MK2 */
 
 /* --- the loader ---------------------------------------------------------- */
 

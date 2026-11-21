@@ -34,7 +34,7 @@
  *
  * On Mk2 (KOS_BOARD_MK2) the loader builds the child on pages: see
  * process_prepare_program below; the EXE container path above is the Mk1
- * board's.
+ * board's, and Mk2's process_prepare refuses every container.
  */
 
 #if defined(KOS_BOARD_MK2)
@@ -122,6 +122,19 @@ int process_prepare_program(const struct process_program *program,
 	child->bank = image[0];
 	child->entry = program->entry;
 	return 0;
+}
+
+/* The EXE container path: on Mk2 every container is refused, so the
+ * launcher's process_exec and SYS_EXEC fail with nothing allocated. */
+int process_prepare(const char *path, uint8_t parent_pid, uint16_t args,
+		    uint16_t args_length, struct process_child *child)
+{
+	(void)path;
+	(void)parent_pid;
+	(void)args;
+	(void)args_length;
+	(void)child;
+	return -KOS_ENOTSUP;
 }
 
 #else /* Mk1 */

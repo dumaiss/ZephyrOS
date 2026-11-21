@@ -76,7 +76,8 @@ on top of the native system. They do not shape the native kernel.
 ### 1.3 Source tree and ownership
 
 ```text
-boot/                 reset, ROM-to-RAM copy, handoff to the kernel
+boot/                 reset, ROM-to-RAM copy, handoff to the kernel;
+                      mk2/: the Mk2 bootstrap
 kernel/               the nucleus
   include/            nucleus-private headers
   driver/             the resident-driver loader and boot gate
@@ -140,7 +141,13 @@ Ownership rules:
   A driver cannot include a nucleus header. The nucleus's assembly adds
   its board's mapping operations: `kernel/memory` for Mk1;
   `BOARD=mk2` uses `platform/zephyr80mk2/`'s platform roots instead
-  and adds `kernel/memory/mk2`.
+  and adds `kernel/memory/mk2`. The Mk2 `hardware.h`/`.inc` include the
+  Mk1 board's for the peripheral cards, which leave their latch out on a
+  board with the DAT. The Mk2 nucleus is the board's source list in the
+  Makefile: the Mk1-only sources (the latch gates, the mode-00 ROM
+  access, the Mk1 copy and upcall primitives, the bank-6 driver crossing
+  and `boot/start.asm`) are not in it, and shared C sources carry their
+  Mk2 branches behind `KOS_BOARD_MK2`.
 
 ### 1.4 Toolchain
 
@@ -463,8 +470,18 @@ physical page values or the LS612 register encoding.
    mapped ROM and RAM windows. Both the instruction stream and active
    stack must remain valid while `MAP_ENABLE` or `DAT_BANK` changes.
 5. A safe ROM-to-RAM handoff starts KonaOS with its system DAT active.
-   No specific copying strategy, linker placement or overlay logic is
-   frozen yet; the emulator must prove this sequence before PCB work.
+   `boot/mk2/start.asm` does it stackless from ROM page 00h: it programs
+   all sixteen entries in pass mode (system entries 0-4 the identity ROM
+   pages, so the fetch after `MAP_ENABLE` is the same ROM byte), enables
+   mapping on the system bank, copies the nucleus pages and the common
+   page from ROM to SRAM one 8 KiB page at a time through the source
+   (entry 5, a ROM page) and destination (entry 6, an SRAM page) copy
+   windows, builds the RAM system page-0 image in the destination
+   window, and jumps into the common page. Common code loads the final
+   system DAT and the working bank's placeholder (mirror first), sets
+   the stack and the DAT state and calls `kernel_main` with the system
+   bank selected, the mirrors equal to the hardware, no working image
+   cached and interrupts masked (`docs/boot.md` section 10).
 6. `SYS_REBOOT` must safely re-enter a known ROM boot view with arbitrary
    current mappings. Clearing mapped mode while still running RAM-only
    code is not a valid reboot path.
@@ -481,9 +498,31 @@ The nucleus and ZMOD providers remain build-selected and resident as
 required; this is **not** a runtime discovery, load/unload or security
 change. Instead of dedicating physical bank 7 to nucleus code and bank 6
 to drivers, the Mk2 system DAT maps the physical pages required by the
-active kernel/service call path. Which code/data must be simultaneously
-reachable, and whether some service pages are remapped into system
-windows, require an explicit host-planner/linker residency study.
+active kernel/service call path. The Mk2 nucleus has one fixed system
+DAT (`config/residency-mk2.json`):
+
+| entry | logical | holds | remapped |
+|---|---|---|---|
+| 0 | `0000h` | the RAM system page-0 image (the low entry stubs) | by the syscall gate (the caller's page 0) and the launch gate, per crossing |
+| 1-2 | `2000h-5FFFh` | the nucleus's fixed region, the ISR stack at `5F00h` | never |
+| 3-4 | `6000h-9FFFh` | the nucleus's cold region | never |
+| 5-6 | `A000h-DFFFh` | the copy windows | per copy chunk |
+| 7 | `E000h-FFFFh` | the common page (also working entry 15) | never |
+
+Every path finds what it runs mapped: the gates, the IRQ entry, the
+event core and the NMI vector are common; the dispatcher, the bodies,
+the IRQ executive and its handlers are nucleus pages; an interrupt never
+changes an entry, and nothing an interrupt path uses lives in entries 0,
+5 or 6, which a body may have remapped. The fixed region holds Mk1's
+fixed-required objects and the cold region only Mk1 cold-tier objects,
+so a page set that occupies entries 3-4 for a call leaves every
+fixed-required path mapped; the fixed region also holds the cold-tier
+objects the 16 KiB cold region has no room for. `tools/mapcheck.py mk2`
+enforces the regions, the empty copy windows, the common ceiling and the
+assembly-sized tables. The Mk2 nucleus has no resident driver domain:
+the driver loader reads the boot manifest and refuses the first image,
+IPC runs the in-process endpoints only, `SYS_REBOOT` and the EXE
+container loader refuse, and the boot stops on the early console.
 
 The gate and IRQ code must save and restore **the exact working DAT
 state**, relevant page modifications, stack, registers and interrupt
@@ -566,6 +605,12 @@ per process across a child's run. A Mk2 `exec` costs about 41,000
 T-states to the child's first instruction and an exit about 17,000 to the
 parent's (`tests/test_mk2_processes.py`, a 16-byte image with 256 bytes
 of BSS).
+
+**ROMFS:** the store's 8 KiB ROM pages follow the linked image in ROM
+(from `KOS_ROMFS_FIRST_PAGE`); the reader maps each page into the source
+copy window and copies straight to its buffer. Nothing changes mode and
+nothing is masked, so the store stays readable while a program holds the
+real-time interrupt.
 
 **Copy windows:** system entries 5 and 6 (`A000h`, `C000h`;
 `KOS_DAT_COPY_*` in `memory.inc`) belong to `kernel/memory/mk2/

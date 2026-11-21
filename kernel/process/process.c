@@ -411,7 +411,6 @@ void process_launch(const struct process_child *child)
 	kos_process_launch(&req);
 }
 
-#if !defined(KOS_BOARD_MK2)
 /* Kernel-launcher convenience wrapper: prepare a depth-0 child, then run
  * it.  The child/parent linkage, the loader path and the exit path are
  * shared with SYS_EXEC; only the returned error space differs (the
@@ -446,7 +445,6 @@ int process_exec(const char *path, uint16_t *status)
 	*status = process_last_status;
 	return EXE_EXEC_OK;
 }
-#endif /* !KOS_BOARD_MK2 */
 
 /* Teardown: release the running child's resources, then resume the
  * suspended parent through the common gate.  Never returns to its caller

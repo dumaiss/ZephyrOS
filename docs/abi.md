@@ -550,6 +550,12 @@ Every failure changes nothing, and every call restores the exact latch.
   | 6 | 1 | `kernel_bank` | 7 |
   | 7 | 1 | `romfs_first_page` | 2 |
 
+On the Mk2 board there are no banks: bank 0 is the caller's own memory,
+read and written through its current mapping, far window included, and
+every other bank is `KOS_EINVAL`; `BANK_INFO` returns `H = 01h`,
+`L = 0`; `SYSTEM_INFO`'s `app_mode`, `os_mode`, `kernel_bank` and
+`romfs_first_page` are 0.
+
 The SDK wrappers are in `kos/diag.h`, which `kos.h` does not include.
 
 ## 10. Errors

@@ -15,6 +15,32 @@
 KOS_PAGE_ZERO_END       = 0x0100
 KOS_NMI_ENTRY           = 0x0066
 
+; The system DAT after the boot (architecture 2.7.6): entry 0 the system
+; page-0 image (a caller's page 0 for a syscall crossing), entries 1-4 the
+; nucleus pages, never remapped, entries 5-6 the copy windows below,
+; entry 7 the common page.  The nucleus links inside KOS_NUCLEUS_BASE-
+; KOS_NUCLEUS_END; SRAM KOS_NUCLEUS_FIRST_PAGE + n backs its logical page
+; KOS_NUCLEUS_FIRST_ENTRY + n.
+KOS_NUCLEUS_BASE        = 0x2000
+KOS_NUCLEUS_END         = 0xA000
+KOS_NUCLEUS_FIRST_ENTRY = 1
+KOS_NUCLEUS_ENTRIES     = 4
+KOS_SYSTEM_PAGE0        = 0x40
+KOS_NUCLEUS_FIRST_PAGE  = 0x41
+KOS_COMMON_PAGE         = 0x7F
+
+; The ROM image: 512 KiB, 64 pages.  ROM page L (00h-07h) holds the
+; linked image's logical page L: 00h the reset and boot view (the
+; bootstrap and the low entry stubs), 01h-04h the nucleus, 07h the common
+; page.  The recovery store follows, read through the copy windows.
+KOS_ROM_IMAGE_SIZE      = 0x80000
+KOS_ROM_IMAGE_PAGES     = 0x08
+KOS_ROMFS_FIRST_PAGE    = 0x08
+KOS_ROMFS_PAGE_COUNT    = 36
+KOS_ROMFS_WINDOW_SIZE   = 0x2000
+KOS_ROMFS_CAPACITY      = 0x48000
+KOS_ROMFS_STAGING_SIZE  = 128
+
 ; The system bank's ISR stack: the top of logical page 2, a nucleus page.
 KOS_IRQ_ISR_STACK_BASE  = 0x5F00
 KOS_IRQ_ISR_STACK_TOP   = 0x6000

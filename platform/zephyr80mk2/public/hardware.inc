@@ -5,7 +5,9 @@
 ; Sixteen 7-bit entries, the system bank (entries 0-7) and the working bank
 ; (entries 8-15), each translating one 8 KiB logical page; the control
 ; register selects the bank and enables mapping.  The peripheral cards are
-; the Mk1 board's, with their constants in platform/zephyr80/public.
+; the Mk1 board's: their constants are platform/zephyr80/public/
+; hardware.inc, included at the end, which leaves its CPU-board latch out
+; on a board that defines KOS_DAT_CONTROL_PORT.
 ;
 ; Keep this file value-identical with hardware.h (parity-tested).
 ; -----------------------------------------------------------------------------
@@ -37,3 +39,7 @@ KOS_DAT_ROM_FIRST       = 0x00	; 00h-3Fh: the 512 KiB ROM
 KOS_DAT_ROM_PAGES       = 0x40
 KOS_DAT_SRAM_FIRST      = 0x40	; 40h-7Fh: the 512 KiB SRAM
 KOS_DAT_SRAM_PAGES      = 0x40
+
+; --- The peripheral cards (the Mk1 board's) ---
+
+	.include "../../zephyr80/public/hardware.inc"

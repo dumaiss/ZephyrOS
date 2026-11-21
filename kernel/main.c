@@ -8,6 +8,10 @@
  *   - early console initialized,
  *   - boot-time latch assertion passed.
  *
+ * On Mk2 (KOS_BOARD_MK2) boot/mk2/start.asm establishes the same with the
+ * system DAT in force (architecture 2.7.6); kernel_main() checks the DAT
+ * mirrors instead of the latch and reserves the nucleus's pages.
+ *
  * kernel_main() first re-validates the latch state that the bank-7 body
  * depends on, exercises the banking primitives and prints the banner
  * (validation itself is silent), then brings up the IRQ executive, the
@@ -29,7 +33,11 @@
 #include "kernel/ipc/ipc.h"
 #include "kernel/vfs/vfs.h"
 #include "kernel/irq/irq_private.h"
+#if defined(KOS_BOARD_MK2)
+#include "kernel/memory/mk2/pages.h"
+#else
 #include "kernel/memory/banking.h"
+#endif
 
 /* Single integration seam for target acceptance builds; the runner and
  * the acceptance-group selection live in tests/target/support/target_test.c. */
@@ -75,8 +83,14 @@ static void romfs_diagnose(int result)
 	early_console_puts("romfs: init failed, code 0x");
 	early_console_putc(hex[(code >> 4) & 0x0F]);
 	early_console_putc(hex[code & 0x0F]);
+#if defined(KOS_BOARD_MK2)
+	/* The mapper control register's mirror: 02h is the system bank. */
+	latch = *(volatile const uint8_t *)KOS_DAT_CONTROL;
+	early_console_puts(", control 0x");
+#else
 	latch = platform_memctl_read();
 	early_console_puts(", latch 0x");
+#endif
 	early_console_putc(hex[(latch >> 4) & 0x0F]);
 	early_console_putc(hex[latch & 0x0F]);
 
@@ -168,6 +182,39 @@ void kernel_serial_connect_delay(void)
 	);
 }
 
+#if defined(KOS_BOARD_MK2)
+/* The nucleus's SRAM pages (the bootstrap, boot/mk2/start.asm): the
+ * page-0 image, the nucleus pages and the common page, 00h-terminated
+ * (kernel/memory/mk2/pages.h kos_pages_init). */
+extern const uint8_t kos_nucleus_pages[];
+
+/* The system DAT the bootstrap handed over (architecture 2.7.6): the
+ * system bank selected, entry 0 the system page-0 image, entries 1-4 the
+ * nucleus pages and entries 7 and 15 the same common page, all read from
+ * the mirrors, which are the mapping in force once the bootstrap wrote
+ * them. */
+static void kernel_assert_os_mode(void)
+{
+	volatile const uint8_t *system =
+		(volatile const uint8_t *)KOS_DAT_SYSTEM;
+	volatile const uint8_t *working =
+		(volatile const uint8_t *)KOS_DAT_WORKING;
+	uint8_t entry;
+
+	if (*(volatile const uint8_t *)KOS_DAT_CONTROL != KOS_DAT_CTL_SYSTEM ||
+	    system[0] != KOS_SYSTEM_PAGE0 ||
+	    system[KOS_DAT_ENTRIES - 1u] != KOS_COMMON_PAGE ||
+	    working[KOS_DAT_ENTRIES - 1u] != KOS_COMMON_PAGE) {
+		panic("system DAT not active at kernel entry");
+	}
+	for (entry = 0u; entry < KOS_NUCLEUS_ENTRIES; ++entry) {
+		if (system[KOS_NUCLEUS_FIRST_ENTRY + entry] !=
+		    (uint8_t)(KOS_NUCLEUS_FIRST_PAGE + entry)) {
+			panic("system DAT not active at kernel entry");
+		}
+	}
+}
+#else
 static void kernel_assert_os_mode(void)
 {
 	uint8_t latch = platform_memctl_read();
@@ -198,6 +245,7 @@ static void kernel_exercise_banking(void)
 		panic("bank 7 not rejected");
 	}
 }
+#endif /* KOS_BOARD_MK2 */
 
 /* --- native boot launcher -------------------------------------------
  *
@@ -472,7 +520,13 @@ void kernel_main(void)
 	kernel_serial_connect_delay();
 #endif
 	kernel_assert_os_mode();
+#if defined(KOS_BOARD_MK2)
+	/* Page ownership before anything allocates: the nucleus's pages are
+	 * reserved, every other SRAM page is free. */
+	kos_pages_init(kos_nucleus_pages);
+#else
 	kernel_exercise_banking();
+#endif
 	/* The common region arrives as the reset copier wrote it: FFh for
 	 * everything the ROM image does not carry, and the image carries no
 	 * _COMMON_DATA bytes, so the event table and the per-process flags
@@ -491,7 +545,11 @@ void kernel_main(void)
 	irq_init();
 
 	early_console_puts("KonaOS 0.0\r\n");
+#if defined(KOS_BOARD_MK2)
+	early_console_puts("platform: Zephyr-80 Mk2\r\n");
+#else
 	early_console_puts("platform: Zephyr-80\r\n");
+#endif
 	early_console_puts("kernel entry: OK\r\n");
 	early_console_puts("serial: OK\r\n");
 

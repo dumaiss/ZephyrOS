@@ -38,6 +38,21 @@ Usage:
     mapcheck.py geometry derive <probe.map> <memory.inc>
                 <out_bank7_end.inc> [<out_memory_variant.inc>]
 
+    mapcheck.py mk2 --cold-stems <config/residency-mk2.json>
+    mapcheck.py mk2 <konaos-mk2.map> <config/residency-mk2.json>
+                <platform/zephyr80mk2/private/memory.inc>
+                [--objdir DIR] [--mk1-residency config/residency.json]
+
+`mk2` checks the Zephyr-80 Mk2 nucleus instead (none of the bank-7/bank-6
+rules apply): the fixed areas inside the fixed region (system entries 1-2,
+below the ISR stack), the cold areas inside the cold region (entries 3-4),
+nothing linked into the copy windows (entries 5-6), the packed common run
+under KOS_COMMON_CEILING, every object placed once and its bytes in its
+region's areas, no Mk1 fixed-required object in the cold list, and the
+assembly-sized tables of kernel/memory/mk2 (the DAT images, the gate's
+per-depth DAT block, the far table) against the C constants that size
+their users.
+
 --production additionally rejects every acceptance symbol (static
 driver symbols, target-test runners/results and their generic seam hooks,
 CTC0 acceptance helpers, an IRQ vector lookup, fixture catalogs,
@@ -1714,7 +1729,206 @@ def geometry_main(argv):
         return 1
 
 
+# --- Zephyr-80 Mk2 (architecture 2.7.6, config/residency-mk2.json) ---------
+#
+# The Mk2 nucleus has none of the Mk1 bank-7/bank-6 rules above.  Its
+# residency file lists every nucleus object as fixed (system entries 1-2)
+# or cold (entries 3-4), and records the system DAT layout; `mk2` checks
+# the linked map and the objects against it.
+
+MK2_FORMAT = "kos-residency-mk2/1"
+MK2_FIXED_AREAS = FIXED_AREAS
+MK2_COLD_AREAS = COLD_AREAS
+MK2_COMMON_AREAS = ("_COMMON", "_COMMON_DATA")
+
+# The asm-sized tables of kernel/memory/mk2/{banking,far}.asm against the C
+# constants that size their users: (first symbol, end symbol, header,
+# constant, bytes per row).
+MK2_TABLES = (
+    ("_kos_dat_images", "_kos_dat_images_end", "kernel/include/process.h",
+     "PROCESS_TABLE_SIZE", 8),
+    ("kos_dat_gate_shadow", "_kos_dat_images", "abi/kos/process.h",
+     "KOS_EXEC_MAX_DEPTH", 12),
+    ("_kos_far_table", "_kos_far_table_end", "kernel/syscall/xmem.c",
+     "XMEM_MAX_OBJECTS", 3),
+)
+
+
+def load_mk2_residency(path):
+    """(regions, fixed stems, cold stems) of a Mk2 residency file."""
+    with open(path) as handle:
+        data = json.load(handle)
+    if data.get("format") != MK2_FORMAT:
+        raise MapError("%s is not a %s file" % (path, MK2_FORMAT))
+    regions = {}
+    for name, (lo, hi) in data.get("regions", {}).items():
+        regions[name] = (int(lo, 16), int(hi, 16))
+    for name in ("fixed", "cold", "copy_windows", "common"):
+        if name not in regions:
+            raise MapError("%s: no %s region" % (path, name))
+    fixed = list(data.get("fixed", ()))
+    cold = list(data.get("cold", ()))
+    both = sorted(set(fixed) & set(cold))
+    if both:
+        raise MapError("%s: placed twice: %s" % (path, ", ".join(both)))
+    entries = [row.get("entry") for row in data.get("system_dat", ())]
+    if entries != list(range(8)):
+        raise MapError("%s: system_dat must list entries 0-7" % path)
+    return regions, fixed, cold
+
+
+def c_constant(path, name):
+    """The first `#define name value` of a C source, as an integer."""
+    with open(path) as handle:
+        for line in handle:
+            match = re.match(r"\s*#\s*define\s+%s\s+(\w+)" % name, line)
+            if match:
+                return int(match.group(1).rstrip("uU"), 0)
+    raise MapError("%s defines no %s" % (path, name))
+
+
+def mk2_area_extent(areas, symbols, names):
+    """(lowest start, highest end) of the named areas holding bytes, or
+    None.  Empty areas carry only their s__/l__ symbols."""
+    spans = []
+    for name in names:
+        start = symbols.get("s_" + name, areas.get(name, (None, 0))[0])
+        size = symbols.get("l_" + name, areas.get(name, (0, 0))[1])
+        if start is not None and size:
+            spans.append((start, start + size))
+    if not spans:
+        return None
+    return min(lo for lo, _ in spans), max(hi for _, hi in spans)
+
+
+def check_mk2(map_text, regions, fixed, cold, root, objdir=None,
+              mk1_tiers=None, common_ceiling=0x0C00):
+    """The Mk2 layout rules.  Returns a ledger dict; raises MapError."""
+    areas, symbols = parse_map(map_text)
+
+    def inside(span, region, what):
+        lo, hi = regions[region]
+        if span is not None and (span[0] < lo or span[1] > hi):
+            raise MapError("%s %04Xh-%04Xh outside the %s region "
+                           "%04Xh-%04Xh" % (what, span[0], span[1] - 1,
+                                            region, lo, hi - 1))
+
+    fixed_span = mk2_area_extent(areas, symbols, MK2_FIXED_AREAS)
+    cold_span = mk2_area_extent(areas, symbols, MK2_COLD_AREAS)
+    common_span = mk2_area_extent(areas, symbols, MK2_COMMON_AREAS)
+    inside(fixed_span, "fixed", "the fixed areas")
+    inside(cold_span, "cold", "the cold areas")
+    inside(common_span, "common", "the common areas")
+    # Nothing the nucleus links may lie in the copy windows: every area
+    # with bytes, ABS ones included, and every symbol.
+    win_lo, win_hi = regions["copy_windows"]
+    for name, (addr, size) in sorted(areas.items()):
+        if size and addr < win_hi and addr + size > win_lo:
+            raise MapError("area %s %04Xh-%04Xh lies in the copy windows"
+                           % (name, addr, addr + size - 1))
+    for name, addr in sorted(symbols.items()):
+        if name.startswith(("s__", "l__")):
+            continue
+        if win_lo <= addr < win_hi:
+            raise MapError("symbol %s at %04Xh lies in the copy windows"
+                           % (name, addr))
+    common_used = sum(symbols.get("l_" + name, 0)
+                      for name in MK2_COMMON_AREAS)
+    if common_used > common_ceiling:
+        raise MapError("common areas use %d bytes, over the %d-byte "
+                       "ceiling" % (common_used, common_ceiling))
+    for first, end, header, constant, row in MK2_TABLES:
+        if first not in symbols or end not in symbols:
+            raise MapError("map has no %s/%s" % (first, end))
+        want = c_constant(os.path.join(root, header), constant) * row
+        have = symbols[end] - symbols[first]
+        if have != want:
+            raise MapError("%s is %d bytes; %s %s gives %d"
+                           % (first, have, header, constant, want))
+    if objdir is not None:
+        sizes = rel_area_sizes(objdir)
+        listed = set(fixed) | set(cold)
+        missing = sorted(set(sizes) - listed)
+        if missing:
+            raise MapError("unplaced Mk2 objects: %s" % ", ".join(missing))
+        absent = sorted(listed - set(sizes))
+        if absent:
+            raise MapError("placed objects not built: %s"
+                           % ", ".join(absent))
+        for name in fixed:
+            if any(sizes[name].get(area, 0) for area in MK2_COLD_AREAS):
+                raise MapError("fixed object %s has cold-area bytes" % name)
+        # A cold object's initialized data is copied from _INITIALIZER to
+        # _INITIALIZED by the crt0, in the fixed region like every image's.
+        for name in cold:
+            if any(sizes[name].get(area, 0) for area in MK2_FIXED_AREAS
+                   if area not in ("_INITIALIZER", "_INITIALIZED")):
+                raise MapError("cold object %s has fixed-area bytes" % name)
+    if mk1_tiers is not None:
+        for name in cold:
+            if mk1_tiers.get(name) == "fixed-required":
+                raise MapError("cold object %s is fixed-required on Mk1"
+                               % name)
+    return {
+        "fixed_end": fixed_span[1] if fixed_span else regions["fixed"][0],
+        "fixed_room": regions["fixed"][1] - (fixed_span[1] if fixed_span
+                                             else regions["fixed"][0]),
+        "cold_end": cold_span[1] if cold_span else regions["cold"][0],
+        "cold_room": regions["cold"][1] - (cold_span[1] if cold_span
+                                           else regions["cold"][0]),
+        "common_used": common_used,
+        "common_ceiling": common_ceiling,
+    }
+
+
+def mk2_main(args):
+    """mapcheck.py mk2 --cold-stems <residency-mk2.json>
+    mapcheck.py mk2 <map> <residency-mk2.json> <memory.inc>
+                [--objdir DIR] [--mk1-residency residency.json]"""
+    if len(args) == 2 and args[0] == "--cold-stems":
+        try:
+            _regions, _fixed, cold = load_mk2_residency(args[1])
+        except MapError as exc:
+            print("mapcheck: %s" % exc, file=sys.stderr)
+            return 1
+        print("\n".join(cold))
+        return 0
+    options = {}
+    for flag in ("--objdir", "--mk1-residency"):
+        if flag in args:
+            at = args.index(flag)
+            options[flag] = args[at + 1]
+            del args[at:at + 2]
+    if len(args) != 3:
+        print(mk2_main.__doc__, file=sys.stderr)
+        return 2
+    map_path, residency_path, memory_inc = args
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        regions, fixed, cold = load_mk2_residency(residency_path)
+        values = parse_inc(memory_inc)
+        ceiling = values.get("KOS_COMMON_CEILING", 0x0C00)
+        mk1_tiers = None
+        if "--mk1-residency" in options:
+            mk1_tiers, _cold, _test = load_residency(
+                options["--mk1-residency"])
+        ledger = check_mk2(open(map_path).read(), regions, fixed, cold,
+                           root, options.get("--objdir"), mk1_tiers,
+                           ceiling)
+    except MapError as exc:
+        print("mapcheck: %s" % exc, file=sys.stderr)
+        return 1
+    print("mapcheck: mk2 OK | fixed end %04Xh room %d | cold end %04Xh "
+          "room %d | common %d of %d"
+          % (ledger["fixed_end"], ledger["fixed_room"], ledger["cold_end"],
+             ledger["cold_room"], ledger["common_used"],
+             ledger["common_ceiling"]))
+    return 0
+
+
 def main(argv):
+    if len(argv) >= 2 and argv[1] == "mk2":
+        return mk2_main(argv[2:])
     if len(argv) >= 2 and argv[1] == "geometry":
         return geometry_main(argv[2:])
     if len(argv) >= 2 and argv[1] == "residency":

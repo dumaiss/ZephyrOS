@@ -65,6 +65,7 @@ PLATFORM_PRIVATE_FILES = {"memory.h", "memory.inc", "irq.h", "irq.inc"}
 OWNER_FILES = (
     "boot/start.asm",
     "boot/shadow_copy.asm",
+    "boot/mk2/start.asm",
     "kernel/memory/banking.asm",
     "kernel/memory/map_ops.inc",
     "kernel/memory/mk2/map_ops.inc",

@@ -1,7 +1,8 @@
 # KonaOS Boot
 
 The boot image, the reset and copy sequence, the mapping at kernel entry,
-the boot sequence, and how to check a board. The rules are in
+the boot sequence, and how to check a board. Sections 1-9 are the Zephyr-80
+(Mk1) board's; section 10 is the Mk2 board's. The rules are in
 `docs/architecture.md` section 3.
 
 ## 1. The boot image
@@ -250,3 +251,66 @@ The emulator is a developer tool: nothing in this tree's build or
 USB devices, the analogue outputs and the `LD A,I` IFF2 behaviour are checked
 on the board (section 8). The SDK's `make run` starts it for one program
 (`docs/sdk.md`, section 11.1).
+
+## 10. Zephyr-80 Mk2
+
+`make BOARD=mk2` (or `make mk2`) builds `build-mk2/konaos-mk2.bin`, the
+production nucleus for the Mk2 CPU board (architecture 2.7), with the
+production store and boot setting.
+
+### 10.1 The image
+
+64 ROM pages of 8 KiB (`tools/pack_image.py --board mk2`):
+
+```text
+ROM page 00h        the reset and boot view: DI; JP at 0000h, the
+                    0030h syscall vector, the 0066h NMI entry, the
+                    bootstrap from 0100h
+ROM pages 01h-04h   the nucleus: logical 2000h-9FFFh as linked
+ROM pages 05h-06h   FFh (the copy windows hold no linked byte)
+ROM page 07h        the common page: E000h-FFFFh as linked
+ROM pages 08h-2Bh   the recovery store (the Mk1 build's recovery.romfs),
+                    logical byte L at page 08h + L / 2000h
+```
+
+### 10.2 Reset and copy
+
+`boot/mk2/start.asm`, stackless in pass mode, then in common:
+
+| step | runs from | mapping | does |
+|---|---|---|---|
+| 1 | ROM 00h | pass | all 16 entries: system 00h-04h (identity ROM), 01h / 41h in the copy windows, 7Fh common; working: the placeholder below |
+| 2 | ROM 00h | pass to system | `MAP_ENABLE` on, `DAT_BANK` 0 |
+| 3 | ROM 00h | system | ROM 01h-04h to SRAM 41h-44h and ROM 07h to SRAM 7Fh, 8 KiB each, entry 5 the source and entry 6 the destination |
+| 4 | ROM 00h | system | SRAM 40h, the system page-0 image: 0000h-00FFh zero, the 0030h and 0066h stubs |
+| 5 | common | system | the final DAT, mirror first; the cached-image identity none; `SP = 0000h`; the early console; the C runtime (`_DATA`, `_WINDOW_DATA` zeroed, initializers, static init); `kernel_main` |
+
+The final DAT:
+
+```text
+system   40h 41h 42h 43h 44h 00h 00h 7Fh    entries 5-6: the copy windows
+working  40h 41h 42h 43h 44h 00h 00h 7Fh    a placeholder; exec loads images
+```
+
+### 10.3 The boot sequence
+
+`kernel_main` checks the system DAT, reserves the nucleus's SRAM pages
+(40h-44h, 7Fh) in the page allocator, clears the event table, sets the
+real-time vector, starts the IRQ executive and prints the banner with
+`platform: Zephyr-80 Mk2`.  The ROMFS reader validates the store through
+the source copy window, and the driver loader reads `drivers.man` and
+refuses the first image, because the Mk2 system DAT maps no driver
+domain:
+
+```text
+KonaOS 0.0
+platform: Zephyr-80 Mk2
+kernel entry: OK
+serial: OK
+driver loader: sio.mod: copy
+drivers: unavailable 0x07
+console: driver failed
+```
+
+The boot ends there in the controlled halt.  `tests/test_mk2_nucleus.py`
+replays it on the simulator's Mk2 board.

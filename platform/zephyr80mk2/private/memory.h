@@ -14,6 +14,28 @@
 #define KOS_PAGE_ZERO_END           0x0100u
 #define KOS_NMI_ENTRY               0x0066u
 
+/* The system DAT after the boot: entry 0 the system page-0 image (a
+ * caller's page 0 for a syscall crossing), entries 1-4 the nucleus pages,
+ * never remapped, entries 5-6 the copy windows, entry 7 the common page
+ * (see memory.inc). */
+#define KOS_NUCLEUS_BASE            0x2000u
+#define KOS_NUCLEUS_END             0xA000u
+#define KOS_NUCLEUS_FIRST_ENTRY     1u
+#define KOS_NUCLEUS_ENTRIES         4u
+#define KOS_SYSTEM_PAGE0            0x40u
+#define KOS_NUCLEUS_FIRST_PAGE      0x41u
+#define KOS_COMMON_PAGE             0x7Fu
+
+/* The ROM image: 512 KiB, 64 pages; ROM pages 00h-07h hold the linked
+ * image's logical pages, the recovery store follows (see memory.inc). */
+#define KOS_ROM_IMAGE_SIZE          0x80000u
+#define KOS_ROM_IMAGE_PAGES         0x08u
+#define KOS_ROMFS_FIRST_PAGE        0x08u
+#define KOS_ROMFS_PAGE_COUNT        36u
+#define KOS_ROMFS_WINDOW_SIZE       0x2000u
+#define KOS_ROMFS_CAPACITY          0x48000u
+#define KOS_ROMFS_STAGING_SIZE      128u
+
 /* The system bank's ISR stack: the top of logical page 2. */
 #define KOS_IRQ_ISR_STACK_BASE      0x5F00u
 #define KOS_IRQ_ISR_STACK_TOP       0x6000u

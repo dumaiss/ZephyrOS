@@ -21,11 +21,18 @@
 
 #include "driver.h"
 
+#if defined(KOS_BOARD_MK2)
+/* Mk2: the caller's mapping value (its page-0 page), saved by the syscall
+ * gate in common state (kernel/memory/mk2/banking.asm). */
+extern uint8_t kos_gate_saved_latch;
+#define ipc_gate_latch() (kos_gate_saved_latch)
+#else
 /* The syscall gate's saved caller latch (bank, mode and page), read from
  * common state (kernel/ipc/ipc_asm.asm).  The copy resolver and the
  * buffer-identity rule (kernel/syscall.c `kos_syscall_buffer_bank`) both
  * resolve caller addresses against it. */
 uint8_t ipc_gate_latch(void);
+#endif
 
 /* One host-built endpoint record (architecture 5.3), read from a
  * resident driver container by the loader and installed verbatim.  The

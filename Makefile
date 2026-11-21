@@ -37,6 +37,7 @@
 #   make mk2boot                   Zephyr-80 Mk2 boot proof image (test-only)
 #   make mk2trans                  Zephyr-80 Mk2 transitions image (test-only)
 #   make mk2proc                   Zephyr-80 Mk2 processes image (test-only)
+#   make BOARD=mk2 (or make mk2)   Zephyr-80 Mk2 production image (build-mk2/)
 #   make clean    remove all generated files
 #
 # Builds are parallel by default (KOS_JOBS defaults to nproc); use
@@ -98,13 +99,14 @@ include platform/zephyr80/config.mk
 include platform/zephyr80mk2/config.mk
 
 # --- board selection --------------------------------------
-# BOARD names the CPU board the kernel's assembly sources build for: mk1
-# (the banking latch, the production board) or mk2 (the LS612 DAT mapper,
-# architecture 2.7).  A board is its platform include roots plus its
-# mapping operations (kernel/memory/map_ops.inc or kernel/memory/mk2/),
-# which the sources include as "map_ops.inc"; Mk2 C builds add
-# -DKOS_BOARD_MK2.  The Mk2 images are the test images mk2boot, mk2trans
-# and mk2proc; `make BOARD=mk2` builds mk2trans.
+# BOARD names the CPU board whose production image `make` builds: mk1
+# (the banking latch, the production board; build/) or mk2 (the LS612 DAT
+# mapper, architecture 2.7; build-mk2/, the `mk2` target below).  A board
+# is its platform include roots plus its mapping operations
+# (kernel/memory/map_ops.inc or kernel/memory/mk2/), which the sources
+# include as "map_ops.inc"; Mk2 C builds add -DKOS_BOARD_MK2.  Every rule
+# above the Mk2 section builds for Mk1; the Mk2 rules name their own
+# flags, so one make builds both boards' objects side by side.
 BOARD ?= mk1
 KOS_BOARD_ASFLAGS.mk1 := $(KOS_PLATFORM_ASFLAGS) -Ikernel/memory
 KOS_BOARD_ASFLAGS.mk2 := $(KOS_MK2_PLATFORM_ASFLAGS) -Ikernel/memory/mk2
@@ -112,13 +114,13 @@ ifeq ($(filter $(BOARD),mk1 mk2),)
 $(error BOARD must be mk1 or mk2, not "$(BOARD)")
 endif
 ifeq ($(BOARD),mk2)
-.DEFAULT_GOAL := mk2trans
+.DEFAULT_GOAL := mk2
 endif
 
 # The standalone SDK release version (`make sdk`).
 include config/sdk.mk
 
-ASFLAGS   := $(KOS_BOARD_ASFLAGS.$(BOARD)) -Itests/target/include
+ASFLAGS   := $(KOS_BOARD_ASFLAGS.mk1) -Itests/target/include
 # Kernel and acceptance sources include their private interfaces by
 # explicit owning path (kernel/...), so the nucleus build keeps `-I .`
 #; the module/driver build (DRV_CFLAGS, MOD_CFLAGS)
@@ -413,7 +415,7 @@ $(BUILD)/konaos.probe.ihx $(BUILD)/konaos.probe.map: \
 	subsystem-selftest process-selftest exe2-selftest \
 	console-serial-selftest \
 	fs-selftest ns-selftest ipc-selftest xmem-selftest helloworld-image \
-	phase-image mk2boot mk2trans mk2proc \
+	phase-image mk2 mk2boot mk2trans mk2proc \
 	hardware-images \
 	smoke-hardware \
 	smoke-hardware-hwtest \
@@ -2084,6 +2086,107 @@ $(MK2PROC_DIR)/mk2proc.bin: $(MK2PROC_RELS)
 	$(SDLDZ80) -m -w -i $(MK2PROC_DIR)/mk2proc.ihx $(MK2PROC_LINK) \
 		$(MK2PROC_RELS)
 	makebin -s 524288 $(MK2PROC_DIR)/mk2proc.ihx $@
+
+# Zephyr-80 Mk2 production image (BOARD=mk2): the whole nucleus built for
+# Mk2 and laid out in the pages the system DAT maps (architecture 2.7.6,
+# config/residency-mk2.json): the fixed objects at 2000h-5EFFh (system
+# entries 1-2), the cold objects at 6000h-9FFFh (entries 3-4), the copy
+# windows A000h-DFFFh empty, common at E000h.  The board's source list
+# below is the Mk2 nucleus: the Mk1-only sources (the latch gates, the
+# mode-00 ROM access, the Mk1 copy and upcall primitives, the bank-6
+# driver crossing and the Mk1 boot) are not in it.  The image carries the
+# production store (the Mk1 build's recovery.romfs, the same content) and
+# boot setting; tools/pack_image.py --board mk2 lays out the ROM.
+
+MK2_DIR := build-mk2
+MK2_IMAGE := $(MK2_DIR)/konaos-mk2.bin
+MK2_RESIDENCY := config/residency-mk2.json
+MK2_CFLAGS := -mz80 -c --nostdinc --Werror $(KOS_SDCC_OPT) \
+	-DKOS_BOARD_MK2=1 -I . $(KOS_MK2_PLATFORM_CFLAGS) -I $(MK2_DIR) \
+	$(KOS_SYSTEM_CFLAGS)
+# stem:source; the stems are the Mk1 objects' where the source is shared,
+# so the two residency files name one object one way.
+MK2_ASM_SRCS := start_mk2:boot/mk2/start.asm \
+	page_zero:kernel/syscall/page_zero.asm \
+	syscall_entry:kernel/syscall/entry.asm \
+	irq_entry:kernel/irq/entry.asm irq_vectors:kernel/irq/vectors.asm \
+	platform_irq:kernel/irq/init.asm \
+	event_common:kernel/event/event_common.asm \
+	banking_mk2:kernel/memory/mk2/banking.asm \
+	far_mk2:kernel/memory/mk2/far.asm \
+	page_copy_mk2:kernel/memory/mk2/page_copy.asm \
+	process_launch:kernel/process/launch.asm \
+	sdcc_helpers:kernel/runtime/sdcc_helpers.asm \
+	diag_io:kernel/syscall/diag_io.asm
+MK2_C_SRCS := main:kernel/main.c syscall:kernel/syscall.c \
+	diag:kernel/syscall/diag.c event:kernel/event/event.c \
+	event_syscall:kernel/event/event_syscall.c xmem:kernel/syscall/xmem.c \
+	rt:kernel/syscall/rt.c irq:kernel/irq/irq.c irq_sources:kernel/irq/ctc.c \
+	romfs:kernel/romfs/romfs.c process:kernel/process/process.c \
+	process_exec:kernel/process/exec.c name:kernel/lib/name.c \
+	vfs_path:kernel/vfs/path.c vfs_handles:kernel/vfs/handles.c \
+	vfs_workspace:kernel/vfs/workspace.c ipc:kernel/ipc/ipc.c \
+	driver_loader:kernel/driver/driver_loader.c \
+	vfs_router:kernel/vfs/router.c vfs_dev:kernel/vfs/dev.c \
+	vfs_fs:kernel/vfs/fs.c vfs_system:kernel/vfs/system.c \
+	object:kernel/syscall/object.c pages_mk2:kernel/memory/mk2/pages.c
+# Compiled into the common page, as on Mk1.
+MK2_COMMON_C_SRCS := early_console:kernel/early_console.c \
+	panic:kernel/panic.c
+MK2_STEM = $(word 1,$(subst :, ,$(1)))
+MK2_SRC = $(word 2,$(subst :, ,$(1)))
+MK2_COLD := $(shell $(PYTHON) tools/mapcheck.py mk2 --cold-stems \
+	$(MK2_RESIDENCY))
+MK2_H := $(wildcard abi/kos/*.h kernel/include/*.h kernel/*/*.h \
+	kernel/memory/mk2/*.h formats/include/*.h drivers/include/*.h \
+	platform/zephyr80mk2/*/*.h platform/zephyr80/public/hardware.h)
+MK2_INC := $(MK2TRANS_INC) platform/zephyr80mk2/private/irq.inc
+# The link order: the bootstrap first, irq_code_end last in _CODE.
+MK2_RELS := $(foreach s,$(MK2_ASM_SRCS) $(MK2_C_SRCS) $(MK2_COMMON_C_SRCS),\
+	$(MK2_DIR)/$(call MK2_STEM,$(s)).rel) $(MK2_DIR)/irq_code_end.rel
+MK2_LINK := -b _CODE=0x2000 -b _WINDOW=0x6000 -b _COMMON=0xE000
+
+mk2: $(MK2_IMAGE) $(SIM_CORE_LIB)
+	@echo "mk2 image: $(MK2_IMAGE)"
+
+define MK2_ASM_RULE
+$(MK2_DIR)/$(call MK2_STEM,$(1)).rel: $(call MK2_SRC,$(1)) $(MK2_INC)
+	@mkdir -p $(MK2_DIR)
+	$(SDASZ80) -plosgff $(MK2TRANS_ASFLAGS) -o $$@ $$<
+endef
+$(foreach s,$(MK2_ASM_SRCS) irq_code_end:kernel/irq/code_end.asm,\
+	$(eval $(call MK2_ASM_RULE,$(s))))
+
+define MK2_C_RULE
+$(MK2_DIR)/$(call MK2_STEM,$(1)).rel: $(call MK2_SRC,$(1)) $(MK2_H) \
+		$(MK2_DIR)/boot_program.h $(MK2_RESIDENCY)
+	@mkdir -p $(MK2_DIR)
+	$(SDCC) $(MK2_CFLAGS) $(2) \
+		$(if $(filter $(call MK2_STEM,$(1)),$(MK2_COLD)),--codeseg WINDOW --dataseg WINDOW_DATA) \
+		$$< -o $$@
+endef
+$(foreach s,$(MK2_C_SRCS),$(eval $(call MK2_C_RULE,$(s),)))
+$(foreach s,$(MK2_COMMON_C_SRCS),$(eval $(call MK2_C_RULE,$(s),--codeseg COMMON)))
+
+# The production system's boot setting (tools/systemgen.py).
+$(MK2_DIR)/boot_program.h: $(BOOT_PROGRAM_H)
+	@mkdir -p $(MK2_DIR)
+	cp $< $@
+
+$(MK2_DIR)/konaos-mk2.ihx $(MK2_DIR)/konaos-mk2.map: $(MK2_RELS)
+	$(SDLDZ80) -n -m -w -i $(MK2_DIR)/konaos-mk2.ihx $(MK2_LINK) \
+		$(MK2_RELS)
+
+$(MK2_IMAGE): $(MK2_DIR)/konaos-mk2.ihx $(MK2_DIR)/konaos-mk2.map \
+		$(BUILD)/recovery.romfs $(MK2_RESIDENCY) config/residency.json \
+		tools/mapcheck.py tools/pack_image.py \
+		platform/zephyr80mk2/private/memory.inc
+	$(PYTHON) tools/mapcheck.py mk2 $(MK2_DIR)/konaos-mk2.map \
+		$(MK2_RESIDENCY) platform/zephyr80mk2/private/memory.inc \
+		--objdir $(MK2_DIR) --mk1-residency config/residency.json
+	$(PYTHON) tools/pack_image.py --board mk2 $(MK2_DIR)/konaos-mk2.ihx \
+		$(MK2_DIR)/konaos-mk2.map $(BUILD)/recovery.romfs $@ \
+		platform/zephyr80mk2/private/memory.inc
 
 # --- physical-hardware serial smoke checks ----------------------------------
 # Requires the board connected at 115200 8N1 on SIO0/B and the matching image

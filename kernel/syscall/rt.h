@@ -9,9 +9,11 @@
 
 struct kos_bank_copy_req;
 
-/* Boot: the idle vector, and JP KOS_RT_VECTOR at 0066h in banks 0-6. */
+/* Boot: the idle vector, and JP KOS_RT_VECTOR at 0066h in banks 0-6
+ * (Mk2: the page-0 images carry the entry, the bootstrap's and exec's). */
 void kos_rt_boot(void);
 
+#if !defined(KOS_BOARD_MK2)
 /* Write the NMI entry into one bank's page zero (exec builds each child's
  * page zero with it).  0, or the copy gate's error. */
 uint8_t kos_rt_page_zero(uint8_t bank);
@@ -22,6 +24,7 @@ uint8_t kos_rt_page_zero(uint8_t bank);
  * entry stays in place.  The request is kos_bank_copy's.  0, or the
  * gate's error. */
 uint8_t kos_aux_copy(const struct kos_bank_copy_req *req);
+#endif
 
 /* Non-zero while a program holds the interrupt: the ROM mode (the
  * recovery store, reboot) is refused then.  It reads the vector itself,

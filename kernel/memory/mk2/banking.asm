@@ -235,6 +235,7 @@ _kos_str_mode_fault:
 kos_gate_saved_sp::
 	.ds	2
 kos_gate_saved_latch::		; the caller's mapping value (its page 0)
+_kos_gate_saved_latch::
 	.ds	1
 kos_gate_result_hl::
 	.ds	2
@@ -254,8 +255,8 @@ kos_gate_saved_page0::		; system entry 0 before the call
 kos_gate_saved_image::		; the caller's working image: its current
 _kos_gate_saved_image::		; mapping, far window included
 	.ds	2
-kos_gate_open::			; 1 while a crossing is open
-	.ds	1
+kos_gate_open::			; 1 while a crossing is open (0 at boot:
+	.db	0			; the common page is copied from ROM)
 kos_gate_image::		; the caller's bank when no image matched it
 	.ds	KOS_DAT_ENTRIES
 kos_gate_dat_end::

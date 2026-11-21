@@ -14,6 +14,11 @@
  * the process; the RT clock's own hold is the IO controller driver's
  * (`/dev/rtclock`), which the same exit releases.  Nothing here runs on
  * the tick: the handler is entered straight from the vector.
+ *
+ * On Mk2 (KOS_BOARD_MK2) the entry lives in page-0 images only (2.7.6):
+ * the bootstrap writes the system page-0 image's and exec each child's,
+ * and no copy maps an object's page at 0000h, so there is no per-bank
+ * write and no auxiliary-bank store.
  */
 
 #include "kos/errno.h"
@@ -26,6 +31,7 @@
 /* The owner: pid + 1, or 0. */
 static uint8_t rt_owner;
 
+#if !defined(KOS_BOARD_MK2)
 /* The NMI entry's three bytes in an auxiliary bank. */
 #define RT_ENTRY_END   ((uint16_t)(KOS_NMI_ENTRY + 3u))
 #define RT_AUX_BANKS   6u                       /* banks 0-5 (P = 2-7) */
@@ -33,6 +39,7 @@ static uint8_t rt_owner;
 
 /* An object's own bytes at 0066h-0068h of each auxiliary bank. */
 static uint8_t rt_entry_store[RT_AUX_BANKS][3];
+#endif
 
 _Static_assert(KOS_RT_VECTOR == 0xEF08u && KOS_RT_IDLE == 0xEF0Bu,
 	       "rt_route stores the target at KOS_RT_VECTOR + 1 (EF09h)");
@@ -50,7 +57,9 @@ static void rt_route(uint16_t target) __naked
 void kos_rt_boot(void)
 {
 	volatile uint8_t *vector = (volatile uint8_t *)KOS_RT_VECTOR;
+#if !defined(KOS_BOARD_MK2)
 	uint8_t bank;
+#endif
 
 	vector[0] = 0xC3u;                           /* JP KOS_RT_IDLE */
 	vector[1] = (uint8_t)KOS_RT_IDLE;
@@ -58,10 +67,14 @@ void kos_rt_boot(void)
 	vector[3] = 0xEDu;                           /* RETN           */
 	vector[4] = 0x45u;
 	rt_owner = 0u;
+#if !defined(KOS_BOARD_MK2)
 	for (bank = 0u; bank < 7u; ++bank) {
 		(void)kos_rt_page_zero(bank);
 	}
+#endif
 }
+
+#if !defined(KOS_BOARD_MK2)
 
 uint8_t kos_rt_page_zero(uint8_t bank)
 {
@@ -121,6 +134,7 @@ uint8_t kos_aux_copy(const struct kos_bank_copy_req *req)
 	}
 	return 0u;
 }
+#endif /* !KOS_BOARD_MK2 */
 
 void kos_rt_release_process(uint8_t pid)
 {

@@ -16,6 +16,11 @@
  *     through the common-resident copy gates;
  *   - bank 7 and arithmetic wrap are rejected.
  *
+ * On Mk2 (KOS_BOARD_MK2) a buffer resolves through the caller's current
+ * mapping and moves through the nucleus's copy windows (architecture
+ * 2.7.6, buffer identity); GETINFO's bank field is the caller's page-0
+ * page.
+ *
  * The diagnostic set (SYS_DIAG_*) is implemented in
  * kernel/syscall/diag.c, the object and namespace family in
  * kernel/syscall/object.c and extended memory in kernel/syscall/xmem.c;
@@ -38,7 +43,11 @@
 
 #include "kernel/event/event.h"
 #include "kernel/ipc/ipc.h"
+#if defined(KOS_BOARD_MK2)
+#include "kernel/memory/mk2/pages.h"
+#else
 #include "kernel/memory/banking.h"
+#endif
 #include "kernel/vfs/vfs.h"
 
 #include "kernel/irq/irq_private.h"
@@ -54,10 +63,32 @@ uint8_t kos_syscall_result_a;
 uint8_t kos_syscall_result_c;
 uint16_t kos_syscall_result_hl;
 
+#if defined(KOS_BOARD_MK2)
+/* The staging block the bodies fill and drain.  On Mk2 it is nucleus
+ * data: a chunk moves between it and the caller's pages through the copy
+ * windows, so it never has to be visible from the caller's mapping. */
+uint8_t kos_user_copy_staging[KOS_SYSCALL_STAGE_SIZE];
+
+/* One transfer chunk against the caller's memory: the address resolves
+ * through the caller's current mapping, far window included (buffer
+ * identity, architecture 2.7.6), page by page through the copy windows.
+ * The window check (kos_syscall_buffer_ok) came first; nothing fails. */
+uint8_t kos_syscall_bank_read(uint16_t user_src, uint16_t length)
+{
+	kos_pages_copy(kos_caller_map(), user_src, (const uint8_t *)0,
+		       (uint16_t)kos_user_copy_staging, length);
+	return 0u;
+}
+
+uint8_t kos_syscall_bank_write(uint16_t user_dst, uint16_t length)
+{
+	kos_pages_copy((const uint8_t *)0, (uint16_t)kos_user_copy_staging,
+		       kos_caller_map(), user_dst, length);
+	return 0u;
+}
+#else
 /* Common-resident copy gate and its staging block. */
 extern uint8_t kos_user_copy_staging[];
-
-#define USER_STAGE_SIZE KOS_SYSCALL_STAGE_SIZE
 
 /* One transfer chunk against the caller bank, through the common gate.
  * The bank follows the buffer-identity rule, so the same helper serves a
@@ -87,6 +118,7 @@ uint8_t kos_syscall_bank_write(uint16_t user_dst, uint16_t length)
 	req.length = length;
 	return kos_bank_copy(&req);
 }
+#endif /* KOS_BOARD_MK2 */
 
 static uint16_t read_le16(const uint8_t *p)
 {
@@ -124,6 +156,27 @@ uint8_t kos_syscall_block_ok(uint16_t addr, uint16_t len)
 #define syscall_error	kos_syscall_error
 #define block_ok	kos_syscall_block_ok
 
+#if defined(KOS_BOARD_MK2)
+/* Read/write buffer: 0100h-DFFFh, no length wrap.  A buffer resolves page
+ * by page through the caller's mapping, so it may cross the far window's
+ * edges. */
+uint8_t kos_syscall_buffer_ok(uint16_t addr, uint16_t len)
+{
+	if (addr < KOS_USER_BUFFER_BASE || addr >= KOS_USER_BUFFER_END) {
+		return 0;
+	}
+	return len <= (uint16_t)(KOS_USER_BUFFER_END - addr);
+}
+
+/* The caller a buffer belongs to: its page-0 page, which names the
+ * process (the providers' bank argument).  The address itself resolves
+ * through kos_caller_map(). */
+uint8_t kos_syscall_buffer_bank(uint16_t addr)
+{
+	(void)addr;
+	return process_current_bank();
+}
+#else
 /* Read/write buffer: 0100h-DFFFh, no length wrap, and under a nonzero
  * saved page never across the aperture boundary (the two sides of
  * 8000h-BFFFh are different banks). */
@@ -174,6 +227,7 @@ uint8_t kos_syscall_buffer_bank(uint16_t addr)
 	}
 	return process_current_bank();
 }
+#endif /* KOS_BOARD_MK2 */
 
 static void syscall_exit(uint16_t block)
 {
@@ -206,6 +260,7 @@ static void syscall_getinfo(uint16_t block)
 	record[0] = (uint8_t)KOS_GETINFO_SIZE;
 	record[1] = (uint8_t)KOS_GETINFO_ABI;
 	record[2] = pid;
+	/* Mk2: the process's page-0 page (process.h). */
 	record[3] = process_table[pid].bank;
 	{
 		uint16_t flags = process_table[pid].flags;
@@ -224,6 +279,11 @@ static void syscall_getinfo(uint16_t block)
  * never returns and no caller block is read. */
 static void syscall_reboot(void)
 {
+#if defined(KOS_BOARD_MK2)
+	/* The Mk2 board reboots through the IOC reset (architecture 2.7.5),
+	 * which the nucleus does not drive: the call is refused. */
+	syscall_error(KOS_ENOSYS);
+#else
 	/* The reset path runs the ROM mode, which serves no NMI: a program
 	 * holding the real-time interrupt must release it first. */
 	if (KOS_RT_ROUTED()) {
@@ -233,6 +293,7 @@ static void syscall_reboot(void)
 	__asm__("di");
 	platform_ctc_quiesce_all();
 	platform_reboot_now();
+#endif
 }
 
 /* SYS_EXEC 05h.  Thin composition of the one process machinery: the

@@ -14,9 +14,6 @@
 
 /* --- I/O ports --- */
 
-/* Memory/banking latch (decoded across 00h-0Fh; software uses 00h). */
-#define KOS_MEMCTL_PORT             0x00u
-
 /* Z80 SIO channel 0 */
 #define KOS_SIO0A_DATA              0x20u
 #define KOS_SIO0A_CTRL              0x21u
@@ -64,7 +61,15 @@
 #define KOS_JOY0_PORT               0xFCu
 #define KOS_JOY1_PORT               0xFFu
 
-/* --- Memory/banking latch fields --- */
+/* --- Memory/banking latch --- */
+
+/* The Mk1 CPU board's latch.  The Mk2 board's hardware.h (the LS612 DAT
+ * mapper, platform/zephyr80mk2) includes this file for the peripheral
+ * cards and has no latch: these constants are left out there. */
+#if !defined(KOS_DAT_CONTROL_PORT)
+
+/* Memory/banking latch (decoded across 00h-0Fh; software uses 00h). */
+#define KOS_MEMCTL_PORT             0x00u
 
 #define KOS_BANK_MASK               0x07u   /* D2..D0 selected SRAM bank   */
 #define KOS_LATCH_NON_BANK_MASK     0xF8u   /* D7..D3 (bank update keeps)  */
@@ -87,6 +92,8 @@
 /* Boot-ROM page assignment */
 #define KOS_BOOT_OS_ROM_PAGE        1
 #define KOS_BOOT_OS_BANK            7
+
+#endif /* !KOS_DAT_CONTROL_PORT */
 
 /* --- SIO RR0 status bits --- */
 

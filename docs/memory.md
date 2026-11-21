@@ -354,6 +354,13 @@ the instructions they stand for.
   nothing outside `kernel/memory/map_ops.inc` (Mk2:
   `kernel/memory/mk2/map_ops.inc`) and the SDK's `xmemgate.asm` and
   `vcall.asm` writes the latch or the Mk2 mapper.
+- `tools/mapcheck.py mk2` (the Mk2 image, `config/residency-mk2.json`,
+  architecture 2.7.6): the fixed areas in `2000h-5EFFh`, the cold areas
+  in `6000h-9FFFh`, nothing in the copy windows `A000h-DFFFh`, the common
+  ceiling, every object placed once, no Mk1 fixed-required object cold,
+  and the DAT image rows, the gate's per-depth DAT block and the far
+  table against `PROCESS_TABLE_SIZE`, `KOS_EXEC_MAX_DEPTH` and
+  `XMEM_MAX_OBJECTS`.
 - At boot the kernel checks that it runs in mode 11 over bank 0 (an
   assembly read-back and a C check in `kernel_main()`); a failure prints on
   the early console and halts.
