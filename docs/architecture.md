@@ -1,6 +1,7 @@
 # KonaOS Architecture
 
-**Target:** Zephyr-80 (Z80 at 10 MHz, banked SRAM, decoder revision 13)
+**Current target:** Zephyr-80 Mk1 (Z80 at 10 MHz, banked SRAM, decoder revision 13)  
+**Proposed target:** Zephyr-80 Mk2 (LS612 DAT, section 2.7; emulator/OS port before PCB)
 **Toolchain:** SDCC 4.5 (`sdcc`, `sdasz80`, `sdldz80`), GNU Make, Python 3
 
 This document is the architectural contract of KonaOS: what the system is,
@@ -256,6 +257,243 @@ x16, 115,200 baud 8N1, polled, interrupts off. Initialization:
 Transmit polls RR0 bit 2 (`04h`); receive polls RR0 bit 0 (`01h`). The
 early console is reachable from every mapping and needs no driver. It
 remains the panic path when a `CONSOLE` driver exists.
+
+### 2.7 Zephyr-80 Mk2: proposed LS612 DAT architecture
+
+**Status:** Proposed **emulator and OS-port target, before PCB design**. Mk1
+remains the current implementation. Sections 2.1–2.4 and later references to
+latch modes, physical banks, bank-6 drivers and bank-7 kernel describe Mk1;
+they must not silently be interpreted as already implemented on Mk2.
+
+**Scope:** Mk2 replaces the CPU board's memory latch/decoder with a 74LS612
+mapper. The pBITz backplane and existing IOC, SIO/CTC, V9958 and audio cards
+remain in use. The simpler two-RP2350 educational SBC is a testbed for the
+*same CPU memory scheme*, not a proposed replacement for Mk2 peripherals.
+This section defines CPU/OS/emulator-visible behavior, not PLD equations,
+physical pin wiring, chip selection or final timing.
+
+#### 2.7.1 Goals and non-goals
+
+- Map memory in **8 KiB physical pages** rather than fixed 64 KiB banks.
+- Provide two hardware DAT contexts, each describing the Z80's entire
+  64 KiB logical address space.
+- Support any number of software-saved process/working DAT images in RAM;
+  the LS612 itself holds only two simultaneously resident images.
+- Retain KonaOS's trusted, single-tasking kernel/driver model and the
+  public SDK service semantics where feasible.
+- Do not add page attributes, hardware privilege, access protection,
+  demand paging, automatic interrupt-entry switching, or a new I/O model.
+- Use identical page size, page-number convention and programming behavior
+  on the SBC and Mk2 CPU board; do not require matching peripheral hardware.
+
+Espresso-09 shares the 8 KiB DAT and system/working context concepts, but
+its additional CPLD privilege and protection rules, fixed MMIO apertures,
+21-bit physical envelope and NitrOS-9 task semantics are **not** part of Mk2.
+
+#### 2.7.2 Physical address space and translation
+
+The initial configuration retains **512 KiB ROM + 512 KiB SRAM**, in a
+20-bit, 1 MiB physical address space (128 pages of 8 KiB):
+
+| Physical pages | Physical address range | Backing |
+|---|---|---|
+| `00h–3Fh` | `00000h–7FFFFh` | 512 KiB ROM |
+| `40h–7Fh` | `80000h–FFFFFh` | 512 KiB SRAM |
+
+A translated memory access uses the active DAT entry's seven-bit physical
+page number and the unchanged 13-bit offset:
+
+`physical_address = (page_number << 13) | (logical_address & 1FFFh)`
+
+All 16 mapping entries are stored in the LS612. No Mk2 memory-protection
+attributes are defined. ROM writes do not modify RAM: Mk1's ROM-read /
+RAM-write shadow mode does not exist in this scheme.
+
+| Logical page | Logical address | System DAT register | Working DAT register |
+|---|---|---:|---:|
+| 0 | `0000h–1FFFh` | 0 | 8 |
+| 1 | `2000h–3FFFh` | 1 | 9 |
+| 2 | `4000h–5FFFh` | 2 | 10 |
+| 3 | `6000h–7FFFh` | 3 | 11 |
+| 4 | `8000h–9FFFh` | 4 | 12 |
+| 5 | `A000h–BFFFh` | 5 | 13 |
+| 6 | `C000h–DFFFh` | 6 | 14 |
+| 7 | `E000h–FFFFh` | 7 | 15 |
+
+- **DAT bank 0 (registers 0–7)** is the resident **system** mapping.
+- **DAT bank 1 (registers 8–15)** is the **working** mapping.
+- `DAT_BANK` is a hardware map selector, not a process ID or privilege bit.
+- The intended invariant is that **registers 7 and 15 reference the same
+  physical SRAM page**. Thus `E000h–FFFFh` stays common while switching
+  contexts, holding transition code, stable stacks, IM2 vectors and state.
+  This is an OS/boot invariant; the LS612 does not enforce it.
+- Physical pages assigned to the kernel, services, primary programs and
+  far allocations need not be consecutive. Neither hardware DAT bank
+  adds physical memory: one Z80 context still sees 64 KiB total.
+
+The Mk1 common-region contents and byte budgets (section 2.4) are a
+starting point, **not** a frozen Mk2 linker/residency layout.
+
+#### 2.7.3 Low vectors, system mapping and software contexts
+
+The high 8 KiB common page does **not** by itself solve Z80 low-vector
+entry. `RST 30h` fetches code at `0030h`; NMI fetches at `0066h`; the
+current ABI also uses the caller's `0100h–1FFFh` region for startup data,
+code and syscall argument blocks. Every execution mapping must supply
+valid low entry stubs (or an equivalent verified safe-entry mechanism).
+Simply fixing the entire low 8 KiB to one kernel page would remove that
+process workspace.
+
+The existing syscall path relies on access to a caller's low page while
+the kernel executes. A plausible Mk2 implementation maps that caller
+page into the system DAT's logical page 0 when required; whether the
+final port does so, or copies arguments through the common area, must
+be resolved during the OS-port spike. The system DAT is **resident**,
+but not necessarily immutable in every entry.
+
+Software maintains one eight-byte DAT image per process/working context
+and tracks which image is cached in hardware bank 1. Switching to an
+unchanged cached image requires only changing `DAT_BANK`; a different
+or modified image loads its entries before execution. The nucleus owns
+page allocation, the DAT software mirrors, cache validity and transition
+discipline. Context selection alone does not provide memory protection.
+
+#### 2.7.4 Mapper programming and control
+
+Mk2 retains the existing low-byte pBITz device-select convention:
+`00h–0Fh` is the mapper's single 16-register I/O slot. The extended Z80
+I/O address byte provides the distinction between DAT entries and
+control state without consuming device-select `10h–1Fh`.
+
+| Operation | Meaning |
+|---|---|
+| Low I/O ports `00h–07h`, page write | Write system DAT entries 0–7 |
+| Low I/O ports `08h–0Fh`, page write | Write working DAT entries 8–15 |
+| `BC=800Fh`, `OUT (C),A` | Write the Mk2 memory-control register |
+
+Each mapper entry is programmed with one page byte in `00h–7Fh`.
+The proposed decoder distinguishes the two operations by I/O **A15**:
+`A15=0` for page programming and `A15=1` for control. This permits
+ordinary `LD A,page` / `OUT (n),A` mapper writes.
+
+**Z80 bus detail:** `OUT (n),A` places A on **A8–A15**. For example,
+`LD A,2Ah` / `OUT (02h),A` produces I/O address `2A02h`, not `0002h`.
+Thus high-byte-zero decoding would break the intended interface. A
+control access explicitly uses `B=80h` and `C=0Fh` via `OUT (C),A`.
+Any upper-address aliases not decoded by the PLD must be documented
+and exercised by hardware/emulator tests.
+
+The proposed control byte is:
+
+| Bit | State | Meaning |
+|---|---|---|
+| 0 | `DAT_BANK` | 0 = system, 1 = working |
+| 1 | `MAP_ENABLE` | 0 = pass/boot, 1 = mapped |
+| 2–7 | reserved | write zero |
+
+Changing `DAT_BANK` selects a prepared mapping without writing the LS612
+entries. Hardware register readback is not required; KonaOS keeps software
+mirrors. No SDK-visible interface may require knowledge of port numbers,
+physical page values or the LS612 register encoding.
+
+#### 2.7.5 Boot, reset and reboot
+
+1. Hardware reset selects `DAT_BANK=0` and **pass mode**, independent of
+   unknown LS612 power-on register contents.
+2. The intended reset view makes logical `0000h–FFFFh` read the first
+   64 KiB of physical ROM, including the first instruction at `0000h`.
+   This is a boot view, **not** Mk1 mode-00 ROM/RAM shadowing.
+3. With interrupts masked, bootstrap initializes both DAT banks,
+   establishes a valid SRAM common page, and prepares kernel mappings
+   and required low-memory entry stubs.
+4. Bootstrap copies/loads the necessary runtime image into SRAM with
+   mapped ROM and RAM windows. Both the instruction stream and active
+   stack must remain valid while `MAP_ENABLE` or `DAT_BANK` changes.
+5. A safe ROM-to-RAM handoff starts KonaOS with its system DAT active.
+   No specific copying strategy, linker placement or overlay logic is
+   frozen yet; the emulator must prove this sequence before PCB work.
+6. `SYS_REBOOT` must safely re-enter a known ROM boot view with arbitrary
+   current mappings. Clearing mapped mode while still running RAM-only
+   code is not a valid reboot path.
+
+#### 2.7.6 KonaOS memory and execution implications
+
+The Mk2 port replaces *physical bank ownership* with **8 KiB physical
+page ownership**. Logical address ranges can be composed from disjoint
+physical pages; sub-page allocator granularity can remain a software
+choice. It does not automatically make relocated code position-independent
+or eliminate the need for veneers, gates and linker placement.
+
+The nucleus and ZMOD providers remain build-selected and resident as
+required; this is **not** a runtime discovery, load/unload or security
+change. Instead of dedicating physical bank 7 to nucleus code and bank 6
+to drivers, the Mk2 system DAT maps the physical pages required by the
+active kernel/service call path. Which code/data must be simultaneously
+reachable, and whether some service pages are remapped into system
+windows, require an explicit host-planner/linker residency study.
+
+The gate and IRQ code must save and restore **the exact working DAT
+state**, relevant page modifications, stack, registers and interrupt
+state. A syscall made from far code must preserve the caller's far
+mapping, not just its process's default DAT image. The Z80 has no
+Espresso-style hardware privilege/interrupt-entry gate: IM2 vector
+fetches must remain accessible in high common RAM, and low-address
+RST/NMI paths must transfer into stable code before remapping. ISR
+return must recover the interrupted DAT and SP, including interrupts
+taken in the system or service context. Bounded interrupt-masking rules
+from sections 4.3–4.5 still apply.
+
+Initially, retain the existing **`8000h–BFFFh` 16 KiB far aperture**
+as an *OS logical convention*, implemented by changing two 8 KiB
+entries. This avoids coupling a hardware change to a simultaneous
+redesign of far-code link addresses, SDK placement rules and the EXE
+format. But **Mk1 map tokens literally encode a latch value**, and
+libkos/veneers directly write that latch: those bytes and instructions
+cannot be reused on Mk2. Preserve handle/map/unmap *semantics* where
+possible; represent mappings logically and implement their realization
+through a platform-owned operation. ABI changes, if required, must be
+documented rather than assuming Mk1 binary compatibility.
+
+No hardware-enforced page permissions, user/kernel isolation or
+preemptive scheduling are added by this mapper.
+
+#### 2.7.7 Emulator-first validation and port sequence
+
+The Mk2 memory model is a separate CPU-board configuration from Mk1;
+the emulator must **not** implement it as a new value of the old latch
+mode field. Keep the existing peripheral models and I/O device-select
+behavior unless the SBC configuration explicitly substitutes devices.
+
+Before a PCB is designed, demonstrate:
+
+1. Arbitrary LS612 power-on entries do not affect reset/pass-mode boot.
+2. Every one of the sixteen mapping registers translates the correct
+   logical 8 KiB region and preserves its 13-bit offset.
+3. DAT bank selection changes the whole map instantly and switching
+   back recovers the previous map without reprogramming entries.
+4. System/working contexts share `E000h–FFFFh`; entry code and stacks
+   never disappear during the context switch.
+5. Normal `OUT (n),A` mapper writes honor the actual Z80 upper I/O
+   address byte; the `800Fh` control write never alters a DAT entry.
+6. ROM reads, ignored ROM writes, SRAM writes and explicit ROM-to-RAM
+   boot copying follow the Mk2 model, not the Mk1 shadow decoder.
+7. Syscall and driver IPC entry/return preserve caller buffers,
+   current mapping and SP, including from a mapped far window.
+8. IM2, NMI and nested kernel/driver execution return to the exact
+   interrupted context and stack.
+9. Process `exec`/exit, DAT-image invalidation, far windows and
+   allocation pass the corresponding KonaOS acceptance tests.
+10. Reset and `SYS_REBOOT` both reach a deterministic ROM boot view.
+
+**Suggested port order:** emulator mapper/reset/I/O model; ROM
+bootstrap and common gates; syscall and interrupt transitions; software
+DAT-image caching and page allocator; nucleus/driver residency and
+loader; far mapping and SDK; diagnostics and acceptance suite.
+Keep the working Mk1 target intact throughout. Once the Mk2 design
+is tested, reconcile the remaining Mk1-only architecture text and
+the detailed `docs/memory.md`, `docs/boot.md`, `docs/abi.md` and
+`docs/exe-format.md` references. No pin map, PLD fitter choice or
+physical connection is frozen in this architecture section.
 
 ---
 
