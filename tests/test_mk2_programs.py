@@ -23,6 +23,8 @@ docs/exe-format.md):
 * the far-window vector's cost (informational);
 * PCMPlay: the real-time interrupt and the PCM ring in common memory,
   byte for byte, released at the end;
+* the store's exerciser (hwtest) and the SDK's far-code example with
+  their Mk2 expectations;
 * an EXE built for one board is refused on the other.
 
 Skipped when the images or programs have not been built.
@@ -221,6 +223,26 @@ class TestPrograms(Mk2ProgramCase):
                              if z.phys[owner + i] == 0), free)
 
 
+class TestExerciser(Mk2ProgramCase):
+    def test_hwtest_passes_with_mk2_expectations(self):
+        """The store's exerciser at the shell, with a card: every stage
+        passes, the extended-memory and far-code programs with their Mk2
+        rows (pages, one-byte handles, the window read by opening it), and
+        the card keeps no trace of the files stage."""
+        z = self.boot({})
+        fresh = self.run_line(z, "hwtest", limit=BUDGET)
+        for line in ("xmem-selftest: 60 checks, 0 failures",
+                     "xmem-far: 37 checks, 0 failures",
+                     "xmem-child: window 00", "hwtest: xmem+far PASS",
+                     "hwtest: files PASS", "hwtest: timer PASS",
+                     "hwtest: namespace+handles PASS", "hwtest: 4/4 PASS"):
+            self.assertIn(line, fresh)
+        self.assertNotIn("FAIL", fresh)
+        self.assertEqual(self.status(fresh), 0)
+        listing = self.run_line(z, "ls /fs")
+        self.assertNotIn("HWTEST", listing.upper())
+
+
 @unittest.skipUnless(built("placetest"), "make BOARD=mk2 builds placetest")
 class TestPlacedProgram(Mk2ProgramCase):
     def setUp(self):
@@ -343,7 +365,7 @@ class TestPlacedProgram(Mk2ProgramCase):
 class TestStandaloneSdk(Mk2ProgramCase):
     """Programs a developer builds with the Mk2 SDK tarball, out of the
     OS tree: PCMPlay (UserSoftware/PCMPlay, unchanged) and the SDK's
-    far-data example."""
+    far-data and far-code examples."""
 
     @classmethod
     def setUpClass(cls):
@@ -359,7 +381,7 @@ class TestStandaloneSdk(Mk2ProgramCase):
         for directory, args in (
                 (player, ["KOS_SDK_ARCHIVE=" + SDK_TARBALL,
                           "KOS_SDK_ROOT=build/" + SDK_NAME, "all"]),
-                (os.path.join(sdk, "examples"), ["fardata"])):
+                (os.path.join(sdk, "examples"), ["fardata", "fardemo"])):
             subprocess.run(["make", "-C", directory, "KOS_JOBS=1"] + args,
                            check=True, stdout=subprocess.DEVNULL,
                            stderr=subprocess.PIPE)
@@ -369,13 +391,16 @@ class TestStandaloneSdk(Mk2ProgramCase):
         with open(os.path.join(sdk, "examples", "build", "user",
                                "fardata.exe"), "rb") as handle:
             cls.fardata = handle.read()
+        with open(os.path.join(sdk, "examples", "build", "user",
+                               "fardemo.exe"), "rb") as handle:
+            cls.fardemo = handle.read()
 
     @classmethod
     def tearDownClass(cls):
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def test_the_sdk_packs_for_mk2(self):
-        for data in (self.pcmplay, self.fardata):
+        for data in (self.pcmplay, self.fardata, self.fardemo):
             self.assertEqual(exepack.parse_header(data)["board"],
                              exepack.BOARDS["mk2"])
 
@@ -387,6 +412,21 @@ class TestStandaloneSdk(Mk2ProgramCase):
         self.assertIn("fardata: far sum 0030", fresh)   # 10h + 20h
         self.assertIn("fardata: done", fresh)
         self.assertNotIn("[exit", fresh)
+
+    def test_fardemo_reports_the_handle_its_far_code_ran_under(self):
+        """The far half returns the token in force while it runs: the
+        one-byte mapping handle SYS_SEG_MAP gave the primary half."""
+        z = self.boot({"FARDEMO.EXE": self.fardemo})
+        fresh = self.run_line(z, "/fs/fardemo.exe")
+        token = re.search(r"fardemo: token ([0-9A-Fa-f]{2})\n", fresh)
+        self.assertIsNotNone(token, fresh)
+        self.assertNotEqual(int(token.group(1), 16), 0)
+        self.assertIn("fardemo: hello from the far bank", fresh)
+        self.assertIn(("fardemo: far result %s2b" % token.group(1)).lower(),
+                      fresh.lower())
+        self.assertIn("fardemo: PASS", fresh)
+        self.assertNotIn("[exit", fresh)
+        self.assertEqual(self.window(z), tuple(self.running_image(z)[4:6]))
 
     def test_pcmplay_plays_on_the_rt_interrupt(self):
         samples = 20000

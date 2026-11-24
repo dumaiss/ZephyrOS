@@ -472,6 +472,34 @@ class TestObjects(Mk2ProcCase):
         self.assertNotEqual(hardware(z)[12], own[0])
         self.far(z, 0)
 
+    def test_freeing_the_object_the_window_shows_closes_the_window(self):
+        """XMEM_FREE of the object in the open far window: the window
+        shows the program's own pages again on return, the handle in
+        force is 0, the working bank holds the program's image and the
+        freed object's mapping is refused.  Freeing another object
+        leaves an open window as it is."""
+        z = self.boot()
+        own = hardware(z)[12:14]
+        other = self.alloc(z, 0x2000, MAPPABLE)
+        shown = self.alloc(z, 0x4000, MAPPABLE)
+        other_mapping = self.map_(z, other)
+        mapping = self.map_(z, shown)
+        self.assertEqual(self.far(z, mapping), (0, 0))
+        window = hardware(z)[12:14]
+        self.assertNotEqual(window, own)
+        self.ok(z, FREE, le16(other))
+        self.assertEqual(hardware(z)[12:14], window)
+        self.assertEqual(self.kword(z, "_kos_far_current"), mapping)
+        self.ok(z, FREE, le16(shown))
+        self.assertEqual(hardware(z)[12:14], own)
+        self.assertEqual(self.kword(z, "_kos_far_current"), 0)
+        self.assertEqual(cached(z), self.image_addr(0))
+        self.assert_program_context(z, 0)
+        for handle in (mapping, other_mapping):
+            with self.subTest(mapping=handle):
+                self.assertEqual(self.far(z, handle), (1, handle))
+                self.assertEqual(hardware(z)[12:14], own)
+
     def test_invalid_handles_and_ranges_are_refused(self):
         z = self.boot()
         a = self.alloc(z, 0x2000)

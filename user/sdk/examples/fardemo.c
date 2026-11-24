@@ -6,12 +6,13 @@
  * (this image, its BSS and the whole stack stay outside 8000h-BFFFh), and
  * the far entry is called as plain C: it is `__banked`, so SDCC emits the
  * banked call and the SDK's trampoline maps the segment and restores the
- * previous latch.
+ * previous mapping.
  *
  * The far code prints its own line from a far-area buffer (a console
  * syscall whose buffer is the aperture) and calls back into primary code
- * (`fardemo_add`); it returns its latch byte, so this half proves which
- * bank ran the code.
+ * (`fardemo_add`); it returns the token in force while it runs, so this
+ * half proves which mapping ran the code.  The same source builds with
+ * either board's SDK: the token is the board's (docs/sdk.md).
  */
 
 #include "kos.h"
@@ -30,7 +31,7 @@ int fardemo_add(int value)
 /* The far entry (fardemo_far.c, linked at 8000h as segment 1):
  * `__banked`, so a plain C call goes through the SDK trampoline, which
  * maps the segment the definition declared (FAR1=, id 1). */
-extern int fardemo_far_main(int seed, int unused) __banked;
+extern int fardemo_far_main(int seed, int token) __banked;
 
 int main(void)
 {
@@ -40,8 +41,7 @@ int main(void)
 
 	console_puts("fardemo: begin\r\n");
 
-	/* The aperture token of this program's own FAR_CODE segment.  The
-	 * page field P = 7 - bank is 2..7: it never names bank 6 or 7. */
+	/* The aperture token of this program's own FAR_CODE segment. */
 	token = segmap(SEGMENT);
 	if (token < 1) {
 		printf("fardemo: FAIL map %d\r\n", (unsigned int)token);
@@ -51,8 +51,9 @@ int main(void)
 
 	/* The banked call: a plain C call, mapped by the trampoline from
 	 * the id the definition declared.  The far entry prints its line,
-	 * calls primary code and returns (latch << 8) | (seed + 1). */
-	result = fardemo_far_main(SEED, 0);
+	 * calls primary code and returns (token in force << 8) |
+	 * (seed + 1). */
+	result = fardemo_far_main(SEED, token);
 	expected = ((unsigned int)token << 8) | (unsigned int)(SEED + 1);
 	if ((unsigned int)result != expected) {
 		printf("fardemo: FAIL call %04x\r\n",
@@ -61,7 +62,8 @@ int main(void)
 	}
 	printf("fardemo: far result %04x\r\n", (unsigned int)result);
 
-	/* The helper restored the latch: the aperture is closed again. */
+	/* The trampoline restored the mapping: the aperture is closed
+	 * again. */
 	console_puts("fardemo: PASS\r\n");
 	return 0;
 }

@@ -909,8 +909,9 @@ ways to use it:
 - **Batched writes.** Build a sequence of `struct ksound_write`
   `{target, value}` pairs (target 0-3 a PSG, 4 the DAC; the
   `KSOUND_TARGET_*` names) and send it with `sound_write`: one call into
-  the driver for the whole sequence, which is the point, since a call
-  costs about 15,500 T-states. A music tick's register writes belong in
+  the driver for the whole sequence. A null IPC call measures 5,837
+  T-states on Mk1 and 9,275 on Mk2 (architecture 2.7.7); the payload
+  cost of `sound_write` has not been measured. A music tick's register writes belong in
   one call. A sequence longer than one descriptor (4 KiB) is split over
   several calls; an unknown target is `-KOS_EINVAL` with nothing of that
   call written. It returns the writes performed.

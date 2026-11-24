@@ -1,385 +1,264 @@
 # KonaOS Memory Map
 
-What the build places where, and how it is checked. The rules are in
-`docs/architecture.md` (sections 2, 4.2, 4.8 and 9); this document is the
-reference for addresses, linker areas and ledgers.
+This document describes the Zephyr-80 Mk2 memory layout built by
+`make BOARD=mk2`. The LS612 DAT maps sixteen logical 8 KiB regions through
+one of two eight-entry contexts. The address map, boot rules and execution
+model are defined in [architecture.md](architecture.md#27-zephyr-80-mk2-the-ls612-dat),
+sections 2.7.2–2.7.6.
 
-## 1. Regions
+## 1. Physical memory
 
-Mode 11 (the nucleus's view) with the window on bank 7:
+The initial Mk2 configuration has 512 KiB of ROM and 512 KiB of SRAM,
+divided into 128 physical pages of 8 KiB each:
 
-| region | content |
+| physical pages | physical addresses | backing | use |
+|---|---|---|---|
+| `00h–3Fh` | `00000h–7FFFFh` | ROM | boot image and recovery ROMFS |
+| `40h–7Fh` | `80000h–FFFFFh` | SRAM | nucleus, drivers, processes, common page and allocator pool |
+
+An enabled DAT translates a logical address with
+`physical = (page << 13) | (logical & 1FFFh)`. Each entry contains a
+seven-bit physical page number. ROM writes are ignored; there is no RAM
+shadow behind ROM.
+
+### 1.1 Logical map and system DAT
+
+The system DAT is the nucleus view. Entries 7 and 15 refer to the same
+physical common page, so the common region remains mapped when the DAT
+bank changes.
+
+| entry | logical addresses | system mapping | normal role |
+|---:|---|---|---|
+| 0 | `0000h–1FFFh` | SRAM page `40h` | system page-zero stubs; temporarily caller page zero for a syscall |
+| 1 | `2000h–3FFFh` | SRAM page `41h` | fixed nucleus code/data |
+| 2 | `4000h–5FFFh` | SRAM page `42h` | fixed nucleus code/data, driver and ISR stacks |
+| 3 | `6000h–7FFFh` | SRAM page `43h` | cold-set page or driver-domain page 3 |
+| 4 | `8000h–9FFFh` | SRAM page `44h` | cold-set page or driver-domain page 4 |
+| 5 | `A000h–BFFFh` | copy source window | remapped for page copies, or driver-domain page 5 |
+| 6 | `C000h–DFFFh` | copy destination window | remapped for page copies, or driver-domain page 6 |
+| 7 | `E000h–FFFFh` | SRAM page `7Fh` | common page; also working entry 15 |
+
+At the boot handoff the system entries are `40h 41h 42h 43h 44h 00h
+00h 7Fh`. Entries 5 and 6 are placeholders until a copy or driver call
+uses them. The working DAT initially contains the same placeholder; `exec`
+loads the selected process image before entering it. Entry 0 is remapped
+for syscall/launch crossings and for driver boot or bulk-map spans. Entries
+3–6 hold a cold set during a cold call, the copy windows during copies, or
+the driver's hot domain during a driver call.
+
+The mapping control state and sixteen software mirror bytes live at
+`EF10h–EF22h` in common memory (`KOS_DAT_STATE_*` in
+`platform/zephyr80mk2/private/memory.inc`). Code updates the mirror before
+writing the mapper. NMI handlers do not change the mapping.
+
+### 1.2 ROM image and recovery store
+
+The ROM image is 512 KiB, or 64 physical 8 KiB pages:
+
+| ROM pages | contents |
 |---|---|
-| `0000h-00FFh` | the caller's page zero: the reset copier (`0000h-0026h`, in the boot image), the `RST 30h` vector at `0030h-0032h` (`JP kos_syscall_entry`) and the NMI entry at `0066h-0068h` (`JP KOS_RT_VECTOR`, in every bank; architecture 4.12) |
-| `0100h-1FFFh` | the caller window; syscall argument blocks must lie here |
-| `2000h`-fixed code end | **fixed core** loadable code: `_CODE`, `_HOME`, `_INITIALIZER`, `_GSINIT`, `_GSFINAL` |
-| fixed data base-`5CFFh` | fixed-core runtime data (`_DATA`, `_INITIALIZED`), zeroed at boot, never loaded from ROM |
-| `5D00h-5EFFh` | the 512-byte **driver stack** (`kos_driver_stack`), used by every driver call |
-| `5F00h-5FFFh` | the 256-byte **ISR stack** (`_IRQ_ISR_STACK`) |
-| `6000h`-cold code end | **cold half** loadable code (`_WINDOW`): the syscall dispatcher and bodies, process management, the VFS, the driver loader, boot |
-| cold data base-`DFFFh` | cold-half runtime data (`_WINDOW_DATA`), zeroed at boot |
-| `E000h-FCFFh` | common code and data (`_COMMON`, `_COMMON_DATA`) |
-| `EEFEh-EF07h` | the ROM-access transition block, inside the common range |
-| `EF08h-EF0Ch` | the real-time interrupt vector: `JP` to the owner's handler or to the idle `RETN` at `EF0Bh` (written at boot) |
-| `F000h-FCFFh` | the RT region, lent to the real-time interrupt's owner |
-| `FD00h-FDFFh` | the IM2 vector page (`I = FDh`) |
-| `FE00h` | the vector-`FFh` guard byte |
-| `FE01h-FE07h` | IRQ transition state |
-| `FE08h-FE87h` | the 128-byte IRQ transition stack |
-| `FE88h-FFFFh` | the common boot and runtime stack (initial `SP = 0000h`, grows down) |
+| `00h` | reset and stackless bootstrap view |
+| `01h–04h` | fixed nucleus and cold set 0 image |
+| `05h–06h` | cold set 1 image |
+| `07h` | common page image |
+| `08h–2Bh` | recovery ROMFS, 36 pages |
+| `2Ch–3Fh` | available ROM capacity |
 
-Mode 10 (a program's view) maps the program's bank at `0000h-DFFFh` and
-common memory at `E000h-FFFFh`; with P ≠ 0, `8000h-BFFFh` shows bank 7 − P.
-The full decoder table is in architecture section 2.2.
+The recovery store provides 288 KiB (`KOS_ROMFS_CAPACITY`). The reader
+maps its source page into the system copy window and copies directly into
+the destination pages. ROMFS file data is not accessed through a Mk1
+mode-00 shadow mechanism.
 
-### 1.1 Banks
+## 2. Linked nucleus regions
 
-| bank | role |
+The Mk2 linker lays out the nucleus in logical address space. The physical
+pages backing the logical regions are listed in section 1.1. The fixed
+region and the two cold sets are separate linked areas; a cold set is
+mapped at system entries 3–4 only while its code runs.
+
+| logical addresses | linked contents |
 |---|---|
-| 7 | the nucleus; never a process bank |
-| 6 | the resident driver domain (section 3); never a process bank |
-| 0-5 | primary banks and auxiliary (extended-memory) banks; the allocator hands out these only (`PROCESS_BANK_COUNT`) |
-| 0 | also supplies common memory |
+| `0000h–00FFh` | low entry stubs in each page-zero image; process images also carry the far-window vector at `0028h` |
+| `0100h–1FFFh` | caller workspace, code/data and syscall argument blocks |
+| `2000h–5CFFh` | fixed nucleus (`_CODE`, `_HOME`, `_INITIALIZER`, `_GSINIT`, `_GSFINAL`, `_DATA`, `_INITIALIZED`) |
+| `5D00h–5EFFh` | 512-byte driver stack |
+| `5F00h–5FFFh` | 256-byte ISR stack |
+| `6000h–9FFFh` | cold-set link window (`_WINDOW`, `_WINDOW_DATA`); two 16 KiB sets are placed in distinct physical page pairs |
+| `A000h–DFFFh` | copy windows in the system DAT; no fixed nucleus code or data is linked here |
+| `E000h–FFFFh` | shared common page |
 
-Bank 6 stays addressable: the mode-11 window shows it at P = 1, and the
-diagnostic calls can read it.
+Set 0 is linked at `6000h–9FFFh`. Set 1 is linked at `16000h–19FFFh`
+and executes at the same low 16-bit addresses when mapped. Further sets
+would follow the same `set n * 10000h + 6000h` link convention, but the
+current image defines two. The build generates fixed-region veneers for
+calls that cross into a set, rejects external data references into a set,
+and checks that driver-reachable code does not depend on a cold set.
 
-### 1.2 ROM
+### 2.1 Common page and stacks
 
-The ROM is eight 64-KiB pages. Pages 0 and 1 are the boot pages, copied to
-SRAM banks 0 and 7 at reset (`docs/boot.md`). Pages 2-7 hold the recovery
-store: only `0000h-BFFFh` of each page is store data
-(`KOS_ROMFS_WINDOW_SIZE`, 48 KiB), so the store holds at most 288 KiB
-(`KOS_ROMFS_CAPACITY`). `C000h-FFFFh` of each store page carries a mirror of
-the ROM-access stub and is never file data.
+The common page is physical SRAM page `7Fh`, visible at `E000h–FFFFh` in
+both DAT banks. `_COMMON` and `_COMMON_DATA` have a combined ceiling of
+3,072 bytes beginning at `E000h`; other fixed reservations in the page
+are outside that packed run.
 
-## 2. Linker areas
+| addresses | reservation |
+|---|---|
+| `E000h–EBFFh` | common code/data packed run, bounded by `KOS_COMMON_CEILING` |
+| `EF08h–EF0Ah` | real-time interrupt vector (`JP` to the owner's handler) |
+| `EF0Bh` | idle `RETN` target |
+| `EF10h–EF22h` | DAT mirrors and cached working-image identity |
+| `F000h–FCFFh` | real-time region lent to the active RT owner |
+| `FD00h–FDFFh` | IM2 vector table (`I = FDh`) |
+| `FE00h` | vector-`FFh` guard byte |
+| `FE01h–FE07h` | IRQ transition state |
+| `FE08h–FE87h` | 128-byte IRQ transition stack |
+| `FE88h–FFFFh` | common boot/runtime stack; initial `SP = 0000h` grows down |
 
-`linker/zephyr80.lk` is a template; the build substitutes the derived data
-bases into `build/zephyr80.lk`.
+The syscall gate stack is 384 bytes in the common packed area. The driver
+stack is at `5D00h–5EFFh`; the ISR stack is at `5F00h–5FFFh`. The IRQ
+vector page, guard, state and transition stack are described by
+`platform/zephyr80mk2/private/irq.inc` and `irq.h`.
 
-```text
-_CODE        = 2000h            fixed loadable code
-_DATA        = <derived base>   fixed runtime data
-_WINDOW      = 6000h            cold loadable code
-_WINDOW_DATA = <derived base>   cold runtime data
-_COMMON      = E000h            common code and data
-```
+### 2.2 Linker areas and runtime initialization
 
-Unbased areas follow their based area in first-appearance order, fixed by
-the declarations at the top of `boot/start.asm`:
+`Makefile` links the Mk2 image with `_CODE=2000h`, `_WINDOW=6000h`,
+`_COLD1=16000h` and `_COMMON=E000h`. Geometry derivation places fixed and
+cold data after the respective code, subject to the driver/ISR stack and
+common-page boundaries.
 
-```text
-_CODE -> _HOME -> _INITIALIZER -> _GSINIT -> _GSFINAL     fixed loadable
-_DATA -> _INITIALIZED                                     fixed runtime
-_WINDOW -> _WINDOW_DATA                                   cold
-_COMMON -> _COMMON_DATA                                   common
-```
-
-| area | region | holds |
+| area | placement | purpose |
 |---|---|---|
-| `_RESET` | `0000h-0026h` | the stackless reset copier (absolute) |
-| `_PAGE_ZERO` | `0030h-0032h` | the `RST 30h` vector (absolute) |
-| `_CODE`, `_HOME`, `_INITIALIZER`, `_GSINIT`, `_GSFINAL` | fixed core | fixed code, string literals, initialized-data images, static initializers |
-| `_DATA`, `_INITIALIZED` | fixed core | fixed runtime data |
-| `_WINDOW` | cold half | cold code (compiled with `--codeseg WINDOW`) |
-| `_WINDOW_DATA` | cold half | cold runtime data (`--dataseg WINDOW_DATA`) |
-| `_COMMON`, `_COMMON_DATA` | `E000h-FCFFh` | gates, IRQ stubs, early console, panic, copy primitives, transition state |
-| `_ROM_ACCESS_STUB` | `EEFEh-EF07h` | the ROM-access trampoline and mirrored stub |
-| `_IRQ_ISR_STACK` | `5F00h-5FFFh` | the ISR stack |
-| `_IRQ_VECTOR` | `FD00h-FE00h` | the IM2 page and its guard |
-| `_IRQ_COMMON_STATE` | `FE01h-FE87h` | IRQ state and the transition stack |
+| `_BOOT` / reset image | ROM page 0 | stackless ROM bootstrap |
+| `_CODE`, `_HOME`, `_INITIALIZER`, `_GSINIT`, `_GSFINAL` | fixed region | fixed nucleus code and loadable initializers |
+| `_DATA`, `_INITIALIZED` | derived fixed-region base | fixed runtime data |
+| `_WINDOW`, `_WINDOW_DATA` | cold set 0 at `6000h` | set 0 code and data |
+| `_COLD1`, `_COLD1_DATA` | cold set 1 at `16000h` | set 1 code and data |
+| `_COMMON`, `_COMMON_DATA` | common page at `E000h` | gates, transition state, early console, IRQ and event paths |
 
-Every area exports `s__<area>` and `l__<area>`. `__kos_crt0_init`
-(`boot/start.asm`) copies `_INITIALIZER` to `_INITIALIZED` and zeroes
-`_DATA` and `_WINDOW_DATA`.
+The bootstrap copies ROM pages into SRAM pages before handoff. The C
+runtime copies initialized data and zeros the fixed data, both cold-set
+data areas, and the explicitly initialized common state. The common page
+is not implicitly zeroed as a single region; subsystems such as the event
+core initialize their own state.
 
-### 2.1 Derived geometry
+## 3. Page ownership and execution
 
-Nothing inside bank 7 has a fixed boundary except the stacks. The build
-links twice:
+`kernel/memory/mk2/pages.c` tracks physical SRAM page ownership. At boot,
+the image reserves the system page-zero image (`40h`), fixed nucleus
+pages (`41h–42h`), cold-set pages (`43h–46h`) and common page (`7Fh`).
+The driver loader allocates its page domain as nucleus-owned pages. ROM
+pages are never allocated. Other SRAM pages begin free and can be
+allocated to a process; allocation is all-or-none and takes the lowest
+available pages. Process exit releases its owned pages and objects.
 
-1. **Probe link:** the object list links with a placeholder
-   `kernel/memory/bank7_end.asm`.
-2. **Derive:** `tools/mapcheck.py geometry derive` measures the probe map
-   and writes `build/geometry/memory.inc` and `bank7_end.inc`:
+Each process has one eight-byte working DAT image in common state. Entries
+0–6 map its seven primary pages; entry 7 maps the common page. The image
+can be restored from the software copy when the working DAT cache does
+not already hold it. A caller's current mapping, including an open far
+window, is captured across syscalls and IPC.
 
-   ```text
-   fixed_code_end    = end of the fixed loadable areas
-   data_base         = align_down(KOS_DRIVER_STACK_BASE - fixed data size, 512)
-   __kernel_code_end = end of _WINDOW
-   window_data_base  = align_up(__kernel_code_end, 512)
-   ```
+`exec` checks the executable's board field, takes a process slot and seven
+primary pages, builds its page-zero stubs and startup block, loads the
+primary image and BSS, then allocates and loads each far/data segment as
+an extended-memory object. The page-zero image contains the syscall and
+NMI stubs and the far-window vector (`JP kos_far_map` at `0028h`). Only
+the BSS and specified startup regions are zeroed.
 
-3. **Final link** with the derived bases.
+The ROMFS loader maps ROM source pages through the copy windows. A
+program's FILE-backed load reads through the normal filesystem path.
+Process return releases the child's pages and objects, invalidates the
+cached DAT identity, and restores the parent's exact working mapping.
 
-So fixed runtime data ends just below the driver stack, and cold runtime
-data starts just after the cold code.
+## 4. Resident driver domain
 
-### 2.2 Residency classification
+The drivers retain their established linked layout, but their code and
+data reside in a nucleus-owned set of up to seven physical pages. Domain
+logical page `n` contains the bytes linked at `n * 2000h`. The loader
+allocates pages as the driver segments require them, copies the images
+from ROMFS through the copy windows, zeroes BSS, and initializes the
+driver with its domain mapped.
 
-`config/residency.json` classifies every production object as
-`fixed-required` (code that runs, or data that is touched, while the window
-shows another bank) or `cold`. `tools/mapcheck.py` fails the build if:
+For a driver call, handler or init routine, domain pages 3–6 occupy system
+entries 3–6 (`6000h–DFFFh`). The driver stack is used for the outermost
+call. Driver-to-driver calls remain directly mapped, and shared driver
+buffers stay addressable. The current production driver hot tier spans
+32 KiB, so a 16 KiB window would not contain the linked driver set.
+During a bulk-map span, the driver's page zero is mapped at system entry
+0. The fixed IRQ trampoline maps the driver domain for a handler and
+restores the interrupted DAT state afterward.
 
-- an object is missing from the classification;
-- a `fixed-required` object links at or above `6000h`;
-- an object's areas disagree with its cold placement.
+The driver API may call only fixed-region or common code. The Mk2
+residency checker enforces this rule because entries 3–6 hold the driver
+domain while driver code executes.
 
-Objects that are not required in the fixed core but do not fit in the cold
-half may link in the fixed core; the ledger reports them as `overflow`.
-`cold_half` lists the objects the build compiles into the cold areas, and
-`test_link` holds objects only acceptance images link, checked by the same
-rules.
+## 5. Copy windows and far window
 
-The VFS workspace (`vfs_workspace`), the buffer through which every path
-reaches a provider, is `fixed-required` (the buffer rule, architecture
-4.2).
+### 5.1 Copy windows
 
-**Upcall shim** (`kernel/memory/upcall.asm`): cold code that calls into
-bank 6 fills a request block (`page`, `entry`, `args`, `result`). The shim
-checks the page (0 or 1) and the entry (at or above `6000h`), saves the
-latch, selects the page, calls and restores the latch. The driver loader
-uses it to run each driver's hot init.
+System entries 5 and 6 are the source and destination windows at `A000h`
+and `C000h`. `kernel/memory/mk2/page_copy.asm` maps them to physical pages,
+updates the software mirror before each mapper write, and copies a bounded
+chunk with `LDIR` or zero-fills it. Copies split at page boundaries. No
+interrupt path depends on these entries, so a copy preserves the caller's
+interrupt state.
 
-## 3. The driver bank (bank 6)
+IPC `copy_in` and `copy_out` resolve a program buffer through the
+caller's current working DAT image, including far mappings, then copy
+directly between caller and driver pages. Nucleus buffers are addressed
+directly. There is no Mk1 bank-path selection or common-memory staging
+for these copies.
 
-| region | tier | content |
-|---|---|---|
-| `6000h-DFFFh` | hot (32 KiB) | driver code and data used after boot; `8000h-BFFFh` holds the `DRIVER_IO` buffers first |
-| `0000h-5FFFh` | boot/bulk (24 KiB) | boot-only driver code, bulk data (the IOC-FAT block cache) and the mapped range |
-| `0000h-00FFh` | (reserved) | bank 6's page zero: nothing is placed there |
-| `0100h-1FFFh` | mapped (7,936 bytes, inside boot/bulk) | the drivers' mapped segments (the V9958 font and expansion pages), shown at `0000h-1FFFh` inside a bulk-map span |
-| `E000h-FFFFh` | unused | common memory is mapped over it |
+### 5.2 Far window and extended-memory objects
 
-The packer (`tools/modpack.py`) places every segment; the loader only
-checks bounds (`docs/module-format.md`). The bank-6 driver set is not linked
-into bank 7, so no bank-7 geometry depends on it.
+The SDK far window is the logical range `8000h–BFFFh`, working entries
+12–13. `kos_far_map` maps the selected object's pages there and returns
+the previous one-byte mapping handle. Handle zero selects the program's
+own pages. `RST 28h` reaches the far-window vector in every process page
+zero; opening the window uses this vector rather than a syscall.
 
-## 4. Ledgers
+An extended-memory object is a list of physical pages owned by its
+process. An object can use up to seven pages; a mappable object uses at
+most the two pages visible in the far window. Far-code and far/data
+segments are objects too. `SEG_INFO` and `SEG_MAP` describe and map them;
+the format's segment limits and the object table still apply. Freeing an
+object that occupies the active far window closes that window before the
+pages are released. No bank-class, per-bank object limit or aperture-slice
+rule applies to Mk2.
 
-`tools/pack_image.py` and `tools/modpack.py plan` print the ledgers and
-emit them as JSON (`build/konaos.manifest.json` `nucleus`, and
-`drivers.plan.json`):
+## 6. Map and residency checks
 
-```text
-nucleus fixed: required 9664 bytes | overflow 2 bytes | stacks 768 | room 5950 bytes
-nucleus cold: code 25087 bytes end C1FFh | data 1815 bytes at C200h | room 5865 bytes
-driver hot: 32097 bytes of 32768
-driver boot/bulk: 21092 bytes of 24576
-driver mapped: 3584 bytes of 7936
-common: used 3067 of 7424 bytes (code 2140, data 927) | ceiling 3072
-```
+`config/residency-mk2.json` defines the fixed region, cold sets and
+driver-reachable object list. `tools/mapcheck.py mk2 --link` rewrites
+cross-set calls through generated veneers; `tools/mapcheck.py mk2`
+validates the linked image and its residency map. It checks:
 
-The device-event mechanism places the table, the two return-path checks
-and their frame primitives in common memory, the post path and the
-driver-API exports in the fixed core, and the syscall and teardown bodies
-in the cold half; `_WINDOW_DATA` starts at `C200h`, the linked cold
-code's end `C1FFh` rounded up (the window-data base follows the code end,
-architecture 4.2).  One delivery costs 8,407 T-states, 4.2% of the CPU at
-50 Hz (nucleus and trampoline; the handler's own body is outside it).
+- fixed-region, stack, cold-set, copy-window and common-page bounds;
+- every object is placed once and every cold set is declared;
+- no code or data occupies system entries 5–6 as fixed nucleus content;
+- driver-reachable objects do not reference cold sets;
+- external references into cold-set data are rejected;
+- DAT image rows, gate state and far-table sizing match process/object
+  limits; and
+- the packed common run stays within the 3,072-byte ceiling.
 
-The cold data holds the extended-memory object table: 32 entries of 12
-bytes (384 bytes), one per live object system-wide (architecture 4.8).
+`tools/pack_image.py --board mk2` checks the 512 KiB image, the ROMFS
+placement and page-image boundaries. `tests/test_source_layout.py` checks
+that executable mapping code stays in kernel/boot operations and that
+the C and assembly platform constants agree. The Mk2 operation definitions
+are in `kernel/memory/mk2/map_ops.inc`; mapping is controlled through the
+Mk2 DAT operations.
 
-The gate stack is 384 bytes; the deepest measured chain uses 275, and the
-worst case must stay at or below 360. The driver stack's measured
-high-water mark is 278 of 512 bytes.
+## 7. Platform constants
 
-## 5. Common memory
+The C and assembly descriptions are value-checked in `tests/test_source_layout.py`:
 
-### 5.1 Routines
-
-Everything that changes the mapping, or runs right after a change, is
-common code:
-
-```text
-_boot_common_entry        boot entry, mode 10 -> 11
-__kos_crt0_init           C runtime: copy initialized data, zero BSS, static init
-__kos_mode_fault          latch assertion failure
-kos_enter_os_mode         mode 10 -> 11
-kos_leave_os_mode         mode 11 -> 10
-kos_os_continuation       continuation after a transition
-kos_syscall_entry         the RST 30h gate
-irq_ctc0_stub             IM2 source stub
-irq_ff_unexpected         the vector-FFh and default target
-irq_common_entry          the common IRQ gate
-_irq_arch_lock/_unlock    IFF snapshot and restore
-_irq_arch_init            fills the IM2 page, I = FDh, IM2, EI
-_platform_memctl_*        latch read and write
-_platform_bank_get/_set   bank-field read and write
-_early_console_*          the early serial console
-_panic                    the fatal path
-_rom_access_copy          the ROM-access primitive
-_kos_process_launch       process entry (depth-indexed continuation)
-_kos_process_resume       parent resume
-_kos_process_continuation_size   gate-stack bytes in use (exec preflight)
-kos_process_return_trap   a program that returns instead of exiting
-_kos_event_irq_exit       the IRQ return path's delivery check
-_kos_event_syscall_exit   the syscall return path's delivery check
-_kos_event_enter          the hand-off to a handler (frame -> RETI)
-_kos_event_unwind         the frame's reverse and the interrupted RET
-_kos_event_pick/_pick_keep  the deliverable subscription scan
-_kos_event_post_bank      the bank a post counts for
-_kos_event_return_frame   the frame EVENT_RETURN unwinds
-the copy primitives       the path-B aperture stub and the window copy
-```
-
-The device-event core is common for the same reason the gates are: the
-delivery runs with the *application's* latch in force (mode 10 over its
-own bank), where bank 7 - cold half, driver tiers and all - is mapped
-only by accident, and `event_post` reads the same state from a driver's
-interrupt, where the window shows bank 6.  Everything it touches is in
-`_COMMON_DATA` below.
-
-The syscall dispatcher (`kos_syscall_dispatch`) is cold code; only the
-three-byte vector is in page zero. The early console and panic path,
-strings included, are entirely common, so they work from any mapping.
-
-### 5.2 Transition state
-
-The syscall gate (single depth):
-
-```text
-kos_gate_saved_sp      2 bytes    the caller's SP
-kos_gate_saved_latch   1 byte     the caller's whole latch
-kos_gate_result_hl     2 bytes    result staging
-kos_gate_result_a      1 byte     error staging
-kos_gate_result_c      1 byte     carry staging
-kos_gate_stack       384 bytes    the gate stack
-```
-
-Nested exec makes the process side depth-indexed, because a child runs on
-the same gate stack:
-
-```text
-kos_proc_cont          8 bytes    launcher SP per depth (2 x 4)
-kos_proc_ix            8 bytes    launcher IX per depth
-kos_proc_latch         4 bytes    launcher latch per depth
-kos_proc_iff           4 bytes    launcher IFF per depth
-kos_proc_gate_sp       8 bytes    shadowed gate SP per depth
-kos_proc_gate_latch    4 bytes    shadowed gate latch per depth
-kos_proc_gate_iff      4 bytes    shadowed gate IFF per depth
-kos_proc_frames      144 bytes    3 x 48-byte saved gate frames
-```
-
-`KOS_EXEC_FRAME_SAVE` is 48 bytes against a measured 32-byte frame; the
-exec preflight refuses a deeper frame before anything is allocated. This
-state is common because the resume gate restores it while it changes the
-mapping and switches stacks.
-
-The device-event state (common data, and zeroed by `kos_event_init`
-because `_COMMON_DATA` is not part of the boot's zeroed areas):
-
-```text
-kos_event_table        48 bytes  4 rows x 12 bytes (owner, bank, pending u16,
-                                 missed u16, trampoline u16, handler u16,
-                                 handle)
-kos_event_in_handler    7 bytes  one flag per process slot
-kos_event_frame        14 bytes  one u16 frame pointer per process slot
-kos_event_frame_latch   7 bytes  the exact latch each frame was built under
-kos_event_row           2 bytes  the subscription being delivered
-kos_event_latch         1 byte   the latch the current delivery runs under
-```
-
-The ROM-access block:
-
-```text
-_rom_access_staging     128 bytes  bounded copy staging
-rom_access_saved_latch    1 byte   the caller's exact latch
-rom_access_saved_iff      1 byte   the caller's interrupt state
-rom_access_page/offset/length      the validated request
-rom_access_busy           1 byte   non-reentrancy flag (.db 0: .ds bytes are FFh in ROM)
-```
-
-The ROM-access block has no stack, because mode 00 reads ROM at every
-address. Its transition is the fixed mirrored block:
-
-```text
-rom_access_trampoline   EEFEh   OUT (00h),A: enter mode 00
-rom_access_sync         EF00h   LDIR ROM -> staging; EX AF,AF'; OUT (00h),A
-rom_access_sync_end     EF08h   end of the stub mirrored into pages 2-7
-```
-
-Acceptance images that need it add a small self-test block to common data;
-production carries none.
-
-## 6. IRQ reservations
-
-```text
-_IRQ_VECTOR        FD00h-FE00h   the IM2 page and the guard byte; the word at
-                                 FDFFh-FE00h must equal irq_ff_unexpected
-_IRQ_COMMON_STATE  FE01h-FE07h   saved latch, saved SP, common SP, active source
-                   FE08h-FE87h   the IRQ transition stack
-_IRQ_ISR_STACK     5F00h-5FFFh   the handler stack; initial SP = 6000h
-```
-
-`irq_arch_init()` fills the page at run time: every vector targets
-`irq_ff_unexpected` except the claimed sources' stubs.
-
-## 7. Banking primitives
-
-`kernel/memory/banking.asm`, common code:
-
-```c
-uint8_t platform_memctl_read(void);            /* the latch                  */
-void    platform_memctl_write(uint8_t value);  /* raw write, gates only      */
-uint8_t platform_bank_get(void);               /* the bank field             */
-void    platform_bank_set(uint8_t bank);       /* keeps D3-D7; rejects bank 7 */
-```
-
-Mode changes are assembly gates with common continuations, never C
-functions: a C return address in `2000h-DFFFh` would disappear when the
-mapping changes.
-
-Every latch access in the boot path and the nucleus, these helpers
-included, expands from the mapping operations in
-`kernel/memory/map_ops.inc` (architecture 2.1). They are in-place macros
-with no call and no stack, so a gate's footprint and timing are those of
-the instructions they stand for.
-
-## 8. Checks
-
-- `tools/pack_image.py`: the 512 KiB image size, `FFh` fill, out-of-region
-  bytes, the reset-copier mirror, the ROM-access stub and its mirrors in
-  pages 2-7, entry-point regions, the `FFh`-vector guard identity, and no
-  latch writes from bank 7 outside the upcall shim.
-- `tools/mapcheck.py`: area ownership, both derived bases, the residency
-  classification, common placement of the gates, console, panic and IRQ
-  code, the stack and gate-stack sizes, the ROM-access placement, the IM2
-  page, guard and state addresses, page zero, and the common ceiling.
-- `tests/test_source_layout.py`: constant parity between the C and assembly
-  descriptions of the platform, that `platform/zephyr80/` (and the Mk2
-  board's `platform/zephyr80mk2/`) holds no executable code, and that
-  nothing outside `kernel/memory/map_ops.inc` (Mk2:
-  `kernel/memory/mk2/map_ops.inc`) and the SDK's `xmemgate.asm` and
-  `vcall.asm` writes the latch or the Mk2 mapper.
-- `tools/mapcheck.py mk2` (the Mk2 image, `config/residency-mk2.json`,
-  architecture 2.7.6): the fixed areas in `2000h-5CFFh` (below the driver
-  and ISR stacks), each cold set in `6000h-9FFFh` (set n linked at
-  n * 10000h + 6000h), no undeclared set, nothing in the copy windows
-  `A000h-DFFFh`, the common ceiling, every object placed once, no Mk1
-  fixed-required object in a set, and the DAT image rows, the gate's
-  per-depth DAT block and the far table against `PROCESS_TABLE_SIZE`,
-  `KOS_EXEC_MAX_DEPTH` and `XMEM_MAX_OBJECTS`.  Its `--link` step builds
-  the link's objects: it names each set's areas, routes every reference
-  into a set from outside it through a generated fixed-region veneer, and
-  fails the build on a data reference into a set from outside it or a
-  reference from the driver-reachable objects (`driver_api`) into any
-  set.
-- At boot the kernel checks that it runs in mode 11 over bank 0 (an
-  assembly read-back and a C check in `kernel_main()`); a failure prints on
-  the early console and halts.
-
-## 9. Constants
-
-Every boundary and latch bit is defined once for C and once for assembly,
-with parity checks:
-
-| file pair | holds |
+| files | contents |
 |---|---|
-| `platform/zephyr80/public/hardware.h`, `.inc` | ports, register constants, latch fields |
-| `platform/zephyr80/private/memory.h`, `.inc` | region geometry, the stacks, the ROM and store geometry |
-| `platform/zephyr80/private/irq.h`, `.inc` | the IM2 page and the IRQ transition wiring |
+| `platform/zephyr80mk2/public/hardware.h`, `.inc` | peripheral ports and register values |
+| `platform/zephyr80mk2/private/memory.h`, `.inc` | page, linker, stack, ROMFS, DAT and window geometry |
+| `platform/zephyr80mk2/private/irq.h`, `.inc` | IM2 and IRQ transition reservations |
+| `platform/zephyr80mk2/config.mk` | Mk2 include roots and build configuration |
 
-`platform/zephyr80/config.mk` carries the include paths and file names.
+The Mk2 platform files describe constants and configuration. Mapping
+operations and emitted instructions remain in the boot and kernel memory
+code.

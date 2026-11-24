@@ -117,7 +117,7 @@ int  sound_reset(int handle);
 void sound_out(unsigned char port, unsigned char value);
 ```
 
-`sound_info` reports the physical PSG/DAC ports, PSG clock, and capabilities. `struct ksound_write` consists of `{target, value}` pairs, with targets 0–3 for PSGs and 4 for the DAC; use the official `KSOUND_TARGET_*` constants. The driver batches a write sequence in one protocol call. The documentation quotes roughly **15,500 T-states per call** (not per byte). `sound_out` emits a chosen port value **without a per-byte syscall**; it is legal only under an exclusive card hold, with the ports returned by `sound_info`.
+`sound_info` reports the physical PSG/DAC ports, PSG clock, and capabilities. `struct ksound_write` consists of `{target, value}` pairs, with targets 0–3 for PSGs and 4 for the DAC; use the official `KSOUND_TARGET_*` constants. The driver batches a write sequence in one protocol call. A null IPC call measures 5,837 T-states on Mk1 and 9,275 on Mk2 (architecture 2.7.7); the payload-bearing SOUND call has not been measured. `sound_out` emits a chosen port value **without a per-byte syscall**; it is legal only under an exclusive card hold, with the ports returned by `sound_info`.
 
 `libsnd` calls `sound_open(1)` for exclusive operation and does not assume the console or another application has already initialized the card. `sound_close` and process teardown reset/release it. Never hard-code hardware ports into the public SDK or make application authors issue PSG latch bytes.
 
@@ -419,7 +419,7 @@ An underrun can only occur at an order change: the next order is not yet publish
 
 ### 6.4 Interaction with the timer/event system
 
-At about 50–60 Hz, the documented 15,500 T-state batched SOUND call alone is material (around 1.55 ms at 10 MHz). Device delivery and musical processing add further cost. Implement both batch and exclusive direct output and **measure end-to-end ticks**; do not predeclare one choice always faster for every workload.
+At about 50–60 Hz, the null-call reference is 0.584 ms on Mk1 and 0.928 ms on Mk2 at 10 MHz; a batched SOUND call also copies its request payload, whose cost depends on the number of writes and is not measured here. Device delivery and musical processing add further cost. Compare batch and exclusive direct output with end-to-end tick measurements for the workload.
 
 When an event callback receives `(count, missed)`:
 

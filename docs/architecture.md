@@ -1,7 +1,6 @@
 # KonaOS Architecture
 
-**Current target:** Zephyr-80 Mk1 (Z80 at 10 MHz, banked SRAM, decoder revision 13)  
-**Proposed target:** Zephyr-80 Mk2 (LS612 DAT, section 2.7; emulator/OS port before PCB)
+**Targets:** Zephyr-80 Mk1 (Z80 at 10 MHz, banked SRAM, decoder revision 13) and Zephyr-80 Mk2 (LS612 DAT); Mk1 is the production board, and Mk2 runs on the KonaOS simulator and MAME's `zephyr80mk2`
 **Toolchain:** SDCC 4.5 (`sdcc`, `sdasz80`, `sdldz80`), GNU Make, Python 3
 
 This document is the architectural contract of KonaOS: what the system is,
@@ -161,7 +160,10 @@ Host tools are Python 3 standard library only.
 
 ## 2. Hardware and memory model
 
-### 2.1 The banking latch
+Sections 2.1-2.6 are the Zephyr-80 Mk1 board; section 2.7 is Mk2, which
+keeps 2.5 and 2.6 and replaces 2.1-2.4.
+
+### 2.1 The banking latch (Mk1)
 
 The memory latch is I/O port `00h` (the decoder answers `00h-0Fh`;
 software uses `00h`). Every mapping change of the boot path, the nucleus
@@ -187,7 +189,7 @@ D5-D7   P   page: the ROM page in mode 00, the window/aperture page otherwise
 
 `latch = (P << 5) | mode | Q`. Reading port `00h` returns the latch.
 
-### 2.2 Modes (decoder revision 13)
+### 2.2 Modes (Mk1, decoder revision 13)
 
 | mode | value | `0000h-1FFFh` | `2000h-5FFFh` | `6000h-7FFFh` | `8000h-BFFFh` | `C000h-DFFFh` | `E000h-FFFFh` |
 |---|---|---|---|---|---|---|---|
@@ -212,7 +214,7 @@ D5-D7   P   page: the ROM page in mode 00, the window/aperture page otherwise
   vectors belong to the Zephyr-80 hardware project; the OS keeps a
   simulator model (`tests/z80sim.py`).
 
-### 2.3 Bank roles
+### 2.3 Bank roles (Mk1)
 
 ```text
 bank 7      the nucleus
@@ -221,7 +223,7 @@ banks 0-5   application banks and extended memory
 bank 0      also provides common memory at E000h-FFFFh
 ```
 
-### 2.4 Common memory
+### 2.4 Common memory (Mk1)
 
 `E000h-FFFFh` of bank 0 is visible in modes 10 and 11. It holds what must
 stay reachable while the mapping changes:
@@ -284,12 +286,19 @@ Transmit polls RR0 bit 2 (`04h`); receive polls RR0 bit 0 (`01h`). The
 early console is reachable from every mapping and needs no driver. It
 remains the panic path when a `CONSOLE` driver exists.
 
-### 2.7 Zephyr-80 Mk2: proposed LS612 DAT architecture
+### 2.7 Zephyr-80 Mk2: the LS612 DAT
 
-**Status:** Proposed **emulator and OS-port target, before PCB design**. Mk1
-remains the current implementation. Sections 2.1–2.4 and later references to
-latch modes, physical banks, bank-6 drivers and bank-7 kernel describe Mk1;
-they must not silently be interpreted as already implemented on Mk2.
+**Status:** implemented in KonaOS for the emulators, before PCB design:
+`make BOARD=mk2` builds the Mk2 production image, which boots to the shell
+and runs the store's and the card's programs on the KonaOS simulator and
+on MAME's `zephyr80mk2`, and 2.7.7's acceptance passes on the simulator.
+Mk1 stays the production board. The hardware details remain **proposed**:
+the LS612 data-input wiring (2.7.4), the PLD fit and equations, bus
+timing, and the deployed IO controller's `CMD_RESET` on a lane that has
+seen no `LINK_SYNC` (2.7.5; the simulator and MAME accept it). Sections
+2.1-2.4 and the latch, mode, bank-6 driver and
+bank-7 nucleus text of later sections describe Mk1; each says so, and
+2.7.6 gives the Mk2 form.
 
 **Scope:** Mk2 replaces the CPU board's memory latch/decoder with a 74LS612
 mapper. The pBITz backplane and existing IOC, SIO/CTC, V9958 and audio cards
@@ -579,9 +588,9 @@ workspace, a stack) is addressed directly. `bulk_read` and `bulk_write`
 copy between the domain's bulk tier and the driver's buffer the same
 way. Mk1's paths A/B/C, the `DRIVER_IO` placement rule and the far-bank
 case do not apply. A null application call (`/dev/input/joy/0`) costs
-about 9,200 T-states (Mk1 5,800) and a 512-byte read a driver copies
-from its cache about 32,800 (Mk1 25,300) on one harness
-(`tests/test_mk2_shell.py`).
+9,275 T-states (Mk1 5,837); a cached 512-byte read costs 32,889
+(Mk1 25,279), on the same harness (`tests/test_mk2_shell.py`). The paired
+measurements in 2.7.7 record syscall, XMEM, far-call and exec costs too.
 
 The gate and IRQ code must save and restore **the exact working DAT
 state**, relevant page modifications, stack, registers and interrupt
@@ -777,15 +786,24 @@ Before a PCB is designed, demonstrate:
    allocation pass the corresponding KonaOS acceptance tests.
 10. Reset and `SYS_REBOOT` both reach a deterministic ROM boot view.
 
-**Suggested port order:** emulator mapper/reset/I/O model; ROM
-bootstrap and common gates; syscall and interrupt transitions; software
-DAT-image caching and page allocator; nucleus/driver residency and
-loader; far mapping and SDK; diagnostics and acceptance suite.
-Keep the working Mk1 target intact throughout. Once the Mk2 design
-is tested, reconcile the remaining Mk1-only architecture text and
-the detailed `docs/memory.md`, `docs/boot.md`, `docs/abi.md` and
-`docs/exe-format.md` references. No pin map, PLD fitter choice or
-physical connection is frozen in this architecture section.
+**Acceptance map:** `tests/test_mk2_acceptance.py` maps each of these ten
+properties to the simulator tests that prove it. The production image
+also boots, runs placed far-code and PCM programs, and reboots on MAME's
+`zephyr80mk2`; this does not settle the open hardware details above.
+
+**Measured costs** (simulator, same harness, T-states; Mk1 / Mk2):
+
+| operation | Mk1 | Mk2 | measurement |
+|---|---:|---:|---|
+| syscall round trip | 1,389 | 1,851 | ENOSYS dispatch, RST-to-return |
+| null IPC call | 5,837 | 9,275 | `KJOY_OP_READ` on `/dev/input/joy/0` |
+| IPC read, 512 bytes | 25,279 | 32,889 | cached IOC-FAT read from `/fs/S.EXE` |
+| XMEM copy, 512 bytes | 52,298 write / 52,230 read | 17,998 write / 18,005 read | plain mappable object |
+| far call, home ↔ far | 4,106 / 1,321 / 4,464 | 6,930 / 2,333 / 7,216 | first `f1_add`, cached `f1_mix`, first `f2_twice` |
+| `exec` of small program | 6,096,169 | 507,634 | load `/system/fs_child.exe` (7,335 bytes) to entry |
+
+The `exec` figure is the simulator's T-state count; filesystem placement
+and cold disk access make it much longer than resident gate costs.
 
 #### 2.7.8 Option: an RT page at `C000h–DFFFh`
 
@@ -1288,8 +1306,9 @@ are not application ABI.
 - **Driver-to-driver calls** are host-wired and near-direct: both drivers
   are mapped, so the call dispatches through the endpoint table with the
   frame passed by reference and no bank switch.
-- **Cost:** a null application call costs about 15,500 T-states (the frame
-  copies dominate); one window crossing costs 242. Protocols are therefore
+- **Cost:** a null application call costs 5,837 T-states on Mk1 and
+  9,275 on Mk2 (`/dev/input/joy/0`, measured in `tests/test_mk2_shell.py`);
+  one Mk1 window crossing costs 242. Protocols are therefore
   coarse-grained: no per-byte operations; writes are buffered, reads are
   read-N.
 
@@ -1677,8 +1696,10 @@ console it selected. Programs cannot tell which implementation answers.
   - **`KSOUND_OP_WRITE`** takes one IN descriptor holding `{target, value}`
     pairs: target 0-3 a PSG, 4 the DAC. The driver walks them in order
     through a 64-byte `DRIVER_IO` buffer and performs each `OUT`. One call
-    carries a whole music tick, because a call costs about 15,500
-    T-states (section 7.5) and one per register write would cost more than
+    carries a whole music tick; a null IPC call measures 5,837 T-states
+    on Mk1 and 9,275 on Mk2 (section 2.7.7), while the cost of this
+    payload-bearing SOUND operation has not been measured. One call per
+    register write would cost more than
     the music. The targets are logical: the IPC path names no port, so
     another card can serve the same protocol.
   - **Direct I/O** is the exclusive holder's: it reads the ports from
@@ -2011,7 +2032,7 @@ At 10 MHz (1 T-state = 0.1 µs):
 | access through an open aperture | none |
 | `xread`/`xwrite`, slots 3-6 | about 21 T-states per byte |
 | `xread`/`xwrite`, slots 0-2 | about 287 T-states per byte |
-| null IPC call | about 15,500 T-states |
+| null IPC call | 5,837 Mk1 / 9,275 Mk2 T-states (measured; section 2.7.7) |
 | a 512-byte card read | about 87,000 T-states, about 170 T-states per byte |
 
 The per-call part is the whole story: a 512-byte read amortises one call

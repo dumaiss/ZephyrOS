@@ -21,9 +21,18 @@
 
 #include "kos.h"
 
+#if defined(KOS_BOARD_MK2)
+/* Zephyr-80 Mk2 reads back no latch: re-opening the handle the primary
+ * half expects (xmem_far_window) returns the handle in force, and leaves
+ * the window as it is when the two agree. */
+extern unsigned char xmem_far_window;
+#define WINDOW_TOKEN() aperture_open(xmem_far_window)
+#else
 /* The banking latch (port 00h): mode in D4-D3, bank in D2-D0, page in
  * D7-D5.  Read directly. */
 __sfr __at 0x00 latch_port;
+#define WINDOW_TOKEN() latch_port
+#endif
 
 /* The primary half: a function and the far module of segment 1. */
 extern int xmem_far_primary(int value);
@@ -37,7 +46,7 @@ static const char far2_text[] = "far2";
 
 int xmem_far_entry2(int seed, int unused)
 {
-	unsigned char latch = latch_port;
+	unsigned char latch = WINDOW_TOKEN();
 	int value;
 
 	/* Primary data, then primary code: two bumps per far call. */
@@ -52,7 +61,7 @@ int xmem_far_entry2(int seed, int unused)
 unsigned int xmem_bk2(unsigned int seed) __banked
 {
 	unsigned int value = xmem_bk_16(seed);
-	unsigned char latch = latch_port;
+	unsigned char latch = WINDOW_TOKEN();
 
 	return (unsigned int)(((unsigned int)latch << 8) |
 			      ((value +

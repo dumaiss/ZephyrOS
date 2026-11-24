@@ -40,7 +40,8 @@
  * MAP (a mappable object) and SEG_MAP (a far-code segment) fill the
  * object's row of the far table and return a one-byte mapping handle,
  * (index << 3) | generation, which the program's far window realizes
- * (kernel/memory/mk2/far.asm).
+ * (kernel/memory/mk2/far.asm).  FREE of the object the caller's window
+ * shows closes the window, so no mapping outlives the object's pages.
  */
 
 #if defined(KOS_BOARD_MK2)
@@ -274,6 +275,7 @@ void kos_xmem_free(uint16_t block)
 {
 	struct kos_xmem_free_args *args = (struct kos_xmem_free_args *)block;
 	struct xmem_object *obj;
+	uint8_t index;
 
 	if (!kos_syscall_block_ok(block, sizeof(*args))) {
 		kos_syscall_error(KOS_EINVAL);
@@ -286,7 +288,15 @@ void kos_xmem_free(uint16_t block)
 		kos_syscall_error(KOS_EINVAL);
 		return;
 	}
-	xmem_drop((uint8_t)(args->handle >> 4));
+	index = (uint8_t)(args->handle >> 4);
+	/* The caller's far window shows the object: it closes, so no
+	 * mapping keeps the freed pages.  The gate's return installs the
+	 * image it names, the program's own. */
+	if (kos_far_current == (uint16_t)((uint16_t)(index << 3) | obj->gen)) {
+		kos_far_current = 0u;
+		kos_gate_saved_image = kos_dat_running;
+	}
+	xmem_drop(index);
 	kos_syscall_success(0);
 }
 
