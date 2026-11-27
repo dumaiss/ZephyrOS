@@ -20,6 +20,9 @@
 #include "kernel.h"
 #include "kernel/vfs/vfs.h"
 #include "kernel/syscall/xmem.h"
+#if defined(KOS_BOARD_MK2)
+#include "kernel/memory/mk2/pages.h"
+#endif
 
 /* Common-resident gates (kernel/process/launch.asm). */
 void kos_process_launch(const struct kos_process_launch_req *req);
@@ -29,6 +32,10 @@ struct process process_table[PROCESS_TABLE_SIZE];
 uint16_t process_last_status;
 uint8_t process_running_pid = PROCESS_NO_PROCESS;
 
+/* Mk2 (KOS_BOARD_MK2): a process's memory is pages, owned through the
+ * page allocator (kernel/memory/mk2/pages.c); the bank allocator and the
+ * auxiliary slots below are the Mk1 board's. */
+#if !defined(KOS_BOARD_MK2)
 static uint8_t process_bank_reserved; /* bit N set = bank N reserved */
 
 static int process_bank_in_use(uint8_t bank)
@@ -271,6 +278,7 @@ void process_bank_release(uint8_t bank)
 	}
 	process_bank_reserved &= (uint8_t)~(uint8_t)(1u << bank);
 }
+#endif /* !KOS_BOARD_MK2 */
 
 /* Reserve a table slot for a load in progress (state SUSPENDED).  The
  * bank field is invalidated so bank_in_use() cannot mistake this
@@ -304,6 +312,9 @@ void process_slot_release(uint8_t pid)
 	vfs_process_exit(pid);
 	kos_xmem_release_process(pid);
 	kos_rt_release_process(pid);
+#if defined(KOS_BOARD_MK2)
+	(void)kos_pages_release(pid);
+#endif
 	process_table[pid].state = PROCESS_FREE;
 	process_table[pid].bank = PROCESS_NO_PROCESS;
 	process_table[pid].exit_status = 0;
@@ -322,6 +333,7 @@ uint8_t process_active_count(void)
 	return count;
 }
 
+#if !defined(KOS_BOARD_MK2)
 /* Banks in the FREE state of architecture 4.8: neither held by a table
  * entry (primary) nor carrying a live auxiliary slot.  A reservation
  * (`process_bank_reserve`) is a hold for a future primary allocation, not
@@ -343,6 +355,7 @@ uint8_t process_free_banks(void)
 	}
 	return count;
 }
+#endif /* !KOS_BOARD_MK2 */
 
 uint8_t process_current_pid(void)
 {
@@ -365,6 +378,16 @@ void process_launch(const struct process_child *child)
 	struct kos_process_launch_req req;
 	uint8_t index = (uint8_t)(process_active_count() - 1u);
 
+#if defined(KOS_BOARD_MK2)
+	/* The parent keeps its far window (the gate keeps its exact bank);
+	 * the child runs on its own image with the window on its own pages.
+	 * The launch gate loads the image unless the bank holds it. */
+	if (process_running_pid < PROCESS_TABLE_SIZE) {
+		process_table[process_running_pid].far = kos_far_current;
+	}
+	kos_far_current = 0u;
+	kos_dat_running = kos_dat_images[child->pid];
+#endif
 	/* The launching process (when any) is suspended at this depth; the
 	 * continuation index is its depth.  The kernel launcher runs at
 	 * depth 0 on the boot stack and needs no gate frame. */
@@ -449,6 +472,21 @@ void process_exit(uint16_t status)
 	vfs_process_exit(pid);
 	kos_xmem_release_process(pid);
 	kos_rt_release_process(pid);
+#if defined(KOS_BOARD_MK2)
+	/* Every page the child owned is free again, and the working bank's
+	 * identity is dropped: the child's image row is reused by the next
+	 * child, so a cached copy of it is never trusted.  The parent's far
+	 * window handle and image are the running ones again. */
+	(void)kos_pages_release(pid);
+	kos_dat_cache_drop();
+	if (parent < PROCESS_TABLE_SIZE) {
+		kos_far_current = process_table[parent].far;
+		kos_dat_running = kos_dat_images[parent];
+	} else {
+		kos_far_current = 0u;
+		kos_dat_running = (uint8_t *)0;
+	}
+#endif
 	/* After the child is released the active count is the parent's
 	 * depth, which is also the continuation index saved at its launch. */
 	req.status = status;

@@ -23,7 +23,7 @@ class SoundApiTests(unittest.TestCase):
         self.assertIn("snd_timer_period(&period)", self.source)
 
     def test_build_uses_sdk_020_and_only_the_client_source(self):
-        self.assertIn("kos-sdk-0.2.0", self.makefile)
+        self.assertIn("kos-sdk-0.2.0", (ROOT.parent / "sdk.mk").read_text())
         self.assertIn("sntracker.c,STACK=1024,LIBS=snd", self.makefile)
         self.assertNotIn("ztr.c player.c psg.c", self.makefile)
 

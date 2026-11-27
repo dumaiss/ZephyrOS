@@ -57,6 +57,7 @@
 #define IPC_OP_VFS_EXEC    3u /* streams an executable object (arg0)     */
 
 #define IPC_OP_FAT_READ 0u
+#define IPC_OP_FAT_BULK 1u /* one bulk_copy_out: see the note below */
 #define IPC_OP_IOC_READ 0u
 
 #define IPC_OP_IRQX_SPIN    0u /* arg1 = iterations; returns the run count */
@@ -105,6 +106,21 @@
 #define IPC_SPAN_AFTER  0x80u
 #define IPC_SPAN_ALL    0xFFu
 #define IPC_SPAN_IRQ_OK 0x5Au
+
+/* The bulk_copy_out probe (architecture 4.9).  The fat driver's bulk
+ * segment holds IPC_BULK_BYTES bytes of the pattern IPC_BULK_PATTERN + i.
+ * FAT_BULK returns the result of one bulk_copy_out with the payload's
+ * words: descriptor offset, bulk offset, length; a nonzero FORGE byte
+ * names the descriptor id in ID instead of the frame's own, and a nonzero
+ * SPAN byte makes the copy inside a bulk-map span. */
+#define IPC_BULK_BYTES     64u
+#define IPC_BULK_PATTERN   0x90u
+#define IPC_BULK_ARG_AT    0u  /* payload word: descriptor offset */
+#define IPC_BULK_ARG_FROM  2u  /* payload word: bulk offset       */
+#define IPC_BULK_ARG_LEN   4u  /* payload word: length            */
+#define IPC_BULK_ARG_FORGE 6u
+#define IPC_BULK_ARG_ID    7u
+#define IPC_BULK_ARG_SPAN  8u
 
 /* --- frame flags -------------------------------------------------------- */
 

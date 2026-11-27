@@ -403,6 +403,7 @@ class TestShellErrorTable(ShellImage):
         (0x15, "stale"),
         (0x16, "cross-device"),
         (0x17, "too many open"),
+        (0x18, "built for another board"),
     )
 
     def test_every_native_code_has_its_message(self):
@@ -414,7 +415,7 @@ class TestShellErrorTable(ShellImage):
 
     def test_an_unknown_code_reports_its_hex_value(self):
         z, bank = self.load()
-        for code in (0x00, 0x18, 0x42, 0xFF):
+        for code in (0x00, 0x19, 0x42, 0xFF):
             pointer = self.call(z, "_shell_strerror", hl=code)
             self.assertEqual(self.cstring(bank, pointer),
                              "error %02X" % code)

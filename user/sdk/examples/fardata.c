@@ -10,14 +10,16 @@
  * pointers while the window is open, writes the zeroed half, copies two
  * values out of the table, restores the caller's mapping, and only then
  * makes the banked call - one far window serves far code or far data,
- * never both (architecture 7.2).
+ * never both (architecture 7.2).  The same source runs on every board.
  */
 
 #include "kos.h"
 
 #define SEGMENT 1u
 
-__sfr __at 0x00 latch_port;
+/* The window's first byte: the program's own memory while the window is
+ * closed, the table while segment 1 is mapped. */
+#define WINDOW_BYTE (*(volatile const unsigned char *)0x8000u)
 
 /* The DATA1 sources' symbols: 8000h and up, visible while segment 1 is
  * mapped. */
@@ -37,7 +39,7 @@ int main(void)
 
 	console_puts("fardata: begin\r\n");
 
-	before = latch_port;
+	before = WINDOW_BYTE;
 	window = farmap(SEGMENT, &saved);
 	if (window != (void *)0x8000u) {
 		printf("fardata: FAIL map %d\r\n", (int)saved);
@@ -74,8 +76,8 @@ int main(void)
 		int b = levels[512];
 
 		farunmap(saved);
-		if (latch_port != before) {
-			console_puts("fardata: FAIL latch\r\n");
+		if (WINDOW_BYTE != before) {
+			console_puts("fardata: FAIL unmap\r\n");
 			return 1;
 		}
 		printf("fardata: far sum %04x\r\n",

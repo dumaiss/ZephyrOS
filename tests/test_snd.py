@@ -28,6 +28,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
+from replay import exe_board, skip_unless_built_for  # noqa: E402
 from snd_harness import SndReplay, STEP_BUDGET, split_ticks  # noqa: E402
 from z80sim import SoundPeer, read_symbols  # noqa: E402
 
@@ -771,7 +772,10 @@ class TestSndZtrLoad(SndCase):
         if not os.path.exists(KRES_TOOL):
             subprocess.run(["make", "kres-host"], check=True, cwd=ROOT)
         if not os.path.exists(ZTRCHECK_HOST):
-            subprocess.run(["make", "-C", ZTRCHECK_DIR, "all"],
+            # The host twin is board-independent: build the tree for the
+            # board it already holds, Mk1 when it is clean.
+            subprocess.run(["make", "-C", ZTRCHECK_DIR, "all", "BOARD=%s"
+                            % (exe_board(ZTRCHECK_EXE) or "mk1")],
                            check=True, cwd=ROOT)
         import test_snd_oracle
         test_snd_oracle.build_tools()
@@ -914,7 +918,8 @@ class TestSndZtrLoad(SndCase):
             self.assertFalse(result.stdout.startswith("ztr: refused "),
                              result.stdout.splitlines()[:1])
 
-    @unittest.skipUnless(os.path.exists(ZTRCHECK_EXE), "run make")
+    @skip_unless_built_for(ZTRCHECK_EXE, "mk1",
+                           "make -C UserSoftware/ZTRCheck BOARD=mk1")
     def test_ztrcheck_exe_reports_a_defect_on_target(self):
         with open(os.path.join(ZVG_MALFORMED, "patterns-mask.ztr"),
                   "rb") as handle:
@@ -926,7 +931,8 @@ class TestSndZtrLoad(SndCase):
         self.assertIn("FAIL stream at 18B8: an event stream is malformed",
                       out)
 
-    @unittest.skipUnless(os.path.exists(ZTRCHECK_EXE), "run make")
+    @skip_unless_built_for(ZTRCHECK_EXE, "mk1",
+                           "make -C UserSoftware/ZTRCheck BOARD=mk1")
     def test_ztrcheck_exe_summarizes_a_stamped_song_on_target(self):
         with open(os.path.join(ZVG_FIXTURES, "night-market.ztr"),
                   "rb") as handle:
@@ -1123,8 +1129,9 @@ def song_tick_count(song):
     return int(match.group(1))
 
 
-@unittest.skipUnless(os.path.exists(SNTEST) and os.path.exists(SNTRACK),
-                     "run make")
+@unittest.skipUnless(os.path.exists(SNTEST), "run make")
+@skip_unless_built_for(SNTRACK, "mk1", "make -C UserSoftware/SNTracker "
+                       "BOARD=mk1")
 class TestSndZtrClient(SndCase):
     """Requirement 4: real playback, paced by the timer."""
 
@@ -1596,8 +1603,9 @@ class TestSndZvgTimed(ZvgTimedCase):
         self.assertIn(" underruns 0 ", transcript)
 
 
-@unittest.skipUnless(os.path.exists(VGMPLAY) and os.path.exists(NIGHT),
-                     "make -C UserSoftware/VGMPlayer")
+@unittest.skipUnless(os.path.exists(NIGHT), "%s missing" % NIGHT)
+@skip_unless_built_for(VGMPLAY, "mk1", "make -C UserSoftware/VGMPlayer "
+                       "BOARD=mk1")
 class TestVgmplayTimed(ZvgTimedCase):
     def test_night_market_in_vgmplay(self):
         with open(VGMPLAY, "rb") as handle:

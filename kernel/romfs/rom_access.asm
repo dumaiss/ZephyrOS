@@ -34,6 +34,7 @@
 	.module rom_access
 	.include "hardware.inc"
 	.include "memory.inc"
+	.include "kernel/memory/map_ops.inc"
 
 ; Status codes returned in A.  They are the positive KOS_* values from
 ; abi/kos/errno.h; tests/test_romfs.py enforces the parity so
@@ -137,7 +138,7 @@ rax_iff_captured:
 	ld	(rom_access_saved_iff),a
 
 	; ---- save the exact caller latch and mark the transition busy ----
-	in	a,(KOS_MEMCTL_PORT)
+	KOS_MAP_CURRENT
 	ld	(rom_access_saved_latch),a
 	ld	a,#1
 	ld	(rom_access_busy),a
@@ -155,10 +156,7 @@ rax_iff_captured:
 	ld	a,(rom_access_saved_latch)
 	ex	af,af'
 	ld	a,(rom_access_page)
-	rrca
-	rrca
-	rrca
-	and	#KOS_ROM_PAGE_MASK	; A = page<<5 | mode 00 | bank 0
+	KOS_MAP_ROM_PAGE		; A = page<<5 | mode 00 | bank 0
 	jp	rom_access_trampoline
 
 	; ---- post-window epilogue: back in mode 11 on the caller bank ----
@@ -218,10 +216,10 @@ rom_access_busy::
 	.org	KOS_ROM_ACCESS_BASE - 2
 
 rom_access_trampoline::
-	out	(KOS_MEMCTL_PORT),a	; enter mode 00 on the selected page
+	KOS_MAP_ENTER_ROM		; enter mode 00 on the selected page
 rom_access_sync::
 	ldir				; ROM (HL) -> SRAM bank 0 (DE)
 	ex	af,af'			; A = exact caller latch
-	out	(KOS_MEMCTL_PORT),a	; leave mode 00 before any stack read
+	KOS_MAP_RESTORE			; leave mode 00 before any stack read
 	jp	rom_access_epilogue	; ordinary common code, back in mode 11
 rom_access_sync_end::

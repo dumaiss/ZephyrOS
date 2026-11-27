@@ -1,7 +1,6 @@
 # KonaOS Architecture
 
-**Current target:** Zephyr-80 Mk1 (Z80 at 10 MHz, banked SRAM, decoder revision 13)  
-**Proposed target:** Zephyr-80 Mk2 (LS612 DAT, section 2.7; emulator/OS port before PCB)
+**Targets:** Zephyr-80 Mk1 (Z80 at 10 MHz, banked SRAM, decoder revision 13) and Zephyr-80 Mk2 (LS612 DAT); Mk1 is the production board, and Mk2 runs on the KonaOS simulator and MAME's `zephyr80mk2`
 **Toolchain:** SDCC 4.5 (`sdcc`, `sdasz80`, `sdldz80`), GNU Make, Python 3
 
 This document is the architectural contract of KonaOS: what the system is,
@@ -76,14 +75,18 @@ on top of the native system. They do not shape the native kernel.
 ### 1.3 Source tree and ownership
 
 ```text
-boot/                 reset, ROM-to-RAM copy, handoff to the kernel
+boot/                 reset, ROM-to-RAM copy, handoff to the kernel;
+                      mk2/: the Mk2 bootstrap
 kernel/               the nucleus
   include/            nucleus-private headers
   driver/             the resident-driver loader and boot gate
   ipc/                endpoints, frames, descriptors, copy paths
   irq/                the interrupt executive and its platform quiesce
   lib/                small shared helpers
-  memory/             banking, window and gate copies, upcall shims
+  memory/             banking, window and gate copies, upcall shims;
+                      mk2/: the Mk2 mapping operations, DAT state, page
+                      allocator, page copy, entry mapping, cold-set
+                      veneer runtime and far window
   process/            the process table, exec, launch
   romfs/              the ROM store reader and the ROM-access stub
   runtime/            compiler helper routines
@@ -96,6 +99,7 @@ formats/include/      on-media formats: ROMFS, EXE, MOD
 abi/kos/              the public native ABI (one copy of every header)
 platform/zephyr80/    machine description: public/ (drivers may use),
                       private/ (nucleus only), config.mk
+platform/zephyr80mk2/ the Mk2 CPU board's description (2.7), same shape
 systems/              one system file per image
 config/               residency and SDK configuration
 linker/               the link script
@@ -110,7 +114,8 @@ tests/                host tests, simulator replays, target test code
 
 Ownership rules:
 
-- `platform/zephyr80/` holds **constants and configuration only**: port
+- `platform/zephyr80/` and `platform/zephyr80mk2/` hold **constants and
+  configuration only**: port
   numbers, register masks, memory regions, mode values, IRQ wiring, build
   variables. It contains no `.c` or `.asm` file and no instruction-emitting
   macro. A file that emits bytes that run on the Z80 does not belong there.
@@ -133,7 +138,16 @@ Ownership rules:
   | drivers | `abi`, `drivers/include`, `platform/zephyr80/public`, the driver's own directory |
   | programs | `abi` and the SDK include root only |
 
-  A driver cannot include a nucleus header.
+  A driver cannot include a nucleus header. The nucleus's assembly adds
+  its board's mapping operations: `kernel/memory` for Mk1;
+  `BOARD=mk2` uses `platform/zephyr80mk2/`'s platform roots instead
+  and adds `kernel/memory/mk2`. The Mk2 `hardware.h`/`.inc` include the
+  Mk1 board's for the peripheral cards, which leave their latch out on a
+  board with the DAT. The Mk2 nucleus is the board's source list in the
+  Makefile: the Mk1-only sources (the latch gates, the mode-00 ROM
+  access, the Mk1 copy and upcall primitives, the bank-6 driver crossing
+  and `boot/start.asm`) are not in it, and shared C sources carry their
+  Mk2 branches behind `KOS_BOARD_MK2`.
 
 ### 1.4 Toolchain
 
@@ -146,12 +160,26 @@ Host tools are Python 3 standard library only.
 
 ## 2. Hardware and memory model
 
-### 2.1 The banking latch
+Sections 2.1-2.6 are the Zephyr-80 Mk1 board; section 2.7 is Mk2, which
+keeps 2.5 and 2.6 and replaces 2.1-2.4.
+
+### 2.1 The banking latch (Mk1)
 
 The memory latch is I/O port `00h` (the decoder answers `00h-0Fh`;
-software uses `00h`). Only the nucleus's banking code writes it, except
-that a program opens and closes the far aperture through the SDK
-(section 7).
+software uses `00h`). Every mapping change of the boot path, the nucleus
+and the drivers expands from one set of named mapping operations,
+`kernel/memory/map_ops.inc`: in-place assembly macros, one per purpose
+(save and restore the exact mapping, enter the system or an application
+mapping over a bank, select a window page, put a bank in the caller
+window, open the IPC aperture, enter the ROM view). In user space only the
+SDK's mapping members write it: `xmemgate.asm` opens and closes the far
+aperture and `vcall.asm` closes it for the home zone and restores the
+caller's latch (section 7). These are the Mk1 implementation of the
+mapping operations; `kernel/memory/mk2/map_ops.inc` is the Mk2 one
+(2.7.6), and a source written with the operations both define assembles
+for either board, the build's `BOARD` choosing the file by include path.
+`tests/test_source_layout.py` rejects a latch or mapper write anywhere
+else.
 
 ```text
 D0-D2   Q   SRAM bank
@@ -161,7 +189,7 @@ D5-D7   P   page: the ROM page in mode 00, the window/aperture page otherwise
 
 `latch = (P << 5) | mode | Q`. Reading port `00h` returns the latch.
 
-### 2.2 Modes (decoder revision 13)
+### 2.2 Modes (Mk1, decoder revision 13)
 
 | mode | value | `0000h-1FFFh` | `2000h-5FFFh` | `6000h-7FFFh` | `8000h-BFFFh` | `C000h-DFFFh` | `E000h-FFFFh` |
 |---|---|---|---|---|---|---|---|
@@ -186,7 +214,7 @@ D5-D7   P   page: the ROM page in mode 00, the window/aperture page otherwise
   vectors belong to the Zephyr-80 hardware project; the OS keeps a
   simulator model (`tests/z80sim.py`).
 
-### 2.3 Bank roles
+### 2.3 Bank roles (Mk1)
 
 ```text
 bank 7      the nucleus
@@ -195,7 +223,7 @@ banks 0-5   application banks and extended memory
 bank 0      also provides common memory at E000h-FFFFh
 ```
 
-### 2.4 Common memory
+### 2.4 Common memory (Mk1)
 
 `E000h-FFFFh` of bank 0 is visible in modes 10 and 11. It holds what must
 stay reachable while the mapping changes:
@@ -258,12 +286,19 @@ Transmit polls RR0 bit 2 (`04h`); receive polls RR0 bit 0 (`01h`). The
 early console is reachable from every mapping and needs no driver. It
 remains the panic path when a `CONSOLE` driver exists.
 
-### 2.7 Zephyr-80 Mk2: proposed LS612 DAT architecture
+### 2.7 Zephyr-80 Mk2: the LS612 DAT
 
-**Status:** Proposed **emulator and OS-port target, before PCB design**. Mk1
-remains the current implementation. Sections 2.1–2.4 and later references to
-latch modes, physical banks, bank-6 drivers and bank-7 kernel describe Mk1;
-they must not silently be interpreted as already implemented on Mk2.
+**Status:** implemented in KonaOS for the emulators, before PCB design:
+`make BOARD=mk2` builds the Mk2 production image, which boots to the shell
+and runs the store's and the card's programs on the KonaOS simulator and
+on MAME's `zephyr80mk2`, and 2.7.7's acceptance passes on the simulator.
+Mk1 stays the production board. The hardware details remain **proposed**:
+the LS612 data-input wiring (2.7.4), the PLD fit and equations, bus
+timing, and the deployed IO controller's `CMD_RESET` on a lane that has
+seen no `LINK_SYNC` (2.7.5; the simulator and MAME accept it). Sections
+2.1-2.4 and the latch, mode, bank-6 driver and
+bank-7 nucleus text of later sections describe Mk1; each says so, and
+2.7.6 gives the Mk2 form.
 
 **Scope:** Mk2 replaces the CPU board's memory latch/decoder with a 74LS612
 mapper. The pBITz backplane and existing IOC, SIO/CTC, V9958 and audio cards
@@ -344,12 +379,22 @@ valid low entry stubs (or an equivalent verified safe-entry mechanism).
 Simply fixing the entire low 8 KiB to one kernel page would remove that
 process workspace.
 
-The existing syscall path relies on access to a caller's low page while
-the kernel executes. A plausible Mk2 implementation maps that caller
-page into the system DAT's logical page 0 when required; whether the
-final port does so, or copies arguments through the common area, must
-be resolved during the OS-port spike. The system DAT is **resident**,
-but not necessarily immutable in every entry.
+The syscall path reaches a caller's low page while the kernel executes:
+the gate maps the caller's page 0 as **system entry 0** for the call and
+puts the system page-0 image back on return, so argument blocks keep the
+Mk1 rule (they lie in `0100h-1FFFh`) and a body reads and writes them in
+place. The mapping costs about 100 T-states a call (save, remap and
+restore one entry); copying a 16-byte block through common memory and
+back costs about 820, and could not serve a buffer. The system DAT is
+**resident**, but not necessarily immutable in every entry.
+
+**Page 0 after boot:** ROM page 00h is the reset and boot view only. The
+bootstrap builds a **RAM system page-0 image** (the low entry stubs at
+`0000h–00FFh`) and maps it as system entry 0 before the handoff; every
+process page-0 image carries the same stub bytes, written by `exec`. So
+an RST or NMI reaches the same common-memory entry code whichever page 0
+is mapped, and the kernel's entry stubs impose nothing on the ROM layout
+beyond the boot code.
 
 Software maintains one eight-byte DAT image per process/working context
 and tracks which image is cached in hardware bank 1. Switching to an
@@ -382,6 +427,18 @@ Each mapper entry is programmed with one page byte in `00h–7Fh`.
 The proposed decoder distinguishes the two operations by I/O **A15**:
 `A15=0` for page programming and `A15=1` for control. This permits
 ordinary `LD A,page` / `OUT (n),A` mapper writes.
+
+**Open hardware decision: the LS612 data inputs** connect either to the
+data bus or to A8–A15 (timing and electrical review). Until it is made,
+software is **wiring-agnostic**: an entry write presents the page on both
+D0–D6 and A8–A14, that is `OUT (n),A`, or `OUT (C),A` with **B = A**.
+`OUTI`/`OTIR` (which drive the decremented B) and an entry write with an
+unrelated B are not allowed. B stays an address everywhere else: the
+control register (`B=80h`) and every other device block. The cost is that
+the A15 = 0 half of the mapper's own `00h–0Fh` block cannot use B to
+select further registers; a design that needs that settles the decision
+in favour of data-bus wiring. The simulator reports an entry write whose
+data byte and A8–A14 disagree.
 
 **Z80 bus detail:** `OUT (n),A` places A on **A8–A15**. For example,
 `LD A,2Ah` / `OUT (02h),A` produces I/O address `2A02h`, not `0002h`.
@@ -423,11 +480,26 @@ physical page values or the LS612 register encoding.
    mapped ROM and RAM windows. Both the instruction stream and active
    stack must remain valid while `MAP_ENABLE` or `DAT_BANK` changes.
 5. A safe ROM-to-RAM handoff starts KonaOS with its system DAT active.
-   No specific copying strategy, linker placement or overlay logic is
-   frozen yet; the emulator must prove this sequence before PCB work.
+   `boot/mk2/start.asm` does it stackless from ROM page 00h: it programs
+   all sixteen entries in pass mode (system entries 0-4 the identity ROM
+   pages, so the fetch after `MAP_ENABLE` is the same ROM byte), enables
+   mapping on the system bank, copies the nucleus pages (the fixed
+   region and cold set 0), cold set 1 and the common page from ROM to
+   SRAM one 8 KiB page at a time through the source
+   (entry 5, a ROM page) and destination (entry 6, an SRAM page) copy
+   windows, builds the RAM system page-0 image in the destination
+   window, and jumps into the common page. Common code loads the final
+   system DAT and the working bank's placeholder (mirror first), sets
+   the stack and the DAT state and calls `kernel_main` with the system
+   bank selected, the mirrors equal to the hardware, no working image
+   cached and interrupts masked (`docs/boot.md` section 10).
 6. `SYS_REBOOT` must safely re-enter a known ROM boot view with arbitrary
    current mappings. Clearing mapped mode while still running RAM-only
-   code is not a valid reboot path.
+   code is not a valid reboot path. KonaOS sends the IO controller its
+   reset command through the IOC driver: the controller holds the Z80 in
+   reset, stops the RT clock and releases it into the pass-mode view (and
+   the backplane reset stops the other cards), so the call returns only
+   when no reset came (`docs/abi.md` section 5.5).
 
 #### 2.7.6 KonaOS memory and execution implications
 
@@ -441,9 +513,130 @@ The nucleus and ZMOD providers remain build-selected and resident as
 required; this is **not** a runtime discovery, load/unload or security
 change. Instead of dedicating physical bank 7 to nucleus code and bank 6
 to drivers, the Mk2 system DAT maps the physical pages required by the
-active kernel/service call path. Which code/data must be simultaneously
-reachable, and whether some service pages are remapped into system
-windows, require an explicit host-planner/linker residency study.
+active kernel/service call path. The Mk2 nucleus has one fixed system
+DAT (`config/residency-mk2.json`):
+
+| entry | logical | holds | remapped |
+|---|---|---|---|
+| 0 | `0000h` | the RAM system page-0 image (the low entry stubs) | by the syscall gate (the caller's page 0) and the launch gate, per crossing; the driver domain's page 0 for a bulk-map span or a boot entry |
+| 1-2 | `2000h-5FFFh` | the nucleus's fixed region, the driver stack at `5D00h`, the ISR stack at `5F00h` | never |
+| 3-4 | `6000h-9FFFh` | a cold set | per call, by a cold-set veneer; the driver domain for a driver's code |
+| 5-6 | `A000h-DFFFh` | the copy windows | per copy chunk; the driver domain for a driver's code |
+| 7 | `E000h-FFFFh` | the common page (also working entry 15) | never |
+
+Every path finds what it runs mapped: the gates, the IRQ entry, the
+event core and the NMI vector are common; the dispatcher, the IRQ
+executive, the IPC substrate and everything a driver calls back into
+are the fixed region; the bodies are cold sets. Nothing an interrupt
+path uses lives in entries 0 or 3-6, which a call may have remapped; a
+driver's handler gets the driver domain from the fixed trampoline, which
+puts entries 3-6 back exactly. `tools/mapcheck.py mk2` enforces the
+regions, the sets, the empty copy windows, the common ceiling, the
+assembly-sized tables and the stacks (below).
+
+**No remap under the stack.** No nucleus path remaps a system entry
+while SP lies in it: the stack would change under the CPU, and an
+interrupt's push would land in the page mapped there. The nucleus's
+stacks (the driver, ISR, IRQ transition, gate and driver copy stacks)
+lie in entries 1-2 and 7, which are never remapped. A driver may run on
+a private stack in its io block (the V9958 driver's renderer does), and
+every io block lies in the copy windows; so the driver API services that
+remap the windows during a driver's call (the descriptor and bulk
+copies) run on the driver copy stack, and the one that remaps an entry
+on the caller's stack (a bulk-map span, entry 0) touches no io block.
+`config/residency-mk2.json` `driver_call_remaps` lists each service, its
+entries and its stack; `tools/mapcheck.py mk2 --drivers` checks it
+against every driver's private stacks (a symbol pair `X_stack`,
+`X_stack_top`) in the driver plan.
+
+**Cold sets.** The nucleus's logical space is 32 KiB (Mk1's bank 7 shows
+48 KiB), so cold code is split into **cold sets**: 16 KiB page pairs, all
+linked at `6000h-9FFFh` (set n at n * 10000h + `6000h` in the link, the
+code running at the low 16 bits), each in its own two SRAM pages (set 0
+at `43h-44h`, the boot DAT's; set 1 at `45h-46h`, from ROM pages
+`05h-06h`). Every reference into a set from outside it - the fixed
+syscall dispatcher reaching a body, the boot path reaching an
+initializer, one set calling another - goes through a fixed-region
+**veneer** the build generates (`mapcheck.py mk2 --link`): it calls
+`kos_cold_call` (`kernel/memory/mk2/cold_call.asm`) with the target and
+the set's pages, which keeps the caller's return address and entries 3-4
+on a veneer stack, maps the set mirror first, calls the target with the
+caller's registers and stack arguments, and puts the entries back. A
+set's data is visible only to its own code: the build refuses a data
+reference into a set from outside it, and a pointer handed through a
+veneer names fixed, common or stack memory. The fixed region holds what
+every set and every driver needs (the dispatcher and its helpers, the
+process table and lifecycle, the boot path, the IPC substrate, the page
+allocator and the ROMFS reader); set 0 holds the namespace, the object
+calls and the EXE loader, set 1 the diagnostics, extended memory, the
+personality handoff, the real-time calls, the event calls and the driver
+loader. An in-process endpoint runs with the set that installed it. The dispatcher
+empties the veneer stack at every syscall, where no cross-set call is
+live (a body that leaves without returning leaves a frame behind).
+
+**The driver domain.** The resident drivers are the Mk1 images and plan
+unchanged (5.2, 5.3): the bank-6 layout lives on nucleus-owned pages,
+domain logical page n holding the linked addresses n * 2000h. The loader
+takes a page the first time a segment touches one (page 0 gets the low
+entry stubs), copies each segment from the store's ROM pages straight
+into the domain's pages through the copy windows, zeroes the BSS and runs
+the boot entry (masked, with the domain's page 0 at entry 0 as well) and
+the init with the domain mapped. A driver's call, handler and init run
+with domain pages 3-6 at system entries 3-6: the hot tier `6000h-DFFFh`
+as linked, every image mapped together, so a driver-to-driver call is
+near-direct and the drivers' shared buffers (the IOC driver's staged
+reply, which HID and IOC-FAT read; its direct bulk buffers) stay valid.
+The production set needs this: its hot tier fills 32 KiB and the IOC
+driver and its two clients alone exceed 16 KiB. Everything a driver
+calls back into is the fixed region or common (`config/residency-mk2.json`
+`driver_api`; the build fails when one of those objects references a
+set). The outermost call runs on the driver stack. A bulk-map span maps
+the domain's page 0 at entry 0.
+
+**System-entry spans** (`kernel/memory/mk2/dat_map.asm`): every nucleus
+remap of a run of system entries from C goes through one fixed-region
+primitive over (first entry, count). `kos_dat_span_enter` records the
+span and the pages its mirrors name in a save area and remaps it to the
+wanted pages unless every mirror names them already (a driver-to-driver
+call into the mapped domain writes nothing); `kos_dat_span_restore`
+writes the saved pages back, every entry, whatever they show by then.
+The force form always remaps, because the code it interrupted may have
+written a mirror and not yet its `OUT`. The IRQ trampoline
+(`kernel/ipc/ipc_asm.asm`) writes the domain the same way, in one
+straight-line assembly routine: a driver's tick handler runs with the
+domain mapped and unmapped within about 2,100 T-states, so a byte stream on
+the SIO's three-byte receive FIFO at 115,200 baud (868 T-states a byte)
+survives it.
+The driver domain (3-6), an in-process endpoint's cold set (3-4) and a
+bulk-map span's or a boot entry's page 0 (0) are all mapped and put back
+through it, mirror first, entry by entry.
+
+**IPC on Mk2** (4.9) has one copy path: `copy_in` and `copy_out` map the
+caller's buffer page and the driver's buffer page into the copy windows
+and move the bytes directly (`kos_driver_copy`), wherever either lies;
+the windows then show the domain again. The copy runs on the driver copy
+stack (18 bytes of fixed data), since the caller may be on a private
+stack in the windows. A descriptor resolves a program
+caller's address through `kos_caller_map()`, the gate's image of its
+current mapping; a nucleus caller's buffer (the staging block, the VFS
+workspace, a stack) is addressed directly, or through a page list the
+nucleus names (`ipc_nucleus_call_pages`: the EXE loader's reads into a
+child's pages and into its own data). `bulk_read` and `bulk_write`
+copy between the domain's bulk tier and the driver's buffer the same
+way, and `bulk_copy_out` maps the domain's bulk page and the caller's
+buffer page together, so a cache hit reaches the caller in one pass. A
+page-0 buffer can also be lent (`borrow`, 4.9): system entry 0 already
+shows it, so a card read is received straight into it.
+Mk1's paths A/B/C, the `DRIVER_IO` placement rule and the far-bank
+case do not apply. A null application call (`/dev/input/joy/0`) costs
+7,359 T-states (Mk1 4,651); a 512-byte read the driver's ring holds costs
+28,147 (Mk1 24,696 to a page-0 buffer, 53,382 to a high one), and one its
+block cache holds 28,495 (Mk1 44,185 page 0, 51,585 high). On Mk2 the
+buffer's place (page 0, high, unaligned, the far window) changes a cost
+by under 1 % except across a page edge (about 1,200 T-states per
+crossing). These are simulator T-states from
+`tests/perf_os_sdk.py` on the production image, `RST 30h` through return
+with interrupts masked; 2.7.7 has the paired table.
 
 The gate and IRQ code must save and restore **the exact working DAT
 state**, relevant page modifications, stack, registers and interrupt
@@ -456,6 +649,39 @@ return must recover the interrupted DAT and SP, including interrupts
 taken in the system or service context. Bounded interrupt-masking rules
 from sections 4.3–4.5 still apply.
 
+**Boot exception:** the bootstrap programs the DAT before any RAM exists,
+so it writes the mirror after its `OUT`s. This is safe only because of the
+IOC invariant (2.7.5: no NMI before the bootstrap has a RAM stack); after
+the handoff the mirror is always valid and the rule below holds.
+
+**The transitions** (the syscall gate, the IRQ executive, the event core)
+are the Mk1 sources, assembled for Mk2 through the Mk2 mapping
+operations. The byte Mk1 keeps as the latch is the **mapping value**:
+`00h` while the system bank is active, otherwise the page of the working
+bank's logical page 0, the program's page-0 image, which also names the
+program (the event core's owner check uses it where Mk1 uses the bank).
+The DAT state in common memory holds the mirrors of both banks and of the
+control register and the identity of the 8-byte image the working bank
+holds (none once an entry is remapped). The gate saves the caller's
+mapping value, system entry 0 and that identity (copying the working
+mirror into its own image when an entry was remapped), maps the caller's
+page 0 as system entry 0 and selects the system bank. Restoring a program
+context closes the crossing: the caller's image is loaded back if a body
+replaced it, the working bank selected and system entry 0 put back. An
+IRQ saves and restores the mapping value only; a driver's handler gets
+the driver domain from the trampoline, which writes the domain's
+entries whatever the mirrors say (an interrupted remap has written its
+mirror before its `OUT`, so one hardware entry may still lag) and puts
+the saved mirrors back, so an interrupt in a body returns to the body's
+exact DAT. The mapping value names no far window, so an event frame
+carries the **far-window handle** in force where Mk1 keeps the latch: the
+delivery's home mapping (`KOS_MAP_HOME`) is the program's own image with
+the window closed, and `EVENT_RETURN` opens the frame's handle again, so
+the interrupted code gets its exact window back whatever the handler
+mapped (`tests/test_mk2_programs.py`). A Mk2
+syscall round trip costs about 1,520 T-states without the body, against
+1,130 for Mk1's gate on the same harness (`tests/test_mk2_transitions.py`).
+
 **NMI rule** (the Mk2 counterpart of "an NMI never changes the latch"):
 an NMI handler never changes `DAT_BANK`, a DAT entry or a software
 mirror; it runs on whatever mapping is active, from common memory. Since
@@ -466,9 +692,67 @@ Maskable-interrupt paths follow the same ordering.
 
 **Buffer identity** (the Mk2 form of section 4.9): a caller address is
 resolved through the caller's **current** working mapping, far window
-included, not through its process's default image. The nucleus may map
-the caller's pages into the system DAT to move bytes directly instead of
-staging them through common memory.
+included, not through its process's default image: the image the gate
+keeps for the crossing. The nucleus maps the caller's pages into its
+copy windows and moves bytes directly instead of staging them through
+common memory.
+
+**Page ownership** (`kernel/memory/mk2/pages.c`): one owner byte per
+SRAM page, in nucleus data: free, the nucleus, or a process. At init
+every page is free, then the build's list of nucleus pages (the common
+page, the page-0 images, nucleus code and data, the cold sets) is
+reserved, and the driver loader takes the driver domain's pages as the
+nucleus's; ROM pages are never allocated. An allocation takes any number of pages, lowest
+free first, all or none; exit releases every page the process owns.
+
+**Processes.** Each process has one 8-byte DAT image in common memory,
+indexed by pid: entries 0-6 are its own pages (the primary-bank layout of
+4.8: page zero, the image and BSS from `0100h`, the stack down from
+`E000h`) and entry 7 is the common page. The nucleus names the running
+process's image and the image the working bank holds; entering a program
+loads its image only when the bank holds another one, and exec and exit
+drop that identity, so a reused image row is never trusted. `exec`
+binds the path as a FILE and reads and validates the EXE header (its
+board included) and segment table, then takes a slot, the CWD
+(inherited) and seven pages before it writes anything, then builds page
+zero (zeroed; the `0028h` far-window vector, the `0030h` gate and the
+`0066h` NMI stubs; the startup block with the caller's tail read through
+its current mapping), the image - straight from the store's ROM pages for
+a `/system` EXE, through FILE reads for any other - and its BSS, then
+each segment's object, payload and BSS; nothing else is cleared. The launch gate enters the child through
+its image. The syscall gate's DAT block (the saved system entry 0, the
+caller's image identity, the crossing flag and the gate's own image copy)
+is kept per exec depth with the rest of the gate state: the child starts
+with the parent's crossing closed, and the crossing is open again before
+the parent's `SYS_EXEC` returns, so a nested child's syscalls never
+disturb it. Exit releases the child's objects and pages, drops the cached
+identity and resumes the parent; the parent's gate return reloads its
+exact working bank, far window included. The far-window handle is kept
+per process across a child's run. A Mk2 `exec` costs about 41,000
+T-states to the child's first instruction and an exit about 17,000 to the
+parent's (`tests/test_mk2_processes.py`, a 16-byte image with 256 bytes
+of BSS).
+
+**ROMFS:** the store's 8 KiB ROM pages follow the linked image in ROM
+(from `KOS_ROMFS_FIRST_PAGE`); the reader maps each page into the source
+copy window and copies straight to its buffer. Nothing changes mode and
+nothing is masked, so the store stays readable while a program holds the
+real-time interrupt.
+
+**Copy windows:** system entries 5 and 6 (`A000h`, `C000h`;
+`KOS_DAT_COPY_*` in `memory.inc`) belong to `kernel/memory/mk2/
+page_copy.asm`, which remaps them, mirror first, and moves one chunk with
+one `KOS_FASTCOPY` (`kernel/runtime/fastcopy.inc`, unrolled `LDI`) between
+two pages, a page and nucleus memory, or zero-fills it. No interrupt path
+uses them, so a copy runs under the caller's interrupt state. Copies are
+chunked at the page boundaries of both sides, never empty; an 8 KiB
+`XMEM_READ` moves its bytes at about 17 T-states a byte. The page-list
+forms (`kos_pages_copy`, `kos_pages_zero`, the same file) resolve each
+side of each chunk through its page list (a DAT image or an object's
+pages, or none for a nucleus address) and split the copy at every page
+edge. Their caller's stack lies outside the windows; a driver's call
+uses `kos_driver_copy`, the same copy on the driver copy stack, which
+puts the windows back as it found them, mirror first.
 
 **Page-zero NMI shadow store:** an NMI fetches `0066h` only through the
 current mapping's logical page 0. Pages of an extended-memory object are
@@ -476,25 +760,67 @@ never seen there by an NMI unless the object is mapped at `0000h`, so the
 Mk1 shadow store for objects starting at slot 0 (`kos_aux_copy`, section
 4.12) has no Mk2 counterpart; only mapped page-0 images need the entry stub.
 
-Initially, retain the existing **`8000h–BFFFh` 16 KiB far aperture**
-as an *OS logical convention*, implemented by changing two 8 KiB
-entries. This avoids coupling a hardware change to a simultaneous
+The **`8000h–BFFFh` 16 KiB far window** keeps the far aperture as an
+*OS logical convention*, realized by changing two 8 KiB entries (working
+entries 12-13). This avoids coupling a hardware change to a simultaneous
 redesign of far-code link addresses, SDK placement rules and the EXE
 format. But **Mk1 map tokens literally encode a latch value**, and
 libkos/veneers directly write that latch: those bytes and instructions
-cannot be reused on Mk2. Preserve handle/map/unmap *semantics* where
-possible; represent mappings logically and implement their realization
-through a platform-owned operation. ABI changes, if required, must be
-documented rather than assuming Mk1 binary compatibility.
+cannot be reused on Mk2. The map/unmap *semantics* stay and the mapping
+is logical: `SYS_XMEM_MAP` fills the object's row of a common far table
+(its first two pages, or its one page and the program's own `A000h`
+page) and returns a **mapping handle**; the common routine `kos_far_map`
+(`kernel/memory/mk2/far.asm`) realizes it, remapping both entries mirror
+first with interrupts masked, and returns the handle in force before.
+Handle 0 is the program's own pages and gives the working bank its image
+identity back. Freeing an object clears its row, so its handle is
+refused. A program reaches `kos_far_map` through the **far-window
+vector**, `JP kos_far_map` at `0028h` of every program page-0 image
+(`RST 28h`), not a syscall: an open costs about 470 T-states against
+about 1,520 for a syscall round trip. A handle is one byte, so the SDK
+keeps it where a Mk1 token goes and its mapping members (`user/sdk/src/
+mk2/`: the aperture wrapper and the veneer trampoline) are the only
+board-specific SDK code; the placement, the far link addresses and the
+EXE format are shared, and the EXE header's board field keeps each
+board's programs on their board. The Mk2 ABI is `docs/abi.md` section
+8.3.
 
-An extended-memory object becomes **a list of physical pages**. The Mk1
-object classes have no Mk2 meaning and are not carried over: the 32 KiB
-plain / 16 KiB `MAPPABLE` limits and one-mappable-object-per-bank rule,
-the slow (slots 0–2, mode-10 gate) versus window-speed (slots 3, 6) copy
-paths, and the rule that a bank holding an auxiliary slot cannot become a
-primary bank. Copies between a caller buffer and an object map both
-pages and move the bytes directly. Object size limits that remain are
-software choices, stated with the Mk2 ABI.
+An extended-memory object is **a list of physical pages** owned by its
+process: up to seven (56 KiB), a `MAPPABLE` one up to the far window's
+two. The Mk1 object classes have no Mk2 meaning and are not carried
+over: the 32 KiB plain / 16 KiB `MAPPABLE` limits and
+one-mappable-object-per-bank rule, the slow (slots 0–2, mode-10 gate)
+versus window-speed (slots 3, 6) copy paths, and the rule that a bank
+holding an auxiliary slot cannot become a primary bank. `READ` and
+`WRITE` copy between the caller's pages and the object's through the
+copy windows, directly. **Segments** are objects too: the loader gives
+each far-code or data segment an object of its own pages, its image from
+the object's first byte, so a far-code or mappable data segment linked
+at `8000h` is in place when the window shows it; `SEG_MAP` and
+`XMEM_MAP` return its mapping handle. The Mk1 limits that come from
+banks do not apply: no auxiliary bank per far or mappable segment, no
+one-far-segment-per-bank rule, no aperture slice; a container is bounded
+by the free pages and the object table, beside the format's own limits
+(16 KiB far and mappable rows, 32 KiB data rows, eight rows).
+
+**Machine personalities** (`SYS_PERSONALITY`, `docs/abi.md` section
+8.4): a program that brings its own machine - ColecoGo's ColecoVision -
+builds the whole 64 KiB space in eight of its object pages and hands the
+CPU over; KonaOS does not come back without a reset. The body
+(`kernel/syscall/personality.c`, cold set 1, beside the object table)
+resolves and checks every record
+before anything changes, then, masked, stops the interrupt and NMI
+sources through their owners' stop paths: the RT vector and the IO
+controller's RT clock (the NMI the ColecoVision gives to its video chip),
+the sound card, the CTC. The switch (`kos_personality_switch`,
+`kernel/memory/mk2/dat_map.asm`) is fixed-region code, which the system
+bank keeps mapped until the last instruction: it loads the eight pages
+as the working entries 8-15, mirror first (so entry 15 stops being the
+common page), sets `IM 1`, writes `OUT (C),A` into the two bytes below
+the entry in the system mapping and jumps there, so the instruction that
+selects the working bank is followed by the entry itself. Everything
+else - processes, objects, drivers, the console, the nucleus - is
+abandoned in its pages.
 
 No hardware-enforced page permissions, user/kernel isolation or
 preemptive scheduling are added by this mapper.
@@ -531,15 +857,47 @@ Before a PCB is designed, demonstrate:
    allocation pass the corresponding KonaOS acceptance tests.
 10. Reset and `SYS_REBOOT` both reach a deterministic ROM boot view.
 
-**Suggested port order:** emulator mapper/reset/I/O model; ROM
-bootstrap and common gates; syscall and interrupt transitions; software
-DAT-image caching and page allocator; nucleus/driver residency and
-loader; far mapping and SDK; diagnostics and acceptance suite.
-Keep the working Mk1 target intact throughout. Once the Mk2 design
-is tested, reconcile the remaining Mk1-only architecture text and
-the detailed `docs/memory.md`, `docs/boot.md`, `docs/abi.md` and
-`docs/exe-format.md` references. No pin map, PLD fitter choice or
-physical connection is frozen in this architecture section.
+**Acceptance map:** `tests/test_mk2_acceptance.py` maps each of these ten
+properties to the simulator tests that prove it. The production image
+also boots, runs placed far-code and PCM programs, and reboots on MAME's
+`zephyr80mk2`; this does not settle the open hardware details above.
+
+**Measured costs** (simulator T-states on the production images, Mk1 /
+Mk2; CPU cost with the simulator's IOC, sound and V9958 peers, not card or
+link timing, and not a board measurement). The IPC, file and XMEM rows are
+`tests/perf_os_sdk.py` spans, `RST 30h` through return, interrupts masked,
+the buffer in page 0 (`0200h`) unless named high (`A000h`); the cache
+state of each row is observed, not assumed. The far-call and `exec` rows
+are the placed-program and ROMFS-`exec` replays.
+
+| operation | Mk1 | Mk2 | measurement |
+|---|---:|---:|---|
+| syscall round trip | 1,389 | 1,851 | ENOSYS dispatch |
+| null IPC call | 4,651 | 7,359 | `KJOY_OP_READ` on `/dev/input/joy/0` |
+| descriptor IN, 32 bytes | 13,705 | 16,807 | `KSOUND_OP_WRITE`, 16 pairs |
+| file read, 512 bytes, ring hit | 24,696 | 28,111 | IOC-FAT ring holds the block |
+| file read, 512 bytes, cache hit | 44,185 | 28,459 | IOC-FAT block cache holds it, the ring does not |
+| file read, 4,096 bytes, cache hit | 286,686 | 148,377 | eight cached blocks |
+| file read, 512 bytes, uncached | 89,493 | 77,930 | one `FS2_READ`; Mk2 receives into the lent buffer |
+| file read, 512 bytes, uncached, high | 118,179 | 95,005 | received into the ring, then copied |
+| file read, 4,096 bytes, uncached, high | 816,446 | 608,303 | about 494,000 of it the IOC receive loop |
+| file read, 512 bytes, populating miss, high | 134,703 | 111,953 | received, cached and copied |
+| XMEM copy, 512 bytes, high | 54,250 write / 54,182 read | 14,468 write / 14,475 read | unmapped object |
+| XMEM copy, 4,096 bytes, high | 409,066 / 408,550 | 74,052 / 74,059 | unmapped object |
+| far call, home ↔ far | 4,106 / 1,321 / 4,464 | 6,930 / 2,333 / 7,216 | first `f1_add`, cached `f1_mix`, first `f2_twice` |
+| `exec` of small program | 6,096,169 | 507,634 | load `/system/fs_child.exe` (7,335 bytes) to entry |
+
+On Mk2 every row copies each payload byte once in RAM (an uncached read
+also receives it through the IOC loop first), except a populating miss
+(ring to cache and ring to caller), a sound write longer than one
+64-byte chunk (the driver copies every chunk to validate it and all but
+the first again to write it) and a lent page-0 read (no copy at all). The
+EXE loader reads a `/fs` program straight into the child's pages, 4 KiB
+a read. On Mk1 a cache hit into
+page 0 crosses a common buffer, because no mapping shows bank 6's bulk
+tier beside a caller page (4.9). The `exec` figure is the simulator's
+T-state count; filesystem placement and cold disk access make it much
+longer than resident gate costs.
 
 #### 2.7.8 Option: an RT page at `C000h–DFFFh`
 
@@ -1014,7 +1372,47 @@ are not application ABI.
   saved P ≠ 0 names the far bank in the aperture, not the primary bank.
 - **Direct copies:** a descriptor id can be passed down a call chain, and
   the driver that holds the data copies straight to the caller. No driver
-  stages data for another.
+  stages data for another. Data a driver keeps in its own bulk extent (a
+  block cache) goes to the caller with `bulk_copy_out(id, offset, bulk,
+  length)`: the source is bound to the calling driver's extent as
+  `bulk_read`'s is, the destination checked as `copy_out`'s. On Mk2 it is
+  one pass; on Mk1, which has no mapping that shows the bulk tier beside
+  a caller buffer, it is path C (a common buffer: one mode-10 pass over
+  bank 6).
+- **Lent buffers:** `borrow(id, offset, length, dir, &len)` lends part of
+  a descriptor as plain memory, so a device receive lands in the caller's
+  buffer with no copy at all; `borrow_release()` ends the lend, and the
+  dispatch that took it ends it on return in any case. The driver still
+  names only the id: the nucleus answers with an address through a system
+  entry that already aliases the caller's page, with `len` cut at the
+  request, the descriptor and the page end, or refuses (0), and the driver
+  then stages as before. One lend at a time. On Mk2 that entry is entry
+  0, which the syscall gate maps to the caller's page 0 for the whole call
+  and nothing a driver does remaps but a bulk-map span (`bulk_map`
+  refuses while a lend is held, and a lend is refused inside a span); a
+  driver-to-driver call keeps it, and interrupts and the NMI never remap
+  it (2.7.6). So only a program caller's page-0 buffer is lent, at
+  `0105h-1FFFh` (the receive keeps each packet's header in the five bytes
+  below its buffer, which must be the caller's, never the entry stubs),
+  clear of the call block (with those five bytes), and only while system
+  entry 0 still shows the descriptor's page. A callee handed a lent
+  address checks it against the live lend with `borrowed(addr, length,
+  dir)`. Mk1 lends nothing. IOC-FAT lends the whole blocks of an uncached
+  file read at a block boundary that its ring does not hold (the IOC's
+  `KIOC_OP_COMMAND_READ`, `docs/devices.md`, judges the READY before the
+  first payload byte lands); a 512-byte read into page 0 costs 77,930 T-states against
+  95,005 for the same read into a high buffer, which goes through the
+  ring, and a 4,096-byte one 534,967 against 608,303 (simulator,
+  `tests/perf_os_sdk.py`, interrupts masked). A failed read leaves the requested range unspecified and the rest
+  of the buffer unchanged.
+- **Descriptor lifetime:** four slots, one bit each in a live mask. A call
+  that names a buffer (the syscall body, or a nucleus call with its own
+  buffer) releases every slot, captures its one buffer at the current
+  call depth, and releases every slot again when the call returns (a
+  refused capture captures nothing and the call does not run). An id is
+  valid only in calls deeper than its capture level: the outer
+  descriptor reaches every callee down the chain, a driver cannot name a
+  slot of its own level, and no id survives into a later call.
 - **Copy paths** (chosen per request; all are correct, A and B are fast):
 
   | path | when | how |
@@ -1042,8 +1440,9 @@ are not application ABI.
 - **Driver-to-driver calls** are host-wired and near-direct: both drivers
   are mapped, so the call dispatches through the endpoint table with the
   frame passed by reference and no bank switch.
-- **Cost:** a null application call costs about 15,500 T-states (the frame
-  copies dominate); one window crossing costs 242. Protocols are therefore
+- **Cost:** a null application call costs 4,651 T-states on Mk1 and
+  7,359 on Mk2 (`/dev/input/joy/0`, simulator, `tests/perf_os_sdk.py`);
+  one Mk1 window crossing costs 242. Protocols are therefore
   coarse-grained: no per-byte operations; writes are buffered, reads are
   read-N.
 
@@ -1234,7 +1633,9 @@ bank 6 E000h-FFFFh   unused (common is mapped over it)
 - The boot/bulk tier holds code that runs only during bring-up (font
   upload, filesystem setup) and bulk data drivers reach through nucleus
   copies: `bulk_read` and its mirror `bulk_write`, bound to the calling
-  driver's own extent (the V9958 font; the IOC-FAT block cache). The
+  driver's own extent (the V9958 font; the IOC-FAT block cache), and
+  `bulk_copy_out`, the extent straight to a caller descriptor (an IOC-FAT
+  cache hit). The
   loader runs boot code through the mode-10 gate with Q = 6. No code
   there runs after boot.
 - While a driver runs in mode 11, `0000h-1FFFh` shows the caller's bank;
@@ -1246,8 +1647,8 @@ bank 6 E000h-FFFFh   unused (common is mapped over it)
   driver touches only its own memory (hot tier, `DRIVER_IO`, its mapped
   segment) and its device ports; the request frame, which a syscall
   passes in the caller window, is out of reach too: `copy_in`, `copy_out`, `bulk_read`,
-  `bulk_write`, `call` and `event_post` refuse, and `bulk_map` does not
-  nest and is refused to interrupt handlers. A span never outlives the operation that opened it: the driver
+  `bulk_write`, `bulk_copy_out`, `borrow`, `call` and `event_post` refuse, and `bulk_map` does not
+  nest and is refused to interrupt handlers and while a lend is held. A span never outlives the operation that opened it: the driver
   closes it before it returns, and the endpoint return path closes a span
   left open and counts it as a driver fault. Spans are for the hot path's
   read-mostly data (the V9958 font); one costs two primitive calls.
@@ -1288,7 +1689,10 @@ table it may use and its resolved dependency array. The table holds:
 
 - `call(dependency_ref, op, frame)`: a near-direct call to a resolved
   dependency;
-- `copy_in`, `copy_out` and the bulk-data reader;
+- `copy_in`, `copy_out`, the bulk-data reader and writer, and
+  `bulk_copy_out` (bulk data to a caller descriptor);
+- `borrow`, `borrow_release` and `borrowed`: a descriptor lent as plain
+  memory (4.9);
 - `bulk_map`, `bulk_unmap`: the bulk-map span (5.2);
 - `irq_claim`, `irq_release`;
 - the few other primitives a driver needs, each named in
@@ -1431,9 +1835,11 @@ console it selected. Programs cannot tell which implementation answers.
   - **`KSOUND_OP_WRITE`** takes one IN descriptor holding `{target, value}`
     pairs: target 0-3 a PSG, 4 the DAC. The driver walks them in order
     through a 64-byte `DRIVER_IO` buffer and performs each `OUT`. One call
-    carries a whole music tick, because a call costs about 15,500
-    T-states (section 7.5) and one per register write would cost more than
-    the music. The targets are logical: the IPC path names no port, so
+    carries a whole music tick: on the simulator a 16-pair write costs
+    20,111 T-states on Mk2 (Mk1 21,200) and a 128-pair one 64,973 (Mk1
+    86,154) through `sound_write`, against 7,359 (Mk1 4,651) for a null
+    IPC call (section 2.7.7). One call per register write would cost more
+    than the music. The targets are logical: the IPC path names no port, so
     another card can serve the same protocol.
   - **Direct I/O** is the exclusive holder's: it reads the ports from
     `KSOUND_OP_INFO` and writes them itself (`sound_out` in the SDK),
@@ -1497,6 +1903,7 @@ compatibility path.
 | `0Ah` | `CHDIR` | change the CWD |
 | `0Bh` | `GETCWD` | read the CWD |
 | `0Ch` | `REBOOT` | warm reboot into the reset path (3.1) |
+| `0Fh` | `PERSONALITY` | Mk2: hand the machine to a 64 KiB space of object pages, no return (2.7.6) |
 | `20h`-`25h` | `XMEM_ALLOC`, `FREE`, `READ`, `WRITE`, `INFO`, `MAP` | extended memory |
 | `26h`, `27h` | `SEG_INFO`, `SEG_MAP` | the program's own segments |
 | `28h`-`2Dh` | `DIAG_*` | recovery and diagnostics (6.9) |
@@ -1517,11 +1924,13 @@ blocks, a console writes a buffer.
 
 - **The syscall result (carry and `A`):** carry set means the request never
   reached the IPC layer: the block was outside the caller window, the frame
-  length was wrong, or a reserved byte was set. `A` is the error.
+  length was wrong, a reserved byte was set, or the handle is not one the
+  caller holds (unknown, released, stale, another process's). `A` is the
+  error.
 - **The IPC status (`HL` with carry clear, also written into the block):**
   0 or positive is the driver's result; negative is `-KOS_E*`, a refusal by
-  the IPC layer or the driver (unknown handle, forged descriptor, copy
-  bounds, nesting depth, re-entrancy, or a protocol error).
+  the IPC layer or the driver (forged descriptor, copy bounds, nesting
+  depth, re-entrancy, or a protocol error).
 
 The SDK folds both into one return value: non-negative on success, `-errno`
 on failure. Every other syscall has only the first channel.
@@ -1664,10 +2073,13 @@ frame stack. A veneer costs about a banked call.
 reached through function pointers), then the pins (`PLACE=` hints, a
 library member written `lib<name>.lib(<member>.rel)=zone`,
 `docs/sdk.md` section 3). The remaining code stays resident while
-the resident zone has room, the most-called first; the rest is grouped
-along the call graph - each library one group, merged with the groups it
-calls most while they fit one zone - and the groups go to the home zone
-and the far segments. The placement is deterministic and the build
+the resident zone has room, the most-called first, each unit counted with
+the veneers it creates and the fill stopping a headroom (64 bytes unless
+the program sets `HEADROOM=`) short of the end; pins and the resident set
+that alone overflow the zone are an error naming the pins and the bytes.
+The rest is grouped along the call graph - each library one group,
+merged with the groups it calls most while they fit one zone - and the
+groups go to the home zone and the far segments. The placement is deterministic and the build
 report lists every module's zone and every veneer.
 
 **Layout.** The loader is unchanged: it copies the primary image from
@@ -1765,8 +2177,8 @@ At 10 MHz (1 T-state = 0.1 µs):
 | access through an open aperture | none |
 | `xread`/`xwrite`, slots 3-6 | about 21 T-states per byte |
 | `xread`/`xwrite`, slots 0-2 | about 287 T-states per byte |
-| null IPC call | about 15,500 T-states |
-| a 512-byte card read | about 87,000 T-states, about 170 T-states per byte |
+| null IPC call | 4,651 Mk1 / 7,359 Mk2 T-states (measured; section 2.7.7) |
+| a 512-byte card read | 89,493 Mk1 / 77,930 Mk2 T-states into page 0, about 170 / 150 T-states per byte (section 2.7.7) |
 
 The per-call part is the whole story: a 512-byte read amortises one call
 and one block over 512 bytes, about 170 T-states each, while the same
@@ -1822,11 +2234,12 @@ packer. `make SYSTEM=<name>` builds an image; the named targets
   with the ledgers.
 - `make check` rebuilds from clean, proves the rebuild reproduces the same
   image, and runs the host tests and the production replay.
-- The simulator (`tests/z80sim.py`) replays images on the host. Its Z80
-  runs on a C core (`tests/simcore`, built by `make`); the Python core in
-  `tests/z80sim.py` is the reference the C core is checked against
-  instruction for instruction (`tests/test_sim_core.py`), selected with
-  `SIM_CORE=python` (`KOS_SIM_CORE` for a direct test run). Physical
+- The simulator (`tests/z80sim.py`) replays images on the host: a board
+  model (memory, device peers) around a C Z80 core (`tests/simcore`,
+  built by `make`). `tests/test_sim_trace.py` pins the core's behaviour
+  with a recorded digest of an opcode fuzz (no OS image involved); a
+  deliberate core change regenerates it (`KOS_SIM_TRACE_UPDATE=1`), and
+  the image replays cover the core in use. Physical
   hardware stays authoritative for banking, the aperture, interrupt
   acknowledgement and timing, serial and IOC behaviour; `tools/serial_smoke.py`
   captures and checks a board's serial output.
@@ -1851,7 +2264,7 @@ ledgers (`docs/memory.md` has the current values):
 |---|---|---:|---|
 | `nucleus fixed:` | bank 7 `2000h-5FFFh` (code, data, ISR and driver stacks) | 16,384 | keep ≥ 2,048 free |
 | `nucleus cold:` | bank 7 `6000h-DFFFh` | 32,768 | keep ≥ 4,096 free |
-| `driver hot:` | bank 6 `6000h-DFFFh` | 32,768 | keep ≥ 640 free |
+| `driver hot:` | bank 6 `6000h-DFFFh` | 32,768 | keep ≥ 360 free |
 | `driver boot/bulk:` | bank 6 `0000h-5FFFh` | 24,576 | — |
 | `driver mapped:` | bank 6 `0100h-1FFFh`, inside boot/bulk | 7,936 | — |
 | `common:` | packed `_COMMON` + `_COMMON_DATA` | ceiling 3,072 | never raised |

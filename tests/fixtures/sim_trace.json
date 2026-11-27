@@ -1,0 +1,6 @@
+{
+  "opcode-fuzz": {
+    "sha256": "060b7d1d3a224f40604e4dacbdb331dbbafe85d2a4602a6fc66c08d92b5eb1a5",
+    "steps": 200000
+  }
+}

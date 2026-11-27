@@ -15,7 +15,7 @@
     "exe-bad-format.exe",
     "exe-bad-abi.exe",
     "exe-bad-flags.exe",
-    "exe-bad-reserved0.exe",
+    "exe-bad-board.exe",
     "exe-bad-header-size.exe",
     "exe-bad-reserved1.exe",
     "exe-zero-image.exe",

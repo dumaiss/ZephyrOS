@@ -33,6 +33,13 @@
  *     capacity check around that exec proves the far program's exit
  *     released its segments, objects and bank slots.
  *
+ * Built for Zephyr-80 Mk2 (KOS_BOARD_MK2) the rows that name banks,
+ * slots or the latch take the Mk2 model (architecture 2.7.6): an object
+ * is any free 8 KiB pages up to 56 KiB, so the pool is counted in pages
+ * and the fragmentation rows become an object built from scattered free
+ * pages; every mapping is at 8000h with a one-byte handle; and the
+ * window's state is read by opening it (no latch reads back).
+ *
  * The far-code program's own outcomes are
  * tests/xmem/xmem_far.c.  The replay asserts the lines below; the final
  * line is the verdict.
@@ -68,9 +75,16 @@
 #define FAR_PATH     "/system/xmem_far.exe"
 #define FAR_STATUS   43
 
+#if defined(KOS_BOARD_MK2)
+/* The largest object: seven pages. */
+#define LARGEST KOS_XMEM_MAX_OBJECT
+#else
 /* The banking latch (port 00h): mode in D4-D3, bank in D2-D0, page in
  * D7-D5.  The aperture checks read it directly. */
 __sfr __at 0x00 latch_port;
+/* The largest object: one bank's four plain slots. */
+#define LARGEST 32768u
+#endif
 
 static unsigned char pattern[BLK];
 static unsigned char buf[BLK];
@@ -86,6 +100,10 @@ static int stage;
 /* Whole banks this process can open: 5 in the acceptance image (set in
  * main; EXE v2 has no initialized writable data). */
 static unsigned int banks;
+#if defined(KOS_BOARD_MK2)
+/* Free pages with the anchors live (counted in main). */
+static unsigned int pages;
+#endif
 
 static void check(const char *label, int ok)
 {
@@ -195,6 +213,43 @@ static void release_held(unsigned int count)
 		(void)xfree(held[i]);
 	}
 }
+
+#if defined(KOS_BOARD_MK2)
+/* The handle the far window shows: re-opening it returns the handle in
+ * force (0 is the program's own memory, so `in_force(0u)` also closes a
+ * window left open by mistake). */
+static unsigned int in_force(unsigned int token)
+{
+	return (unsigned int)aperture_open((unsigned char)token);
+}
+
+/* The free pages: largest objects, then 8 KiB ones, all held until the
+ * count is taken. */
+static unsigned int count_pages(void)
+{
+	unsigned int big = 0u;
+	unsigned int count = 0u;
+	int handle;
+
+	while (count < XMEM_OBJECTS) {
+		handle = xalloc(LARGEST, 0u);
+		if (handle < 1) {
+			break;
+		}
+		held[count++] = (unsigned int)handle;
+		++big;
+	}
+	while (count < XMEM_OBJECTS) {
+		handle = xalloc(8192u, 0u);
+		if (handle < 1) {
+			break;
+		}
+		held[count++] = (unsigned int)handle;
+	}
+	release_held(count);
+	return big * (LARGEST / 8192u) + (count - big);
+}
+#endif
 
 static void fill_aperture(unsigned int base, unsigned int length,
 			  unsigned char value)
@@ -325,7 +380,7 @@ int main(int argc, char **argv)
 	/* Sizes and rounding. */
 	check("alloc-zero-rejected", xalloc(0u, 0u) == -KOS_EINVAL);
 	check("alloc-flags-rejected", xalloc(64u, 2u) == -KOS_EINVAL);
-	check("alloc-oversized", xalloc(32769u, 0u) == -KOS_ENOSPC);
+	check("alloc-oversized", xalloc(LARGEST + 1u, 0u) == -KOS_ENOSPC);
 	check("alloc-mappable-oversized",
 	      xalloc(16385u, MAPPABLE) == -KOS_EINVAL);
 
@@ -398,29 +453,29 @@ int main(int argc, char **argv)
 		(void)xfree((unsigned int)handle);
 	}
 
-	/* The largest object (32 KiB) and no pre-zeroing. */
-	handle = xalloc(32768u, 0u);
+	/* The largest object (32 KiB; 56 KiB on Mk2) and no pre-zeroing. */
+	handle = xalloc(LARGEST, 0u);
 	check("largest-alloc",
 	      handle >= 1 &&
 	      xinfo((unsigned int)handle, &info) == 0 &&
-	      info.allocated == 32768u);
+	      info.allocated == LARGEST);
 	check("largest-head",
 	      fill_byte((unsigned int)handle, 0u, 0x44u, 1u) &&
 	      check_byte((unsigned int)handle, 0u, 0x44u));
 	check("largest-tail",
-	      fill_byte((unsigned int)handle, 32767u, 0x55u, 1u) &&
-	      check_byte((unsigned int)handle, 32767u, 0x55u));
+	      fill_byte((unsigned int)handle, LARGEST - 1u, 0x55u, 1u) &&
+	      check_byte((unsigned int)handle, LARGEST - 1u, 0x55u));
 	check("largest-whole",
-	      fill_range((unsigned int)handle, 0u, 32768u) &&
-	      check_range((unsigned int)handle, 0u, 32768u));
+	      fill_range((unsigned int)handle, 0u, LARGEST) &&
+	      check_range((unsigned int)handle, 0u, LARGEST));
 	(void)fill_byte((unsigned int)handle, 0u, 0x66u, 1u);
-	(void)fill_byte((unsigned int)handle, 32767u, 0x67u, 1u);
+	(void)fill_byte((unsigned int)handle, LARGEST - 1u, 0x67u, 1u);
 	(void)xfree((unsigned int)handle);
-	handle = xalloc(32768u, 0u);
+	handle = xalloc(LARGEST, 0u);
 	check("no-zeroing",
 	      handle >= 1 &&
 	      check_byte((unsigned int)handle, 0u, 0x66u) &&
-	      check_byte((unsigned int)handle, 32767u, 0x67u));
+	      check_byte((unsigned int)handle, LARGEST - 1u, 0x67u));
 	(void)xfree((unsigned int)handle);
 
 	/* Multiple objects in one bank, independent contents. */
@@ -472,6 +527,66 @@ int main(int argc, char **argv)
 		}
 	}
 
+#if defined(KOS_BOARD_MK2)
+	/* Pages, not banks: every free page serves any object.  The pool is
+	 * counted with the anchors live; it is exhausted exactly when its
+	 * pages are held. */
+	pages = count_pages();
+	count = fill_until_full(8192u, 0u);
+	check("fill-pages",
+	      pages >= 4u &&
+	      count == ((pages < XMEM_OBJECTS - 2u) ? pages
+						     : XMEM_OBJECTS - 2u));
+	check("exhaustion-pages", xalloc(8192u, 0u) == -KOS_ENOSPC);
+	/* Every other page back: the free pages are scattered, and one
+	 * object of all of them (up to the largest) still works whole. */
+	{
+		unsigned int freed = 0u;
+		unsigned int size;
+
+		for (i = 0u; i < count && freed < LARGEST / 8192u; i += 2u) {
+			(void)xfree(held[i]);
+			held[i] = 0u;
+			++freed;
+		}
+		size = freed * 8192u;
+		handle = xalloc(size, 0u);
+		check("scattered-alloc", handle >= 1);
+		check("scattered-whole",
+		      handle >= 1 &&
+		      fill_range((unsigned int)handle, 0u, size) &&
+		      check_range((unsigned int)handle, 0u, size));
+		if (handle >= 1) {
+			(void)xfree((unsigned int)handle);
+		}
+		for (i = 0u; i < count; ++i) {
+			if (held[i] != 0u) {
+				(void)xfree(held[i]);
+			}
+		}
+	}
+
+	/* Exhaustion: 16 KiB objects take the pages two by two, and an
+	 * 8 KiB mappable object is one page like any other. */
+	count = fill_until_full(16384u, 0u);
+	check("exhaustion-16k-count", count == pages / 2u);
+	check("exhaustion-16k",
+	      xalloc(16384u, 0u) == -KOS_ENOSPC);
+	release_held(count);
+	handle = xalloc(16384u, 0u);
+	check("exhaustion-16k-refill", handle >= 1);
+	(void)xfree((unsigned int)handle);
+	count = fill_until_full(8192u, MAPPABLE);
+	check("exhaustion-mappable-count",
+	      count == ((pages < XMEM_OBJECTS - 2u) ? pages
+						     : XMEM_OBJECTS - 2u));
+	check("exhaustion-mappable",
+	      xalloc(8192u, MAPPABLE) == -KOS_ENOSPC);
+	release_held(count);
+	handle = xalloc(8192u, MAPPABLE);
+	check("exhaustion-mappable-refill", handle >= 1);
+	(void)xfree((unsigned int)handle);
+#else
 	/* Fragmentation: whole banks held, free slots remain, and no run is
 	 * large enough - until one bank is released. */
 	{
@@ -525,6 +640,7 @@ int main(int argc, char **argv)
 	handle = xalloc(8192u, MAPPABLE);
 	check("exhaustion-mappable-refill", handle >= 1);
 	(void)xfree((unsigned int)handle);
+#endif
 
 	/* The object table.  The pool has 25 plain and 8 more mappable
 	 * one-slot runs, so with the two anchors the table fills first: 32
@@ -534,8 +650,13 @@ int main(int argc, char **argv)
 	 * only through the freed entry: the same index with a new
 	 * generation.  Indices 16-31 make handles above one byte.  In a stage
 	 * run the open banks bind before the table, so the rows belong to
-	 * the boot path. */
+	 * the boot path.  On Mk2 they run whenever the free pages outnumber
+	 * the free table entries, so the table fills first. */
+#if defined(KOS_BOARD_MK2)
+	if (stage == 0 && pages >= XMEM_OBJECTS - 2u) {
+#else
 	if (stage == 0) {
+#endif
 		unsigned int plain = fill_until_full(8192u, 0u);
 		unsigned int top = 0u;
 		unsigned int old;
@@ -591,6 +712,14 @@ int main(int argc, char **argv)
 	check("map-address-low", token_a >= 1u && address_a == APERTURE_BASE);
 	handle = xmap(second, &address_b);
 	token_b = (unsigned int)handle;
+#if defined(KOS_BOARD_MK2)
+	/* Every mapping shows its object at the window's base, and the
+	 * handles are one byte each, one per object. */
+	check("map-address-second",
+	      token_b >= 1u && address_b == APERTURE_BASE);
+	check("map-handle-byte",
+	      token_a <= 0xFFu && token_b <= 0xFFu && token_a != token_b);
+#else
 	check("map-address-high",
 	      token_b >= 1u && address_b == APERTURE_BASE + 0x2000u);
 	/* Tokens exist only for application banks 0-5: the page field is
@@ -599,6 +728,7 @@ int main(int argc, char **argv)
 	      ((token_a >> 5) & 7u) >= 2u &&
 	      (token_a & 7u) == ((unsigned int)latch_port & 7u) &&
 	      (token_b & 7u) == ((unsigned int)latch_port & 7u));
+#endif
 	handle = xalloc(64u, 0u);
 	check("map-non-mappable",
 	      handle >= 1 &&
@@ -606,7 +736,11 @@ int main(int argc, char **argv)
 	(void)xfree((unsigned int)handle);
 
 	saved = (unsigned int)aperture_open((unsigned char)token_a);
+#if defined(KOS_BOARD_MK2)
+	check("aperture-open", saved == 0u);
+#else
 	check("aperture-open", (saved & 0xE0u) == 0u);
+#endif
 	fill_aperture(APERTURE_BASE, APERTURE_END - APERTURE_BASE, 0x77u);
 	check("aperture-direct",
 	      read_aperture(APERTURE_BASE) == 0x77u &&
@@ -644,8 +778,12 @@ int main(int argc, char **argv)
 		release_held(count);
 		status = run((const char *)0x8100u, tail);
 		check("exec-status", status == CHILD_STATUS);
+#if defined(KOS_BOARD_MK2)
+		check("exec-window-restored", in_force(token_a) == token_a);
+#else
 		check("exec-latch-restored",
 		      (unsigned int)latch_port == token_a);
+#endif
 		check("exec-parent-object-intact",
 		      read_aperture(APERTURE_BASE) == 0x77u &&
 		      read_aperture(0x8F00u) == 0x77u &&
@@ -657,7 +795,11 @@ int main(int argc, char **argv)
 	}
 
 	aperture_close((unsigned char)saved);
+#if defined(KOS_BOARD_MK2)
+	check("aperture-close", in_force(0u) == 0u);
+#else
 	check("aperture-close", ((unsigned int)latch_port & 0xE0u) == 0u);
+#endif
 
 	/* Far code: /system/xmem_far.exe runs its own
 	 * FAR_CODE segments through the aperture - map, plain CALL and

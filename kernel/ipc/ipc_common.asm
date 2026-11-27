@@ -41,6 +41,7 @@
 	.module ipc_common
 	.include "hardware.inc"
 	.include "memory.inc"
+	.include "kernel/memory/map_ops.inc"
 	.include "kernel/runtime/fastcopy.inc"
 
 	.globl _ipc_ap_copy
@@ -58,7 +59,7 @@ ipc_common_begin::
 ; caller's latch restored, SP back on the driver stack, length in DE.
 ; ---------------------------------------------------------------------------
 _ipc_ap_copy::
-	in	a,(KOS_MEMCTL_PORT)	; the latch to come back to
+	KOS_MAP_CURRENT			; the latch to come back to
 	ld	(_ipc_ap_saved_latch),a
 	ld	(_ipc_ap_saved_sp),sp
 	ld	sp,#_ipc_ap_stack_top	; common: visible in mode 10, and
@@ -68,10 +69,10 @@ _ipc_ap_copy::
 	ld	de,(_ipc_ap_req+3)
 	ld	bc,(_ipc_ap_req+5)
 	push	bc			; the length, kept for the return
-	out	(KOS_MEMCTL_PORT),a	; aperture opens: bank 6 at 8000h
+	KOS_MAP_APERTURE		; aperture opens: bank 6 at 8000h
 	KOS_FASTCOPY			; in place: this stack has no room
 	ld	a,(_ipc_ap_saved_latch)
-	out	(KOS_MEMCTL_PORT),a	; restore before SP leaves common
+	KOS_MAP_RESTORE			; restore before SP leaves common
 	pop	de			; DE = the length
 	ld	sp,(_ipc_ap_saved_sp)
 	ret

@@ -34,6 +34,7 @@ union kos_syscall_block {
 	struct kos_xmem_io_args    xmem_io;
 	struct kos_xmem_info_args  xmem_info;
 	struct kos_xmem_map_args   xmem_map;
+	struct kos_personality_args personality;
 	struct kos_seg_info_args   seg_info;
 	struct kos_seg_map_args    seg_map;
 	struct kos_rt_register_args rt_register;

@@ -7,8 +7,12 @@
 ; primitives; everything else about the aperture is ordinary code and
 ; ordinary pointer accesses (architecture 7.2).
 ;
-; Port 00h is the banking latch on the Zephyr-80 (the module build never
-; sees platform headers, so the constant is local and pinned here).
+; The SDK's mapping operations, Zephyr-80 Mk1 implementation: a map token
+; is a latch value and port 00h is the banking latch (the program build
+; never sees platform headers, so the constant is local and pinned here).
+; This member and vcall.asm are the only SDK sources that write the latch
+; (tests/test_source_layout.py); every other SDK mapping change calls
+; these entries.  A board with another mapper supplies its own members.
 ; -----------------------------------------------------------------------------
 
 	.module kos_xmemgate

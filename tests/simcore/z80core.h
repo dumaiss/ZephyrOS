@@ -5,7 +5,9 @@
  * (including the model's approximations), block instructions as one
  * step costed up front, the same T-state tables (handed in by Python),
  * IM2 interrupts, HALT and the EI delay, the MEM_DECODER revisions 12
- * and 13, the latch port and the CTC.  Every other port, and the V9958
+ * and 13, the latch port, the Zephyr-80 Mk2 mapper (board 1: the
+ * LS612 DAT, a 1 MiB physical array, the mapper's I/O decode) and the
+ * CTC.  Every other port, and the V9958
  * frame clock, call back into Python.  tests/simcore/core.py is the
  * ctypes side; struct layouts here and there must match.
  */
@@ -96,6 +98,16 @@ struct core {
 	int64_t rt_acc;
 	int64_t rt_ticks;
 	int64_t nmi_count;
+	/* board 0 = Mk1 (latch, banks, ROM pages above); board 1 = Mk2:
+	 * 16 DAT entries, the control bits, one 1 MiB physical array
+	 * (00000h-7FFFFh ROM, written never; 80000h-FFFFFh SRAM) */
+	int32_t board;
+	int32_t dat_bank;
+	int32_t map_enable;
+	int32_t dat_strict;  /* nonzero: an entry write's data must be A8-A14 */
+	int32_t dat[16];
+	uint8_t *phys;
+	int64_t phys_len;
 };
 
 int core_step(struct core *c);
@@ -104,6 +116,9 @@ int core_accept(struct core *c);
 void core_clock(struct core *c, int64_t tstates);
 int core_bank_of(struct core *c, int addr, int *bank);
 int core_rd(struct core *c, int addr);
+void core_wr(struct core *c, int addr, int v);
+/* Mk2: the 20-bit physical address backing logical address `la`. */
+int core_translate(struct core *c, int la);
 
 /* Run up to `limit` iterations of: [stop check] [delay skip] step.
  * `stops` is a 65536-bit map (NULL: none), skipped on the first

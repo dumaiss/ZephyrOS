@@ -7,9 +7,10 @@ Enforces docs/architecture.md section 1.3 and the source layout:
   directories, and driver directories contain device implementation and
   the driver's own manifest only; the audience headers live under
   drivers/include, kernel/include and formats/include, the platform
-  constants under platform/zephyr80/{public,private};
-- platform/zephyr80/ contains declarative constants/configuration only,
-  with no executable content or instruction-emitting macros;
+  constants under platform/<board>/{public,private} (zephyr80, the Mk1
+  board, and zephyr80mk2);
+- each platform directory contains declarative constants/configuration
+  only, with no executable content or instruction-emitting macros;
 - the driver manifests have one owner (drivers/<name>/) and the shared
   SDCC runtime support another (drivers/runtime);
 - the process lifecycle (kernel/process), the common transition gates
@@ -22,6 +23,10 @@ Enforces docs/architecture.md section 1.3 and the source layout:
   implementations and no test-only SIO build variants;
 - each build class offers its exact include roots, and drivers and user
   programs see only their audience headers;
+- the memory mapper has one writer per audience: the mapping operations
+  (kernel/memory/map_ops.inc, the Mk1 latch; kernel/memory/mk2/
+  map_ops.inc, the Mk2 DAT) for boot, kernel and drivers, and the SDK's
+  two mapping members for user space;
 - every image is composed by a systems/<name>.json file;
 - root build* directories are generated output only: .gitignore covers
   every build variant and make clean removes them all.
@@ -45,6 +50,8 @@ sys.path.insert(0, HERE)
 from maptools import evaluate, parse_asm_inc, parse_c_header  # noqa: E402
 
 PLATFORM_DIR = os.path.join(ROOT, "platform", "zephyr80")
+PLATFORM_MK2_DIR = os.path.join(ROOT, "platform", "zephyr80mk2")
+PLATFORM_DIRS = (PLATFORM_DIR, PLATFORM_MK2_DIR)
 
 # The complete, exact platform file set: constants (.h/.inc) and build
 # configuration (.mk) only, split by audience:
@@ -58,7 +65,17 @@ PLATFORM_PRIVATE_FILES = {"memory.h", "memory.inc", "irq.h", "irq.inc"}
 OWNER_FILES = (
     "boot/start.asm",
     "boot/shadow_copy.asm",
+    "boot/mk2/start.asm",
     "kernel/memory/banking.asm",
+    "kernel/memory/map_ops.inc",
+    "kernel/memory/mk2/map_ops.inc",
+    "kernel/memory/mk2/banking.asm",
+    "kernel/memory/mk2/far.asm",
+    "kernel/memory/mk2/page_copy.asm",
+    "kernel/memory/mk2/dat_map.asm",
+    "kernel/memory/mk2/cold_call.asm",
+    "kernel/memory/mk2/pages.c",
+    "kernel/memory/mk2/pages.h",
     "kernel/syscall/entry.asm",
     "kernel/syscall/page_zero.asm",
     "kernel/syscall/diag.c",
@@ -110,6 +127,13 @@ OWNER_FILES = (
     "platform/zephyr80/private/memory.inc",
     "platform/zephyr80/private/irq.h",
     "platform/zephyr80/private/irq.inc",
+    "platform/zephyr80mk2/config.mk",
+    "platform/zephyr80mk2/public/hardware.h",
+    "platform/zephyr80mk2/public/hardware.inc",
+    "platform/zephyr80mk2/private/memory.h",
+    "platform/zephyr80mk2/private/memory.inc",
+    "platform/zephyr80mk2/private/irq.h",
+    "platform/zephyr80mk2/private/irq.inc",
     "abi/kos/types.h",
     "abi/kos/errno.h",
     "abi/kos/syscall.h",
@@ -508,14 +532,15 @@ def _code_only(path):
 
 
 def _platform_files():
-    """Every platform file: the top-level build configuration plus the
-    public/ and private/ constant pairs."""
-    for root in (PLATFORM_DIR,
-                 os.path.join(PLATFORM_DIR, "public"),
-                 os.path.join(PLATFORM_DIR, "private")):
-        for name in sorted(os.listdir(root)):
-            if os.path.isfile(os.path.join(root, name)):
-                yield root, name
+    """Every platform file of every board: the top-level build
+    configuration plus the public/ and private/ constant pairs."""
+    for board in PLATFORM_DIRS:
+        for root in (board,
+                     os.path.join(board, "public"),
+                     os.path.join(board, "private")):
+            for name in sorted(os.listdir(root)):
+                if os.path.isfile(os.path.join(root, name)):
+                    yield root, name
 
 
 def _walk(root_name, suffixes=None):
@@ -1197,21 +1222,25 @@ class TestNoResidentBlockDriver(unittest.TestCase):
 
 class TestPlatformBoundary(unittest.TestCase):
     def test_platform_contains_only_constant_configuration_files(self):
-        actual = set(os.listdir(PLATFORM_DIR))
-        allowed = PLATFORM_FILES | {"public", "private"}
-        self.assertEqual(actual, allowed,
-                         "platform/zephyr80/ must contain constants and "
-                         "configuration only (unexpected: %s, missing: %s)"
-                         % (sorted(actual - allowed),
-                            sorted(allowed - actual)))
-        self.assertEqual(
-            set(os.listdir(os.path.join(PLATFORM_DIR, "public"))),
-            PLATFORM_PUBLIC_FILES,
-            "platform/zephyr80/public/ must hold the board constants")
-        self.assertEqual(
-            set(os.listdir(os.path.join(PLATFORM_DIR, "private"))),
-            PLATFORM_PRIVATE_FILES,
-            "platform/zephyr80/private/ must hold the memory/IRQ constants")
+        self.assertEqual(set(os.listdir(os.path.join(ROOT, "platform"))),
+                         {os.path.basename(d) for d in PLATFORM_DIRS})
+        for board in PLATFORM_DIRS:
+            name = os.path.relpath(board, ROOT)
+            actual = set(os.listdir(board))
+            allowed = PLATFORM_FILES | {"public", "private"}
+            self.assertEqual(actual, allowed,
+                             "%s/ must contain constants and "
+                             "configuration only (unexpected: %s, missing: "
+                             "%s)" % (name, sorted(actual - allowed),
+                                      sorted(allowed - actual)))
+            self.assertEqual(
+                set(os.listdir(os.path.join(board, "public"))),
+                PLATFORM_PUBLIC_FILES,
+                "%s/public/ must hold the board constants" % name)
+            self.assertEqual(
+                set(os.listdir(os.path.join(board, "private"))),
+                PLATFORM_PRIVATE_FILES,
+                "%s/private/ must hold the memory/IRQ constants" % name)
 
     def test_no_target_code_suffixes(self):
         for directory, name in _platform_files():
@@ -1241,12 +1270,14 @@ class TestPlatformBoundary(unittest.TestCase):
                     % (name, lineno, line.strip()))
 
     def test_config_mk_lists_no_implementation_sources(self):
-        body = _strip_comments(
-            "config.mk", _read(os.path.join(PLATFORM_DIR, "config.mk")))
-        for line in body.splitlines():
-            self.assertIsNone(
-                re.search(r"\b\w+\.(c|asm|rel|o)\b", line),
-                "config.mk names an implementation source: %r" % line.strip())
+        for board in PLATFORM_DIRS:
+            body = _strip_comments(
+                "config.mk", _read(os.path.join(board, "config.mk")))
+            for line in body.splitlines():
+                self.assertIsNone(
+                    re.search(r"\b\w+\.(c|asm|rel|o)\b", line),
+                    "%s/config.mk names an implementation source: %r"
+                    % (board, line.strip()))
 
     def test_platform_h_includes_constant_headers(self):
         text = _read(os.path.join(ROOT, "kernel", "include", "platform.h"))
@@ -1260,6 +1291,12 @@ CONSTANT_PARITY_PAIRS = (
     ("platform/zephyr80/public/hardware.h", "platform/zephyr80/public/hardware.inc"),
     ("platform/zephyr80/private/memory.h", "platform/zephyr80/private/memory.inc"),
     ("platform/zephyr80/private/irq.h", "platform/zephyr80/private/irq.inc"),
+    ("platform/zephyr80mk2/public/hardware.h",
+     "platform/zephyr80mk2/public/hardware.inc"),
+    ("platform/zephyr80mk2/private/memory.h",
+     "platform/zephyr80mk2/private/memory.inc"),
+    ("platform/zephyr80mk2/private/irq.h",
+     "platform/zephyr80mk2/private/irq.inc"),
 )
 
 
@@ -1285,6 +1322,155 @@ class TestConstantParity(unittest.TestCase):
                         cv, av,
                         "%s: C %s = %d, assembly %s = %d"
                         % (name, c[name], cv, asm[name], av))
+
+
+# The memory latch answers ports 00h-0Fh (architecture 2.1).  Only these
+# files may write it: the mapping operations every boot, kernel and driver
+# mapping change expands from, and the SDK's mapping members (user space
+# cannot call the nucleus).  The board headers only define the port.
+LATCH_WRITERS = (
+    "kernel/memory/map_ops.inc",
+    "kernel/memory/mk2/map_ops.inc",
+    "user/sdk/src/xmemgate.asm",
+    "user/sdk/src/vcall.asm",
+)
+LATCH_PORT_DEFINITIONS = (
+    "platform/zephyr80/public/hardware.h",
+    "platform/zephyr80/public/hardware.inc",
+    "platform/zephyr80mk2/public/hardware.h",
+    "platform/zephyr80mk2/public/hardware.inc",
+)
+# The mapper ports by name: the Mk1 latch and the Mk2 DAT's entry and
+# control ports.  Any mention in assembly counts as an access.
+MAPPER_PORT_NAMES = ("MEMCTL", "KOS_DAT_SYSTEM_PORT", "KOS_DAT_WORKING_PORT",
+                     "KOS_DAT_CONTROL_PORT")
+LATCH_SCAN_ROOTS = ("boot", "kernel", "drivers", "platform", "formats",
+                    "abi", "user")
+LATCH_SCAN_SUFFIXES = (".asm", ".s", ".inc", ".c", ".h")
+LATCH_PORT_LAST = 0x0F
+_LATCH_EQUATE = re.compile(r"^\s*([A-Za-z_]\w*)\s*=\s*(\S+)", re.M)
+_LATCH_OUT = re.compile(r"\bout\s*\(\s*#?\s*([^)\s]+)\s*\)", re.I)
+_LATCH_SFR = re.compile(
+    r"__sfr\s+__at\s*\(?\s*([A-Za-z_0-9]+)\s*\)?\s*([A-Za-z_]\w*)")
+
+
+def _latch_number(token):
+    """The value of a literal port operand, or None for a symbol."""
+    token = token.strip().lstrip("#").rstrip("uU")
+    try:
+        if token.lower().startswith("0x"):
+            return int(token, 16)
+        if token.startswith("$"):
+            return int(token[1:], 16)
+        if token.lower().endswith("h"):
+            return int(token[:-1], 16)
+        return int(token, 10)
+    except ValueError:
+        return None
+
+
+def latch_writes(path, text):
+    """(line, text) of every latch write in one source: an OUT whose port
+    operand is a literal or a local equate in 00h-0Fh, or an assignment
+    to an __sfr declared there.  In assembly any mention of the port's
+    name counts too (it can feed OUT (C)), so assembly reads go through
+    the mapping operations as well; C may read the latch."""
+    is_asm = path.endswith((".asm", ".s", ".inc"))
+    if is_asm:
+        code = "\n".join(line.split(";")[0] for line in text.splitlines())
+    else:
+        code = re.sub(r"/\*.*?\*/",
+                      lambda m: "\n" * m.group(0).count("\n"), text,
+                      flags=re.S)
+        code = re.sub(r"//[^\n]*", "", code)
+    equates = {}
+    for name, value in _LATCH_EQUATE.findall(code):
+        number = _latch_number(value)
+        if number is not None:
+            equates[name] = number
+    def names_mapper(text):
+        return any(name in text for name in MAPPER_PORT_NAMES)
+
+    def is_latch(operand):
+        if names_mapper(operand):
+            return True
+        number = _latch_number(operand)
+        if number is None:
+            number = equates.get(operand)
+        return number is not None and number <= LATCH_PORT_LAST
+
+    sfrs = [match.group(2) for match in _LATCH_SFR.finditer(code)
+            if is_latch(match.group(1))]
+    stores = [re.compile(r"\b%s\s*([-+|&^]?=)(?!=)" % re.escape(name))
+              for name in sfrs]
+    found = []
+    for lineno, line in enumerate(code.splitlines(), start=1):
+        hit = is_asm and names_mapper(line)
+        if any(is_latch(operand) for operand in _LATCH_OUT.findall(line)):
+            hit = True
+        if any(store.search(line) for store in stores):
+            hit = True
+        if hit:
+            found.append((lineno, line.strip()))
+    return found
+
+
+class TestLatchWriters(unittest.TestCase):
+    """Every mapping change goes through one set of mapping operations, so
+    a board with another mapper supplies exactly those files."""
+
+    def test_the_scanner_sees_every_write_form(self):
+        for text in ("\tout\t(KOS_MEMCTL_PORT),a\n",
+                     "\tout\t(0x00),a\n",
+                     "\tout (0),a\n",
+                     "\tout\t(0Fh),a\n",
+                     "LATCH = 0x00\n\tout\t(LATCH),a\n",
+                     "\tld\tc,#MEMCTL_PORT\n\tout\t(c),a\n",
+                     "\tout\t(KOS_DAT_SYSTEM_PORT + 3),a\n",
+                     "\tld\tbc,#KOS_DAT_CONTROL_PORT\n\tout\t(c),a\n"):
+            with self.subTest(text=text):
+                self.assertTrue(latch_writes("x.asm", text))
+        self.assertTrue(latch_writes(
+            "x.c", "static __sfr __at 0x00 latch;\nvoid f(void)"
+            " { latch = 0x10; }\n"))
+        self.assertTrue(latch_writes(
+            "x.c", "__sfr __at KOS_MEMCTL_PORT m;\nvoid f(void)"
+            " { m |= 0x20; }\n"))
+        self.assertFalse(latch_writes(
+            "x.c", "__sfr __at 0x00 latch;\nint f(void)"
+            " { return latch == 0x10; }\n"))
+        for text in ("\tout\t(c),a\n",
+                     "\tout\t(KOS_SIO1B_CTRL),a\n",
+                     "\tout\t(0xE4),a\n",
+                     "\tout\t(0x10),a\n",
+                     "\tld\ta,#0\t; out (0x00),a\n"):
+            with self.subTest(text=text):
+                self.assertFalse(latch_writes("x.asm", text))
+
+    def test_only_the_mapping_operations_write_the_latch(self):
+        allowed = set(LATCH_WRITERS) | set(LATCH_PORT_DEFINITIONS)
+        offenders = []
+        for top in LATCH_SCAN_ROOTS:
+            for directory, _dirs, files in os.walk(os.path.join(ROOT, top)):
+                for name in sorted(files):
+                    if not name.endswith(LATCH_SCAN_SUFFIXES):
+                        continue
+                    path = os.path.join(directory, name)
+                    rel = os.path.relpath(path, ROOT)
+                    if rel in allowed:
+                        continue
+                    for lineno, line in latch_writes(path, _read(path)):
+                        offenders.append("%s:%d: %s" % (rel, lineno, line))
+        self.assertEqual(offenders, [],
+                         "mapper access outside the mapping operations "
+                         "(kernel/memory/map_ops.inc, kernel/memory/mk2/"
+                         "map_ops.inc) and the SDK mapping members:\n" +
+                         "\n".join(offenders))
+
+    def test_the_writers_exist(self):
+        for rel in LATCH_WRITERS:
+            self.assertTrue(latch_writes(rel, _read(os.path.join(ROOT, rel))),
+                            "%s writes no latch" % rel)
 
 
 class TestKernelNameComparison(unittest.TestCase):

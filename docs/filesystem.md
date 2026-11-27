@@ -36,6 +36,8 @@ Rules:
 
 - I/O is byte-oriented. A zero-byte read is end of file; short reads are
   valid. Sizes and positions are 32-bit; one transfer is up to 16-bit.
+- A failed read leaves its requested range unspecified, the bytes outside
+  it and the position unchanged (`docs/abi.md` 6.2).
 - A write advances the position only after the driver has confirmed it.
 - `sync` flushes a file and keeps it open; `close` flushes and releases it.
   There is no filesystem-wide sync.

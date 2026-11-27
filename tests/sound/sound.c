@@ -8,6 +8,8 @@
  *   - INFO's whole 24-byte record;
  *   - a batched write performing exactly its pairs, in order;
  *   - an unknown target and an odd byte count writing nothing;
+ *   - an unknown target in the last chunk, then in the first, of a
+ *     two-chunk sequence writing nothing, the valid chunk included;
  *   - a sequence longer than one descriptor (4,100 bytes) landing whole;
  *   - an exclusive open resetting the card, and a second one refused
  *     with -KOS_EBUSY;
@@ -97,6 +99,16 @@ int main(void)
 	}
 	result = sound_write(handle, big, BIG_COUNT);
 	printf("sound: big %d\r\n", result);
+
+	/* 40 pairs: the driver's 32-pair chunk, then 8; the bad pair last,
+	 * then first. */
+	big[39].target = (unsigned char)(KSOUND_TARGET_DAC + 1u);
+	result = sound_write(handle, big, 40u);
+	printf("sound: late %d\r\n", result);
+	big[39].target = KSOUND_TARGET_PSG0;
+	big[0].target = (unsigned char)(KSOUND_TARGET_DAC + 1u);
+	result = sound_write(handle, big, 40u);
+	printf("sound: early %d\r\n", result);
 
 	result = sound_close(handle);
 	printf("sound: close %d\r\n", result);

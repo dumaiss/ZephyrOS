@@ -89,6 +89,8 @@ def _source(relative):
 ARITH_ASM = [_source(os.path.join("klibc", "sdcc_arith16.asm")),
              _source(os.path.join("klibc", "sdcc_arith_entries.asm")),
              _source(os.path.join("klibc", "sdcc_arith_signed_entries.asm"))]
+# The 16-bit multiply `fread` and `fwrite` use for a group of items.
+MUL_ASM = [_source(os.path.join("klibc", "mul.asm"))]
 # The klibc string routines the stream probe links, in assembly.
 STRING_ASM = [_source(os.path.join("klibc", "strlen.asm")),
               _source(os.path.join("klibc", "memcpy.asm"))]
@@ -433,7 +435,7 @@ STREAM_PROBE = r"""
 
 /* The probe's file provider: one 2 KiB file, a cursor and the call
  * counters the test reads back. */
-#define FILE_CAPACITY 2048u
+#define FILE_CAPACITY 6000u
 
 static unsigned char file_data[FILE_CAPACITY];
 static unsigned int file_size;
@@ -442,9 +444,33 @@ static unsigned int file_writes;
 static unsigned char file_open_fails;
 static unsigned char file_write_fails;
 
-char probe_log[1024];
+/* The backend request trace and the fault knobs the bulk cases drive:
+ * a cap on the bytes one read or write call accepts, a read error at a
+ * file offset, and a budget of bytes the file will take before every
+ * write fails.  The trace holds the requested length of each call. */
+static unsigned int tr_n;
+static char tr_kind[24];
+static unsigned int tr_len[24];
+static unsigned int read_cap;
+static unsigned int write_cap;
+static unsigned int read_fail_at;
+static unsigned char budget_on;
+static unsigned int write_budget;
+
+static void tr_add(char kind, unsigned int length)
+{
+	if (tr_n < 24u) {
+		tr_kind[tr_n] = kind;
+		tr_len[tr_n] = length;
+	}
+	++tr_n;
+}
+
+char probe_log[2048];
 unsigned int probe_log_len;
 unsigned char pattern[1000];
+static unsigned char big[5200];
+static unsigned char wsrc[5200];
 
 /* The stream layer's exit hook: the real one lives in the console
  * client, which this probe does not link. */
@@ -480,6 +506,13 @@ int read(unsigned int handle, void *buffer, unsigned int length)
 				 file_size - file_pos : 0u;
 
 	(void)handle;
+	tr_add('R', length);
+	if (read_fail_at != 0u && file_pos >= read_fail_at) {
+		return -KOS_EIO;
+	}
+	if (read_cap != 0u && length > read_cap) {
+		length = read_cap;
+	}
 	if (length > available) {
 		length = available;
 	}
@@ -496,8 +529,21 @@ int write(unsigned int handle, const void *buffer, unsigned int length)
 
 	(void)handle;
 	++file_writes;
+	tr_add('W', length);
 	if (file_write_fails) {
 		return -KOS_EIO;
+	}
+	if (write_cap != 0u && length > write_cap) {
+		length = write_cap;
+	}
+	if (budget_on) {
+		if (write_budget == 0u) {
+			return -KOS_EIO;
+		}
+		if (length > write_budget) {
+			length = write_budget;
+		}
+		write_budget -= length;
 	}
 	for (i = 0u; i < length; ++i) {
 		if (file_pos + i < FILE_CAPACITY) {
@@ -578,6 +624,306 @@ static int file_matches(unsigned int at, const unsigned char *bytes,
 		}
 	}
 	return 1;
+}
+
+static void reset_io(void)
+{
+	tr_n = 0u;
+	read_cap = 0u;
+	write_cap = 0u;
+	read_fail_at = 0u;
+	budget_on = 0u;
+	write_budget = 0u;
+}
+
+/* The trace is `n` calls of these lengths (each of `kind`). */
+static int trace_is(char kind, unsigned int n, unsigned int a,
+		    unsigned int b, unsigned int c, unsigned int d)
+{
+	unsigned int want[4];
+	unsigned int i;
+
+	want[0] = a;
+	want[1] = b;
+	want[2] = c;
+	want[3] = d;
+	if (tr_n != n) {
+		return 0;
+	}
+	for (i = 0u; i < n; ++i) {
+		if (tr_kind[i] != kind || tr_len[i] != want[i]) {
+			return 0;
+		}
+	}
+	return 1;
+}
+
+static FILE *open_read(unsigned int size)
+{
+	fill_file(size);
+	reset_io();
+	return fopen("f", "r");
+}
+
+static FILE *open_write(void)
+{
+	fill_file(0u);
+	reset_io();
+	return fopen("f", "w");
+}
+
+/* One read of `size` x `count` from a fresh stream over `file` bytes:
+ * the items, the position and the bytes must be the first `bytes` of
+ * the file; the trace is left for the caller. */
+static int read_run(const char *label, unsigned int file, unsigned int size,
+		    unsigned int count, unsigned int bytes)
+{
+	FILE *f = open_read(file);
+	unsigned int items = (unsigned int)fread(big, size, count, f);
+	int ok = items == count && ftell(f) == (long)bytes &&
+		 file_matches(0u, big, bytes) && ferror(f) == 0 &&
+		 feof(f) == 0;
+
+	(void)fclose(f);
+	check(label, ok);
+	return ok;
+}
+
+/* The same through fwrite: the file holds the bytes once closed. */
+static int write_run(const char *label, unsigned int size,
+		     unsigned int count, unsigned int bytes)
+{
+	FILE *f = open_write();
+	unsigned int items = (unsigned int)fwrite(wsrc, size, count, f);
+	int ok = items == count && ftell(f) == (long)bytes &&
+		 ferror(f) == 0;
+
+	ok = ok && fclose(f) == 0 && file_size == bytes &&
+	     file_matches(0u, wsrc, bytes);
+	check(label, ok);
+	return ok;
+}
+
+static void bulk_cases(void)
+{
+	FILE *f;
+	unsigned int i;
+	unsigned int items;
+
+	for (i = 0u; i < 5200u; ++i) {
+		wsrc[i] = (unsigned char)(i * 5u + 3u);
+	}
+
+	/* The same 1536 bytes as 1536x1, 512x3, 3x512, 16x96: the items,
+	 * the bytes and the backend trace (one direct request) agree. */
+	read_run("rd-s1", 3000u, 1u, 1536u, 1536u);
+	check("rd-s1-trace", trace_is('R', 1u, 1536u, 0u, 0u, 0u));
+	read_run("rd-s3", 3000u, 3u, 512u, 1536u);
+	check("rd-s3-trace", trace_is('R', 1u, 1536u, 0u, 0u, 0u));
+	read_run("rd-s512", 3000u, 512u, 3u, 1536u);
+	check("rd-s512-trace", trace_is('R', 1u, 1536u, 0u, 0u, 0u));
+	read_run("rd-s96", 3000u, 96u, 16u, 1536u);
+	check("rd-s96-trace", trace_is('R', 1u, 1536u, 0u, 0u, 0u));
+	read_run("rd-s7", 3000u, 7u, 217u, 1519u);
+	check("rd-s7-trace", trace_is('R', 1u, 1519u, 0u, 0u, 0u));
+
+	/* Lengths at the buffer size and the descriptor limit. */
+	read_run("rd-511", 6000u, 1u, 511u, 511u);
+	check("rd-511-trace", trace_is('R', 1u, 512u, 0u, 0u, 0u));
+	read_run("rd-512", 6000u, 1u, 512u, 512u);
+	check("rd-512-trace", trace_is('R', 1u, 512u, 0u, 0u, 0u));
+	read_run("rd-513", 6000u, 1u, 513u, 513u);
+	check("rd-513-trace", trace_is('R', 1u, 513u, 0u, 0u, 0u));
+	read_run("rd-4095", 6000u, 1u, 4095u, 4095u);
+	check("rd-4095-trace", trace_is('R', 1u, 4095u, 0u, 0u, 0u));
+	read_run("rd-4096", 6000u, 1u, 4096u, 4096u);
+	check("rd-4096-trace", trace_is('R', 1u, 4096u, 0u, 0u, 0u));
+	read_run("rd-4097", 6000u, 1u, 4097u, 4097u);
+	check("rd-4097-trace", trace_is('R', 2u, 4096u, 512u, 0u, 0u));
+	read_run("rd-4096-s2", 6000u, 2u, 2048u, 4096u);
+	check("rd-4096-s2-trace", trace_is('R', 1u, 4096u, 0u, 0u, 0u));
+
+	/* A buffer already holding bytes is consumed first. */
+	f = open_read(3000u);
+	items = (unsigned int)fread(big, 1u, 10u, f);
+	items += (unsigned int)fread(big + 10, 1u, 700u, f);
+	check("rd-partial-small", items == 710u && ftell(f) == 710L &&
+	      file_matches(0u, big, 710u) &&
+	      trace_is('R', 2u, 512u, 512u, 0u, 0u));
+	(void)fclose(f);
+	f = open_read(3000u);
+	items = (unsigned int)fread(big, 1u, 10u, f);
+	items += (unsigned int)fread(big + 10, 3u, 500u, f) * 3u;
+	check("rd-partial-direct", items == 1510u && ftell(f) == 1510L &&
+	      file_matches(0u, big, 1510u) &&
+	      trace_is('R', 2u, 512u, 998u, 0u, 0u));
+	(void)fclose(f);
+
+	/* Short reads continue; the position is the bytes delivered. */
+	f = open_read(3000u);
+	read_cap = 300u;
+	items = (unsigned int)fread(big, 1u, 1000u, f);
+	check("rd-short", items == 1000u && ftell(f) == 1000L &&
+	      ferror(f) == 0 && feof(f) == 0 && file_matches(0u, big, 1000u) &&
+	      trace_is('R', 4u, 1000u, 700u, 512u, 512u));
+	(void)fclose(f);
+
+	/* EOF inside an item: whole items only, the partial one consumed,
+	 * the flag set. */
+	f = open_read(1000u);
+	items = (unsigned int)fread(big, 300u, 4u, f);
+	check("rd-eof-item", items == 3u && feof(f) != 0 && ferror(f) == 0 &&
+	      ftell(f) == 1000L && file_matches(0u, big, 1000u));
+	(void)fclose(f);
+	f = open_read(1000u);
+	items = (unsigned int)fread(big, 1u, 1200u, f);
+	check("rd-eof-s1", items == 1000u && feof(f) != 0 &&
+	      ftell(f) == 1000L && file_matches(0u, big, 1000u));
+	(void)fclose(f);
+
+	/* A read error inside an item keeps the delivered bytes. */
+	f = open_read(3000u);
+	read_cap = 400u;
+	read_fail_at = 800u;
+	items = (unsigned int)fread(big, 300u, 4u, f);
+	check("rd-error-item", items == 2u && ferror(f) != 0 &&
+	      feof(f) == 0 && ftell(f) == 800L && file_matches(0u, big, 800u));
+	(void)fclose(f);
+
+	/* Arithmetic: totals past 16 bits touch only the bytes there are
+	 * (the backend has 3000), and the item count never wraps. */
+	f = open_read(3000u);
+	items = (unsigned int)fread(big, 40000u, 3u, f);
+	check("rd-wrap-size", items == 0u && feof(f) != 0 &&
+	      ftell(f) == 3000L && file_matches(0u, big, 3000u));
+	(void)fclose(f);
+	f = open_read(3000u);
+	items = (unsigned int)fread(big, 2u, 40000u, f);
+	check("rd-wrap-count", items == 1500u && feof(f) != 0 &&
+	      ftell(f) == 3000L && file_matches(0u, big, 3000u));
+	(void)fclose(f);
+	f = open_read(3000u);
+	items = (unsigned int)fread(big, 0xFFFFu, 0xFFFFu, f);
+	check("rd-max", items == 0u && feof(f) != 0 && ftell(f) == 3000L);
+	(void)fclose(f);
+
+	/* Zero size or count: no backend traffic, no flag. */
+	f = open_read(3000u);
+	check("rd-zero", fread(big, 0u, 5u, f) == 0u &&
+	      fread(big, 5u, 0u, f) == 0u && tr_n == 0u &&
+	      ferror(f) == 0 && feof(f) == 0 && ftell(f) == 0L);
+	(void)fclose(f);
+
+	/* Writes: the same equal-byte requests. */
+	write_run("wr-s1", 1u, 1536u, 1536u);
+	check("wr-s1-trace", trace_is('W', 1u, 1536u, 0u, 0u, 0u));
+	write_run("wr-s3", 3u, 512u, 1536u);
+	check("wr-s3-trace", trace_is('W', 1u, 1536u, 0u, 0u, 0u));
+	write_run("wr-s512", 512u, 3u, 1536u);
+	check("wr-s512-trace", trace_is('W', 1u, 1536u, 0u, 0u, 0u));
+	write_run("wr-s96", 96u, 16u, 1536u);
+	check("wr-s96-trace", trace_is('W', 1u, 1536u, 0u, 0u, 0u));
+	write_run("wr-s7", 7u, 217u, 1519u);
+	check("wr-s7-trace", trace_is('W', 1u, 1519u, 0u, 0u, 0u));
+	write_run("wr-511", 1u, 511u, 511u);
+	check("wr-511-trace", trace_is('W', 1u, 511u, 0u, 0u, 0u));
+	write_run("wr-512", 1u, 512u, 512u);
+	check("wr-512-trace", trace_is('W', 1u, 512u, 0u, 0u, 0u));
+	write_run("wr-513", 1u, 513u, 513u);
+	check("wr-513-trace", trace_is('W', 1u, 513u, 0u, 0u, 0u));
+	write_run("wr-4096", 1u, 4096u, 4096u);
+	check("wr-4096-trace", trace_is('W', 1u, 4096u, 0u, 0u, 0u));
+	write_run("wr-4097", 1u, 4097u, 4097u);
+	check("wr-4097-trace", trace_is('W', 2u, 4096u, 1u, 0u, 0u));
+
+	/* Pending bytes go out first, in order. */
+	f = open_write();
+	(void)fwrite(wsrc, 1u, 10u, f);
+	(void)fwrite(wsrc + 10, 1u, 700u, f);
+	check("wr-pending-direct", ftell(f) == 710L && fclose(f) == 0 &&
+	      file_matches(0u, wsrc, 710u) &&
+	      trace_is('W', 2u, 10u, 700u, 0u, 0u));
+	f = open_write();
+	(void)fwrite(wsrc, 1u, 10u, f);
+	(void)fwrite(wsrc + 10, 1u, 505u, f);
+	check("wr-pending-fill", ftell(f) == 515L && tr_n == 1u &&
+	      fclose(f) == 0 && file_matches(0u, wsrc, 515u) &&
+	      trace_is('W', 2u, 512u, 3u, 0u, 0u));
+	f = open_write();
+	(void)fwrite(wsrc, 1u, 10u, f);
+	(void)fwrite(wsrc + 10, 1u, 300u, f);
+	check("wr-pending-small", tr_n == 0u && fclose(f) == 0 &&
+	      file_matches(0u, wsrc, 310u) &&
+	      trace_is('W', 1u, 310u, 0u, 0u, 0u));
+
+	/* Short writes continue; the tail is buffered and flushed. */
+	f = open_write();
+	write_cap = 300u;
+	items = (unsigned int)fwrite(wsrc, 1u, 1000u, f);
+	check("wr-short", items == 1000u && ferror(f) == 0 &&
+	      ftell(f) == 1000L && fclose(f) == 0 &&
+	      file_matches(0u, wsrc, 1000u) &&
+	      trace_is('W', 4u, 1000u, 700u, 400u, 100u));
+
+	/* An error inside an item: whole items only; the bytes the file
+	 * took stay. */
+	f = open_write();
+	budget_on = 1u;
+	write_budget = 700u;
+	items = (unsigned int)fwrite(wsrc, 300u, 8u, f);
+	check("wr-error-item", items == 2u && ferror(f) != 0 &&
+	      ftell(f) == 700L && file_size == 700u &&
+	      file_matches(0u, wsrc, 700u));
+	(void)fclose(f);
+
+	/* A flush error before a direct write is the call's error and the
+	 * accepted bytes stay accepted. */
+	f = open_write();
+	(void)fwrite(wsrc, 1u, 100u, f);
+	budget_on = 1u;
+	items = (unsigned int)fwrite(wsrc + 100, 1u, 600u, f);
+	check("wr-flush-error", items == 0u && ferror(f) != 0 &&
+	      ftell(f) == 100L && trace_is('W', 1u, 100u, 0u, 0u, 0u));
+	(void)fclose(f);
+
+	/* Arithmetic on the write side: the request is 120000 or 65535 x
+	 * 2 bytes; the file takes 5000 and the call reports the whole
+	 * items it accepted. */
+	f = open_write();
+	budget_on = 1u;
+	write_budget = 5000u;
+	items = (unsigned int)fwrite(wsrc, 40000u, 3u, f);
+	check("wr-wrap-size", items == 0u && ferror(f) != 0 &&
+	      ftell(f) == 5000L && file_size == 5000u &&
+	      file_matches(0u, wsrc, 5000u));
+	(void)fclose(f);
+	f = open_write();
+	budget_on = 1u;
+	write_budget = 5000u;
+	items = (unsigned int)fwrite(wsrc, 2u, 40000u, f);
+	check("wr-wrap-count", items == 2500u && ferror(f) != 0 &&
+	      ftell(f) == 5000L && file_size == 5000u);
+	(void)fclose(f);
+	f = open_write();
+	check("wr-zero", fwrite(wsrc, 0u, 5u, f) == 0u &&
+	      fwrite(wsrc, 5u, 0u, f) == 0u && tr_n == 0u &&
+	      ferror(f) == 0 && ftell(f) == 0L);
+	(void)fclose(f);
+
+	/* fputs goes through the same span: a long string is one direct
+	 * write, a short one is buffered. */
+	f = open_write();
+	for (i = 0u; i < 600u; ++i) {
+		big[i] = (unsigned char)'a' + (unsigned char)(i % 26u);
+	}
+	big[600] = 0u;
+	check("fputs-long", fputs((const char *)big, f) == 0 &&
+	      trace_is('W', 1u, 600u, 0u, 0u, 0u) && ftell(f) == 600L);
+	(void)fclose(f);
+	f = open_write();
+	check("fputs-short", fputs("hello", f) == 0 && tr_n == 0u &&
+	      fclose(f) == 0 && file_size == 5u &&
+	      trace_is('W', 1u, 5u, 0u, 0u, 0u));
 }
 
 void probe_main(void)
@@ -687,7 +1033,9 @@ void probe_main(void)
 		check("rewind", ftell(streams[0]) == 0L &&
 		      fread(buffer, 1u, 1u, streams[0]) == 1u &&
 		      buffer[0] == file_data[0]);
-		check("seek-error", fseek(streams[0], 4096L, KFS_SEEK_SET) < 0 &&
+		check("seek-error",
+		      fseek(streams[0], (long)FILE_CAPACITY + 1L,
+			    KFS_SEEK_SET) < 0 &&
 		      ftell(streams[0]) == 1L && ferror(streams[0]) != 0);
 		/* None of those seeks sent anything back: the bytes a read
 		 * stream holds in its buffer are not ours to write (the
@@ -745,6 +1093,8 @@ void probe_main(void)
 	      ferror(streams[0]) != 0);
 	file_write_fails = 0u;
 	(void)fclose(streams[0]);
+
+	bulk_cases();
 }
 """
 
@@ -866,7 +1216,8 @@ class TestStreamProbe(ProbeTestBase):
             ["stdio.c", "fread.c", "fwrite.c", "fseek.c", "feof.c",
              "klibc/sdcc_arith.c", "klibc/sdcc_arith_signed.c"],
             STREAM_PROBE,
-            probe_asm=ARITH_ASM + STRING_ASM).build().run(limit=8000000)
+            probe_asm=ARITH_ASM + STRING_ASM +
+            MUL_ASM).build().run(limit=300000000)
 
     def test_every_case_passes(self):
         self.assert_cases(
@@ -882,7 +1233,24 @@ class TestStreamProbe(ProbeTestBase):
             "write-ftell", "write-seek", "write-after-seek-ftell",
             "write-after-seek-close", "write-after-seek", "fflush-null",
             "append-ftell", "append-close", "open-fails", "stale-ftell",
-            "stale-fclose", "write-on-read-stream", "write-error")
+            "stale-fclose", "write-on-read-stream", "write-error",
+            "rd-s1", "rd-s1-trace", "rd-s3", "rd-s3-trace", "rd-s512",
+            "rd-s512-trace", "rd-s96", "rd-s96-trace", "rd-s7",
+            "rd-s7-trace", "rd-511", "rd-511-trace", "rd-512",
+            "rd-512-trace", "rd-513", "rd-513-trace", "rd-4095",
+            "rd-4095-trace", "rd-4096", "rd-4096-trace", "rd-4097",
+            "rd-4097-trace", "rd-4096-s2", "rd-4096-s2-trace",
+            "rd-partial-small", "rd-partial-direct", "rd-short",
+            "rd-eof-item", "rd-eof-s1", "rd-error-item", "rd-wrap-size",
+            "rd-wrap-count", "rd-max", "rd-zero",
+            "wr-s1", "wr-s1-trace", "wr-s3", "wr-s3-trace", "wr-s512",
+            "wr-s512-trace", "wr-s96", "wr-s96-trace", "wr-s7",
+            "wr-s7-trace", "wr-511", "wr-511-trace", "wr-512",
+            "wr-512-trace", "wr-513", "wr-513-trace", "wr-4096",
+            "wr-4096-trace", "wr-4097", "wr-4097-trace",
+            "wr-pending-direct", "wr-pending-fill", "wr-pending-small",
+            "wr-short", "wr-error-item", "wr-flush-error", "wr-wrap-size",
+            "wr-wrap-count", "wr-zero", "fputs-long", "fputs-short")
 
 
 class TestStreamPlanProbe(ProbeTestBase):

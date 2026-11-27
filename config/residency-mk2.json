@@ -1,0 +1,49 @@
+{
+  "format": "kos-residency-mk2/2",
+  "note": "Zephyr-80 Mk2 nucleus residency (architecture 2.7.6). Every nucleus object links into the fixed region (system entries 1-2) or into one cold set; a cold set is a 16 KiB page pair linked at 6000h-9FFFh and mapped at entries 3-4 for the code that runs in it. tools/mapcheck.py mk2 --link rewrites every reference that enters a cold set from outside it (the fixed region, common or another set) to a fixed-region veneer that maps the set for the call (kernel/memory/mk2/cold_call.asm), places set n >= 1 at n * 10000h + 6000h in the link and refuses a data reference into a set from outside it. The objects under driver_api are the ones a resident driver's code reaches (the bootstrap table, the IRQ trampoline and their callees); they may not reference a cold set, because the driver domain occupies entries 3-6 while a driver runs. driver_call_remaps lists the system entries a driver_api service remaps during a driver's call and the stack it runs on meanwhile: the caller's, or a named nucleus stack. A driver's private stack (a symbol pair X_stack, X_stack_top in its image) may not lie in an entry a service remaps on the caller's stack, and every nucleus stack lies in entries that are never remapped. tools/mapcheck.py mk2 enforces the regions, the sets, the lists, the stacks and the common-page budget.",
+  "system_dat": [
+    {"entry": 0, "logical": "0x0000", "holds": "the system page-0 image (SRAM 40h): the low entry stubs", "remapped": "by the syscall gate to the caller's page 0 for each crossing, per exec depth by the launch gate, and to the driver domain's page 0 for a bulk-map span or a driver boot entry"},
+    {"entry": 1, "logical": "0x2000", "holds": "nucleus fixed region (SRAM 41h)", "remapped": "never"},
+    {"entry": 2, "logical": "0x4000", "holds": "nucleus fixed region (SRAM 42h), the driver stack at 5D00h, the ISR stack at 5F00h", "remapped": "never"},
+    {"entry": 3, "logical": "0x6000", "holds": "a cold set's first page (set 0: SRAM 43h, set 1: 45h)", "remapped": "by a cold-set veneer per call, and to the driver domain for a driver call or handler"},
+    {"entry": 4, "logical": "0x8000", "holds": "a cold set's second page (set 0: SRAM 44h, set 1: 46h)", "remapped": "with entry 3"},
+    {"entry": 5, "logical": "0xA000", "holds": "the source copy window", "remapped": "by kernel/memory/mk2/page_copy.asm per chunk (a caller's, an object's, a driver's or a ROM page), and to the driver domain for a driver call or handler"},
+    {"entry": 6, "logical": "0xC000", "holds": "the destination copy window", "remapped": "by kernel/memory/mk2/page_copy.asm per chunk, and to the driver domain for a driver call or handler"},
+    {"entry": 7, "logical": "0xE000", "holds": "the common page (SRAM 7Fh), also working entry 15", "remapped": "never"}
+  ],
+  "regions": {
+    "page0": ["0x0000", "0x2000"],
+    "fixed": ["0x2000", "0x5D00"],
+    "driver_stack": ["0x5D00", "0x5F00"],
+    "isr_stack": ["0x5F00", "0x6000"],
+    "cold": ["0x6000", "0xA000"],
+    "copy_windows": ["0xA000", "0xE000"],
+    "common": ["0xE000", "0x10000"]
+  },
+  "fixed": [
+    "start_mk2", "page_zero", "syscall_entry", "irq_entry", "irq_vectors",
+    "platform_irq", "event_common", "banking_mk2", "far_mk2",
+    "page_copy_mk2", "dat_map_mk2", "cold_call_mk2", "process_launch",
+    "sdcc_helpers", "irq_code_end", "early_console", "panic", "event",
+    "irq", "irq_sources", "romfs", "name", "vfs_workspace", "ipc",
+    "ipc_asm", "pages_mk2", "syscall", "process", "main"
+  ],
+  "cold_sets": [
+    ["object", "vfs_router", "vfs_dev", "vfs_fs", "vfs_handles",
+     "vfs_system", "vfs_path", "process_exec"],
+    ["diag", "diag_io", "xmem", "personality", "rt", "event_syscall",
+     "driver_loader"]
+  ],
+  "driver_api": [
+    "ipc", "ipc_asm", "event", "event_common", "irq", "irq_entry",
+    "pages_mk2", "page_copy_mk2", "dat_map_mk2", "early_console",
+    "banking_mk2", "sdcc_helpers", "irq_code_end"
+  ],
+  "driver_call_remaps": [
+    {"entries": [0], "by": "a bulk-map span (api_bulk_map)",
+     "stack": "caller"},
+    {"entries": [5, 6],
+     "by": "a descriptor or bulk copy (kos_driver_copy)",
+     "stack": "kos_driver_copy_stack"}
+  ]
+}

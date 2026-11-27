@@ -92,6 +92,9 @@
 	.globl _ioc_io_bulk_init
 	.globl _ioc_io_bulk_read
 	.globl _ioc_driver_rt, _ioc_driver_command
+	.globl _ioc_driver_command_read
+	.globl _ioc_admitted_read, _ioc_bulk_read
+	.globl _ioc_api, _ioc_reply_address, _ioc_state
 	.globl _ioc_io_run_read
 	.globl _ioc_io_bulk_write
 	.globl _ioc_io_status_sample
@@ -1167,6 +1170,8 @@ ioc_br_unsave:
 ;
 ; struct ioc_state offsets (pinned by the _Static_asserts in ioc.c):
 IOC_ST_BULK_SYNCED = 2
+IOC_ST_PHASE       = 4
+IOC_ST_RECOVER     = 12
 IOC_ST_RX_TYPE     = 10
 IOC_ST_ADMIT_SEQ   = 11
 IOC_ST_BULK        = 13		; struct ioc_bulk_block
@@ -1631,6 +1636,130 @@ ioc_rt_send:
 	ret
 
 ; ---------------------------------------------------------------------------
+; int16_t ioc_driver_command_read(struct kos_ipc_frame *frame);  HL = frame.
+;   KIOC_OP_COMMAND_READ (ioc_proto.c has the contract): the request's
+;   DATA 2-5 are kept before the reply reuses the payload's head (the
+;   capacity, payload[20..21], and the buffer word, payload[22..23], stay
+;   in the frame); the command; then, before the first payload byte is stored, the admitted
+;   length must fit the capacity, the READY's DATA 4-7 (the staged reply
+;   frame's bytes 7-10) must echo the kept DATA 2-5, and the buffer must
+;   lie in the hot tier or inside the live borrow in the OUT direction
+;   (the driver API's `borrowed`).  A refusal abandons the admitted phase
+;   (IDLE, and the link recovers before the next command) and
+;   answers -KOS_EINVAL.  Out: DE = the bulk length, 0 when nothing was
+;   admitted, or a negative error.  IX is preserved.  No masking here: the
+;   receive masks per packet (ioc_io_bulk_read).
+; ---------------------------------------------------------------------------
+IOC_CR_CAPACITY  = 20             ; KIOC_COMMAND_READ_CAPACITY
+IOC_CR_BUFFER    = 22             ; KIOC_COMMAND_READ_BUFFER
+IOC_CR_ECHO      = 2              ; request DATA 2-5 (the FS2 offset)
+IOC_CR_READY_OFF = 3 + 4          ; reply frame: TYPE STATUS LENGTH, DATA 4
+IOC_CR_BORROWED  = 34             ; struct driver_api `borrowed`
+IOC_CR_OUT       = 1              ; KOS_IPC_DESC_OUT
+IOC_CR_EINVAL    = 0xFFFE         ; -KOS_EINVAL
+
+_ioc_driver_command_read::
+	push	ix
+	push	hl
+	pop	ix			; IX = the frame
+	ld	a,5 (ix)		; arg1 high: the request length
+	or	a
+	jp	nz,ioc_cr_einval
+	ld	a,4 (ix)
+	cp	#IOC_CR_CAPACITY + 1
+	jp	nc,ioc_cr_einval
+	ld	de,#6 + IOC_CR_ECHO
+	add	hl,de
+	ld	de,#ioc_cr_keep
+	ld	bc,#4
+	ldir				; the request's DATA 2-5
+	push	ix
+	pop	hl
+	call	_ioc_driver_command
+	ld	a,d
+	or	e
+	jp	nz,ioc_cr_out		; a transport error passes through
+	ld	hl,#_ioc_state
+	call	_ioc_admitted_read
+	ld	a,d
+	or	e
+	jr	z,ioc_cr_out		; no bulk phase: 0
+	ld	(ioc_cr_len),de
+	ld	l,6 + IOC_CR_CAPACITY (ix)
+	ld	h,6 + IOC_CR_CAPACITY + 1 (ix)
+	or	a
+	sbc	hl,de
+	jr	c,ioc_cr_refuse		; more than the capacity
+	ld	hl,(_ioc_reply_address)
+	ld	bc,#IOC_CR_READY_OFF
+	add	hl,bc
+	ld	de,#ioc_cr_keep
+	ld	b,#4
+ioc_cr_echo:
+	ld	a,(de)
+	cp	(hl)
+	jr	nz,ioc_cr_refuse	; another offset than the request's
+	inc	hl
+	inc	de
+	djnz	ioc_cr_echo
+	ld	l,6 + IOC_CR_BUFFER (ix)
+	ld	h,6 + IOC_CR_BUFFER + 1 (ix)
+	ld	de,(ioc_cr_len)
+	ld	a,h
+	cp	#0x60
+	jr	c,ioc_cr_lent		; below the hot tier
+	add	hl,de
+	dec	hl			; the last byte
+	jr	c,ioc_cr_lent
+	ld	a,h
+	cp	#0xE0
+	jr	c,ioc_cr_receive	; inside 6000h-DFFFh
+ioc_cr_lent:
+	ld	hl,(_ioc_api)
+	ld	bc,#IOC_CR_BORROWED
+	add	hl,bc
+	ld	c,(hl)
+	inc	hl
+	ld	b,(hl)
+	ld	a,#IOC_CR_OUT
+	push	af
+	inc	sp
+	ld	l,6 + IOC_CR_BUFFER (ix)
+	ld	h,6 + IOC_CR_BUFFER + 1 (ix)
+	ld	de,(ioc_cr_len)
+	call	ioc_cr_call_bc		; borrowed(buffer, length, OUT)
+	ld	a,d
+	or	e
+	jr	z,ioc_cr_refuse
+ioc_cr_receive:
+	ld	hl,(ioc_cr_len)
+	push	hl
+	ld	e,6 + IOC_CR_BUFFER (ix)
+	ld	d,6 + IOC_CR_BUFFER + 1 (ix)
+	ld	hl,#_ioc_state
+	call	_ioc_bulk_read
+	ld	a,d
+	or	e
+	jr	nz,ioc_cr_out		; KIOC_OK is 0; an error passes through
+	ld	de,(ioc_cr_len)
+	jr	ioc_cr_out
+ioc_cr_refuse:
+	; Abandon the admitted phase unreceived: IDLE, and the whole-link
+	; recovery before the next command (the controller is mid-phase).
+	xor	a
+	ld	(_ioc_state + IOC_ST_PHASE),a
+	inc	a
+	ld	(_ioc_state + IOC_ST_RECOVER),a
+ioc_cr_einval:
+	ld	de,#IOC_CR_EINVAL
+ioc_cr_out:
+	pop	ix
+	ret
+ioc_cr_call_bc:
+	push	bc
+	ret
+
+; ---------------------------------------------------------------------------
 ; Bulk-transport scratch.  Module BSS (_DATA): zeroed by the loader and
 ; relocated with the module image.  Single IOC instance, single foreground
 ; transfer, so these are not re-entrant by design (the C busy guard and the
@@ -1656,3 +1785,6 @@ _ioc_bulk_save:		.ds 5
 _ioc_rt_held:		.ds 1		; `/dev/rtclock` held
 _ioc_bulk_hunt:		.ds 1
 _ioc_bulk_token:	.ds 1
+; COMMAND_READ's kept request DATA 2-5 and the admitted length.
+ioc_cr_keep:		.ds 4
+ioc_cr_len:		.ds 2

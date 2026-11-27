@@ -8,17 +8,12 @@
  *
  * A far function cannot see far data: while it runs, the window is this
  * code.  So the caller copies table values out and passes them by value
- * (the one-window rule).  The result carries the latch byte this bank
- * saw in its high half, so the caller can print which page ran it.
+ * (the one-window rule).
  */
 
 #include "kos.h"
 
-__sfr __at 0x00 latch_port;
-
 int fardata_far_sum(int a, int b) __banked
 {
-	unsigned char latch = latch_port;
-
-	return ((int)latch << 8) | ((a + b) & 0xFF);
+	return a + b;
 }

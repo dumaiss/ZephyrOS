@@ -118,6 +118,27 @@ def block(text, label, end="\n; ---"):
     return text.split(label, 1)[1].split(end, 1)[0]
 
 
+def board_view(text, mk2):
+    """The source as one board assembles it: the parts under `.ifdef
+    KOS_MAP_DAT` (Mk2's mapping operations define it) kept on Mk2 only,
+    their `.else` parts on Mk1 only."""
+    out, stack = [], []
+    for line in text.splitlines(keepends=True):
+        word = line.split(";")[0].split()
+        if word[:2] == [".ifdef", "KOS_MAP_DAT"]:
+            stack.append(mk2)
+            continue
+        if word[:1] == [".else"] and stack:
+            stack[-1] = not stack[-1]
+            continue
+        if word[:1] == [".endif"] and stack:
+            stack.pop()
+            continue
+        if all(stack):
+            out.append(line)
+    return "".join(out)
+
+
 def mnemonics(body):
     return [line.split(";")[0].strip().split()[0] for line in
             body.splitlines() if line.strip() and
@@ -180,11 +201,16 @@ class TestEventContract(unittest.TestCase):
         # Unwind order: the (latch, 0) pair, the alternate set, AF', then
         # the main set from IY down to AF - so the frame reads latch, HL',
         # DE', BC', AF', IY, IX, HL, DE, BC, AF, PC from its base upward.
-        self.assertEqual(mnemonics(block(read(EVENT_ASM),
-                                         "_kos_event_unwind::")),
-                         ["ld", "out", "ld", "pop", "exx", "pop", "pop",
-                          "pop", "exx", "ex", "pop", "ex", "pop", "pop",
-                          "pop", "pop", "pop", "pop", "ei", "ret"])
+        # On Mk2 the first word is the far-window handle, opened again
+        # (when it is not 0) before the registers come back.
+        tail = ["exx", "pop", "pop", "pop", "exx", "ex", "pop", "ex", "pop",
+                "pop", "pop", "pop", "pop", "pop", "ei", "ret"]
+        for mk2, word in ((False, []), (True, ["ld", "or", "call"])):
+            with self.subTest(mk2=mk2):
+                self.assertEqual(
+                    mnemonics(block(board_view(read(EVENT_ASM), mk2),
+                                    "_kos_event_unwind::")),
+                    ["ld", "KOS_MAP_RESTORE", "ld", "pop"] + word + tail)
 
         # The syscall path completes that frame with the caller's own
         # return address: the frame is 22 bytes below the caller's SP, so
@@ -192,11 +218,14 @@ class TestEventContract(unittest.TestCase):
         # bytes the layout needs - AF, BC, DE, the result in HL, IX, IY,
         # the alternate set, the (latch, 0) pair - then saves the frame
         # pointer across the row lookup.
-        body = read(EVENT_ASM).split("_kos_event_syscall_exit::", 1)[1]
-        self.assertEqual(re.findall(r"^\tpush\t(\w+)", body, re.MULTILINE),
-                         ["af", "bc", "de", "hl", "ix", "iy",
-                          "af", "bc", "de", "hl", "hl", "hl"])
-        self.assertIn("\tpop\thl\n", body)
+        for mk2 in (False, True):
+            body = board_view(read(EVENT_ASM), mk2).split(
+                "_kos_event_syscall_exit::", 1)[1]
+            self.assertEqual(re.findall(r"^\tpush\t(\w+)", body,
+                                        re.MULTILINE),
+                             ["af", "bc", "de", "hl", "ix", "iy",
+                              "af", "bc", "de", "hl", "hl", "hl"])
+            self.assertIn("\tpop\thl\n", body)
 
         # The IRQ path instead completes the same layout with the pair the
         # IRQ stub already pushed: frame = irq_saved_sp - 20.

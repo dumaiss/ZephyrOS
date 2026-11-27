@@ -31,10 +31,23 @@
  * buffer to a driver (the call machinery stages the frame in the fixed
  * boundary buffer), so a `/fs` executable living behind a bank-6 driver
  * streams exactly like a `/system` one.
+ *
+ * On Mk2 (KOS_BOARD_MK2) the same container path builds the child on
+ * pages (architecture 2.7.6): the slot, the CWD and seven pages, page
+ * zero with the startup block, then the image, straight from the store's
+ * ROM pages for a `/system` EXE or, for any other FILE, read straight
+ * into the child's pages (a descriptor through the page list, up to
+ * KOS_IPC_DESC_MAX bytes a read, with a seek only where the reads are not
+ * consecutive), and its BSS, then each segment: an extended-memory object
+ * of its own pages (kos_xmem_segment_alloc), its payload read the same
+ * way and its BSS zeroed.  The header, the segment table and their checks
+ * are shared; the bank and slot placement below is
+ * the Mk1 board's.
  */
 
 #include "kernel/syscall/rt.h"
 #include "process.h"
+#include "kos/errno.h"
 #include "kos/syscall.h"
 #include "kos/object.h"
 #include "kos/protocol.h"
@@ -44,30 +57,695 @@
 #include "kernel/syscall/xmem.h"
 #include "kernel.h"
 #include "kernel/vfs/vfs.h"
+#if defined(KOS_BOARD_MK2)
+#include "kernel/memory/mk2/pages.h"
+#define EXEC_BOARD EXE_BOARD_MK2
+/* A descriptor-less FILE call (metadata, seek); reads go through
+ * exec_payload. */
+#define exec_ns_call(file, frame, length, dir) \
+	((void)(dir), vfs_ns_file_call((file)->number, (file)->object, \
+				       (frame), (const uint8_t *)0, 0u, \
+				       (length)))
+#else
+#define EXEC_BOARD EXE_BOARD_MK1
+#define exec_ns_call(file, frame, length, dir) \
+	vfs_ns_file_call((file)->number, (file)->object, (frame), (length), \
+			 (dir))
+#define EXE_LOAD_CHUNK KOS_SYSCALL_STAGE_SIZE
+#endif
+
+/* The header of the container being loaded.  It lives in the loader's
+ * own data, not on the caller's stack: process_prepare() runs on the gate
+ * stack under SYS_EXEC and declares no automatic object larger than 32
+ * bytes, and the header must stay visible for the whole load.
+ * Single-tasking: exactly one load is in progress at a time. */
+static struct exe_header exe_pending_header;
+
+/* The segment table of the container being loaded, beside the header
+ * (the loader's own data, for the same reasons). */
+static struct exe_segment exe_pending_segments[EXE_MAX_SEGMENTS];
+
+#if defined(__SDCC)
+_Static_assert(sizeof(exe_pending_segments) <= 256u,
+	       "the segment table must stay small enough for loader data");
+#endif
+
+/* --- format validation ------------------------------------------------ */
+
+/* The one up-front feasibility check: every count and size in the header,
+ * validated in 32 bits before anything is allocated or written.  Segment
+ * rows are checked separately before they are used. */
+int exe_validate_header(const struct exe_header *header, uint32_t file_size,
+			struct exe_geometry *out)
+{
+	uint32_t image_end;
+	uint32_t bss_end;
+	uint32_t stack_base;
+	uint32_t table_end;
+
+	if (header == (const struct exe_header *)0) {
+		return EXE_EXEC_ERR_ARG;
+	}
+	if (header->magic[0] != EXE_MAGIC_0 ||
+	    header->magic[1] != EXE_MAGIC_1 ||
+	    header->magic[2] != EXE_MAGIC_2 ||
+	    header->magic[3] != EXE_MAGIC_3) {
+		return EXE_EXEC_ERR_MAGIC;
+	}
+	if (header->format_version != EXE_FORMAT_VERSION) {
+		return EXE_EXEC_ERR_FORMAT;
+	}
+	if (header->abi_version != EXE_ABI_VERSION) {
+		return EXE_EXEC_ERR_ABI;
+	}
+	if (header->flags != EXE_FLAG_NONE) {
+		return EXE_EXEC_ERR_FLAGS;
+	}
+	if (header->board != EXEC_BOARD) {
+		return EXE_EXEC_ERR_BOARD;
+	}
+	if (header->header_size != EXE_HEADER_SIZE) {
+		return EXE_EXEC_ERR_HEADER;
+	}
+	if (header->reserved1 != 0u) {
+		return EXE_EXEC_ERR_RESERVED1;
+	}
+	if (header->image_size == 0) {
+		return EXE_EXEC_ERR_IMAGE;
+	}
+	if (file_size != header->file_size) {
+		return EXE_EXEC_ERR_FILESIZE;
+	}
+	if (header->entry_offset >= header->image_size) {
+		return EXE_EXEC_ERR_ENTRY;
+	}
+	if (header->stack_size < EXE_MIN_STACK_SIZE) {
+		return EXE_EXEC_ERR_STACK;
+	}
+	if (header->segment_count > EXE_MAX_SEGMENTS ||
+	    header->total_segment_slots > EXE_MAX_TOTAL_SLOTS) {
+		return EXE_EXEC_ERR_SEG_SLOTS;
+	}
+
+	/* The segment table and the primary payload must lie inside the
+	 * file (all arithmetic 32-bit before it is used). */
+	table_end = header->segment_table_offset +
+		    ((uint32_t)header->segment_count *
+		     EXE_SEGMENT_ENTRY_SIZE);
+	if (table_end < header->segment_table_offset ||
+	    table_end > file_size) {
+		return EXE_EXEC_ERR_SEG_TABLE;
+	}
+	if ((uint32_t)header->primary_payload_offset + header->image_size >
+	    file_size) {
+		return EXE_EXEC_ERR_FILESIZE;
+	}
+
+	/* All geometry arithmetic is checked in 32 bits before it is
+	 * narrowed, so a 16-bit wrap can never be mistaken for a fit. */
+	image_end = (uint32_t)EXE_LOAD_BASE + header->image_size;
+	if (image_end > EXE_STACK_TOP) {
+		return EXE_EXEC_ERR_IMAGE_END;
+	}
+	bss_end = image_end + header->bss_size;
+	if (bss_end > EXE_STACK_TOP) {
+		return EXE_EXEC_ERR_BSS_END;
+	}
+	stack_base = (uint32_t)EXE_STACK_TOP - header->stack_size;
+	if (stack_base < EXE_LOAD_BASE || bss_end > stack_base) {
+		return EXE_EXEC_ERR_COLLISION;
+	}
+
+	if (out != (struct exe_geometry *)0) {
+		out->image_size = header->image_size;
+		out->bss_size = header->bss_size;
+		out->entry = (uint16_t)(EXE_LOAD_BASE + header->entry_offset);
+		out->stack_size = header->stack_size;
+		out->stack_base = (uint16_t)stack_base;
+	}
+	return EXE_EXEC_OK;
+}
+
+/* One FILE call on the bound executable.  `length` nonzero (Mk1) reads
+ * that many bytes into the common staging block and returns the count (the
+ * caller copies them where they belong); zero is the descriptor-less form
+ * (metadata, seek, sync).  Returns the call status. */
+static int exec_file_call(const struct vfs_handle_entry *file, uint8_t op,
+			  uint8_t arg0, uint16_t arg1, uint16_t length,
+			  uint8_t dir, struct kos_ipc_frame *reply)
+{
+	struct kos_ipc_frame frame;
+	int result;
+
+	frame.op = op;
+	frame.flags = 0u;
+	frame.desc = KOS_IPC_DESC_NONE;
+	frame.arg0 = arg0;
+	frame.arg1 = arg1;
+	frame.payload[0] = file->object;
+	result = exec_ns_call(file, &frame, length, dir);
+	if (reply != (struct kos_ipc_frame *)0) {
+		*reply = frame;
+	}
+	return result;
+}
+
+/* The file's size, from the FILE metadata operation. */
+static int exec_file_size(const struct vfs_handle_entry *file,
+			  uint32_t *size)
+{
+	struct kos_ipc_frame frame;
+	int result;
+
+	result = exec_file_call(file, KFILE_OP_META, 0u, 0u, 0u,
+				KOS_IPC_DESC_NONE, &frame);
+	if (result < 0) {
+		return result;
+	}
+	*size = (uint32_t)frame.payload[4] |
+		((uint32_t)frame.payload[5] << 8) |
+		((uint32_t)frame.payload[6] << 16) |
+		((uint32_t)frame.payload[7] << 24);
+	return 0;
+}
+
+static int exec_seek(const struct vfs_handle_entry *file, uint32_t offset)
+{
+	struct kos_ipc_frame frame;
+	int result;
+
+	frame.op = KFILE_OP_SEEK;
+	frame.flags = 0u;
+	frame.desc = KOS_IPC_DESC_NONE;
+	frame.arg0 = KFS_SEEK_SET;
+	frame.arg1 = 0u;
+	frame.payload[0] = file->object;
+	frame.payload[1] = (uint8_t)offset;
+	frame.payload[2] = (uint8_t)(offset >> 8);
+	frame.payload[3] = (uint8_t)(offset >> 16);
+	frame.payload[4] = (uint8_t)(offset >> 24);
+	result = exec_ns_call(file, &frame, 0u, KOS_IPC_DESC_NONE);
+	return result;
+}
+
+#if defined(KOS_BOARD_MK2)
+/* The bound executable's FILE position after the last read: a read that
+ * continues there takes no seek.  Unknown until the header is read. */
+#define EXEC_POS_UNKNOWN 0xFFFFFFFFul
+static uint32_t exec_pos;
+
+static int exec_payload(const struct vfs_handle_entry *file,
+			uint32_t offset, const uint8_t *map, uint16_t addr,
+			uint16_t length);
+
+/* Read the EXE header into the loader's own storage; a short file is
+ * EXE_EXEC_ERR_FILESIZE. */
+static int exec_read_header(const struct vfs_handle_entry *file)
+{
+	int result;
+
+	exec_pos = EXEC_POS_UNKNOWN;
+	result = exec_payload(file, 0u, (const uint8_t *)0,
+			      (uint16_t)&exe_pending_header, EXE_HEADER_SIZE);
+	return (result == EXE_EXEC_ERR_READ) ? EXE_EXEC_ERR_FILESIZE : result;
+}
+#else
+/* Read the EXE header into the loader's bank-7 storage through the common
+ * staging block. */
+static int exec_read_header(const struct vfs_handle_entry *file)
+{
+	uint16_t i;
+	int result;
+
+	result = exec_seek(file, 0u);
+	if (result != 0) {
+		return result; /* provider error, passed through */
+	}
+	result = exec_file_call(file, KFILE_OP_READ, 0u, EXE_HEADER_SIZE,
+				EXE_HEADER_SIZE, KOS_IPC_DESC_OUT,
+				(struct kos_ipc_frame *)0);
+	if (result < 0) {
+		return result;
+	}
+	if (result != (int)EXE_HEADER_SIZE) {
+		return EXE_EXEC_ERR_FILESIZE;
+	}
+	for (i = 0u; i < EXE_HEADER_SIZE; ++i) {
+		((uint8_t *)&exe_pending_header)[i] = kos_user_copy_staging[i];
+	}
+	return EXE_EXEC_OK;
+}
+#endif
+
+/* The loader reads forward from a fixed offset and never needs the reply
+ * position, so no KFILE_OP_SEEK/CUR/END use exists. */
+
+/* Release the bound executable: the provider's release runs (a driver's
+ * CLOSE for `/fs`, the entry itself for ROMFS), then the entry. */
+static void exec_close(const struct vfs_handle_entry *file, uint8_t pid)
+{
+	(void)vfs_ns_unbind(pid, file->number);
+}
+
+/* Protective bounds for one segment row, checked before the row is
+ * allocated or copied: a known kind, a non-empty image + BSS within its
+ * kind's limit (a DATA segment 32 KiB, a FAR_CODE segment or a mappable
+ * DATA segment the 16 KiB far window), a known flag set and a payload
+ * inside the file.  The packer proves the same geometry on the host. */
+int exe_validate_segment(const struct exe_segment *segment,
+			 uint32_t file_size)
+{
+	uint32_t total;
+	uint16_t limit;
+
+	if (segment == (const struct exe_segment *)0) {
+		return EXE_EXEC_ERR_ARG;
+	}
+	if (segment->kind != EXE_SEG_KIND_DATA &&
+	    segment->kind != EXE_SEG_KIND_FAR_CODE) {
+		return EXE_EXEC_ERR_SEG_KIND;
+	}
+	if (segment->image_size == 0 ||
+	    (segment->flags & ~EXE_SEG_FLAG_MAPPABLE) != 0u ||
+	    segment->reserved1 != 0u) {
+		return EXE_EXEC_ERR_SEGMENT;
+	}
+	/* Only a DATA row may ask for the aperture (9). */
+	if (segment->flags != 0u && segment->kind != EXE_SEG_KIND_DATA) {
+		return EXE_EXEC_ERR_SEGMENT;
+	}
+	limit = (segment->kind == EXE_SEG_KIND_FAR_CODE ||
+		 segment->flags != 0u)
+		? EXE_SEG_MAX_FAR_SIZE : EXE_SEG_MAX_SIZE;
+	total = (uint32_t)segment->image_size + segment->bss_size;
+	if (total > limit) {
+		return EXE_EXEC_ERR_SEGMENT;
+	}
+	if ((uint32_t)segment->payload_offset + segment->image_size >
+	    file_size) {
+		return EXE_EXEC_ERR_SEGMENT;
+	}
+	return EXE_EXEC_OK;
+}
+
+#if defined(KOS_BOARD_MK2)
+/* `length` bytes at `offset` into the loader's own `dst`. */
+#define exec_stream(file, offset, dst, length) \
+	exec_payload((file), (offset), (const uint8_t *)0, (uint16_t)(dst), \
+		     (length))
+#else
+/* Stream `length` bytes at `file_offset` into `dst` through the staging
+ * block, `chunk` at a time.  Returns a native provider error (negative) or
+ * a EXE_EXEC_ERR_* code. */
+static int exec_stream(const struct vfs_handle_entry *file, uint32_t offset,
+		       uint8_t *dst, uint16_t length)
+{
+	while (length != 0u) {
+		uint16_t chunk = length;
+		int result;
+
+		if (chunk > EXE_LOAD_CHUNK) {
+			chunk = EXE_LOAD_CHUNK;
+		}
+		result = exec_seek(file, offset);
+		if (result != 0) {
+			return result;
+		}
+		result = exec_file_call(file, KFILE_OP_READ, 0u, chunk, chunk,
+					KOS_IPC_DESC_OUT,
+					(struct kos_ipc_frame *)0);
+		if (result < 0) {
+			return result;
+		}
+		if (result != (int)chunk) {
+			return EXE_EXEC_ERR_READ;
+		}
+		{
+			uint16_t i;
+
+			for (i = 0u; i < chunk; ++i) {
+				dst[i] = kos_user_copy_staging[i];
+			}
+		}
+		dst = dst + chunk;
+		offset += chunk;
+		length = (uint16_t)(length - chunk);
+	}
+	return EXE_EXEC_OK;
+}
+#endif
+
+/* Read the segment table into the loader's own storage and validate every
+ * row against the header before anything is allocated: the row's bounds,
+ * its ascending container id and the slot total the header promised. */
+static int exec_read_segments(const struct vfs_handle_entry *file,
+			      const struct exe_header *header)
+{
+	uint16_t rows_size =
+		(uint16_t)((uint16_t)header->segment_count *
+			   EXE_SEGMENT_ENTRY_SIZE);
+	uint8_t slots = 0u;
+	uint8_t i;
+	int result;
+
+	if (rows_size != 0u) {
+		result = exec_stream(file, header->segment_table_offset,
+				     (uint8_t *)exe_pending_segments,
+				     rows_size);
+		if (result != EXE_EXEC_OK) {
+			return result;
+		}
+	}
+	for (i = 0u; i < header->segment_count; ++i) {
+		const struct exe_segment *segment = &exe_pending_segments[i];
+
+		result = exe_validate_segment(segment, header->file_size);
+		if (result != EXE_EXEC_OK) {
+			return result;
+		}
+		if (segment->id != (uint8_t)(i + 1u)) {
+			return EXE_EXEC_ERR_SEGMENT;
+		}
+		slots = (uint8_t)(slots +
+				  ((uint8_t)(((uint32_t)segment->image_size +
+					      segment->bss_size +
+					      (EXE_SEG_SLOT_SIZE - 1u)) >>
+					     13)));
+	}
+	if (slots != header->total_segment_slots) {
+		return EXE_EXEC_ERR_SEG_SLOTS;
+	}
+	return EXE_EXEC_OK;
+}
+
+#if defined(KOS_BOARD_MK2)
+
+/* The 0030h vector (kernel/process/launch.asm), the far-window vector
+ * (kernel/memory/mk2/far.asm) and the NMI entry every program page-0 image
+ * carries (architecture 2.7.3, 2.7.6, 4.12). */
+extern const uint8_t kos_process_page_zero_vector[];
+extern const uint8_t kos_far_vector[];
+static const uint8_t exec_nmi_entry[3] = {
+	0xC3u, (uint8_t)KOS_RT_VECTOR, (uint8_t)(KOS_RT_VECTOR >> 8)
+};
+
+/* Every allocating step first (slot, the CWD when `with_cwd`, pages), then
+ * the child's page zero (zeroed, the three entry stubs, the startup block);
+ * the callers place the image and its BSS.  Nothing else is cleared
+ * (architecture 4.8).  The copies cannot fail once the pages are owned.
+ * Returns the pid, or a negative error with nothing held. */
+static int exec_child_pages(uint8_t parent_pid, uint16_t args,
+			    uint16_t args_length, uint8_t with_cwd)
+{
+	uint8_t head[2];
+	uint8_t *image;
+	uint8_t pid;
+	int result;
+
+	result = process_slot_alloc();
+	if (result < 0) {
+		return result;
+	}
+	pid = (uint8_t)result;
+	/* The child's CWD slot before any page is taken: a full pool fails
+	 * the launch cleanly.  The child inherits the parent's CWD (or `/`
+	 * for the kernel launcher). */
+	if (with_cwd != 0u) {
+		result = vfs_process_start(pid, parent_pid);
+		if (result != 0) {
+			process_slot_release(pid);
+			return result;
+		}
+	}
+	image = kos_dat_images[pid];
+	/* The row is about to change: the working bank may hold its last
+	 * process's copy. */
+	kos_dat_cache_drop();
+	if (kos_pages_alloc(pid, (uint8_t)(KOS_DAT_ENTRIES - 1u), image) !=
+	    0) {
+		process_slot_release(pid);
+		return -KOS_ENOSPC;
+	}
+	image[KOS_DAT_ENTRIES - 1u] = kos_dat_common_page();
+	process_table[pid].bank = image[0];
+	process_table[pid].parent = parent_pid;
+	process_table[pid].flags = (parent_pid == PROCESS_KERNEL_PARENT)
+		? PROCESS_FLAG_KERNEL_PARENT : 0;
+	process_table[pid].exit_status = 0;
+	process_table[pid].far = 0u;
+
+	kos_pages_zero(image, 0u, KOS_PAGE_ZERO_END);
+	kos_pages_copy((const uint8_t *)0,
+		       (uint16_t)kos_process_page_zero_vector, image, 0x0030u,
+		       3u);
+	kos_pages_copy((const uint8_t *)0, (uint16_t)kos_far_vector, image,
+		       KOS_FAR_VECTOR, 3u);
+	kos_pages_copy((const uint8_t *)0, (uint16_t)exec_nmi_entry, image,
+		       KOS_NMI_ENTRY, 3u);
+	head[0] = KOS_STARTUP_VERSION;
+	head[1] = (uint8_t)args_length;
+	kos_pages_copy((const uint8_t *)0, (uint16_t)head, image,
+		       KOS_STARTUP_BASE, 2u);
+	/* The caller's raw tail, byte-exact, through its current mapping;
+	 * the NUL after it is page zero's. */
+	if (args_length != 0u) {
+		kos_pages_copy(kos_caller_map(), args, image,
+			       (uint16_t)(KOS_STARTUP_BASE + 2u), args_length);
+	}
+	return (int)pid;
+}
+
+int process_prepare_program(const struct process_program *program,
+			    uint8_t parent_pid, uint16_t args,
+			    uint16_t args_length, struct process_child *child)
+{
+	uint8_t rom[KOS_DAT_ENTRIES];
+	uint8_t *image;
+	uint8_t pid;
+	uint8_t i;
+	int result;
+
+	if (program == (const struct process_program *)0 ||
+	    child == (struct process_child *)0 ||
+	    args_length > KOS_STARTUP_TAIL_MAX ||
+	    (uint32_t)EXE_LOAD_BASE + program->size + program->bss >
+		    (uint32_t)EXE_STACK_TOP - EXE_MIN_STACK_SIZE) {
+		return -KOS_EINVAL;
+	}
+	result = exec_child_pages(parent_pid, args, args_length, 1u);
+	if (result < 0) {
+		return result;
+	}
+	pid = (uint8_t)result;
+	image = kos_dat_images[pid];
+	for (i = 0u; i < KOS_DAT_ENTRIES; ++i) {
+		rom[i] = (uint8_t)(program->page + i);
+	}
+	kos_pages_copy(rom, program->offset, image, EXE_LOAD_BASE,
+		       program->size);
+	kos_pages_zero(image, (uint16_t)(EXE_LOAD_BASE + program->size),
+		       program->bss);
+
+	child->pid = pid;
+	child->bank = image[0];
+	child->entry = program->entry;
+	return 0;
+}
+
+/* The loader's own mapping, by page: a driver's call remaps the cold
+ * set, so a read into the loader's data names its pages. */
+struct exec_dat {
+	uint8_t page[KOS_DAT_ENTRIES];
+};
+
+/* `length` payload bytes at file offset `offset` to `addr` through the page
+ * list `map` (the child's image, a segment's pages; null: `addr` is the
+ * loader's own memory): a `/system` EXE straight from the store's ROM
+ * pages, any other FILE straight from its provider, KOS_IPC_DESC_MAX bytes
+ * a FILE read into the pages with no staging copy, and a seek only where
+ * a read does not continue the last.  Returns a native provider error
+ * (negative) or a EXE_EXEC_ERR_* code. */
+static int exec_payload(const struct vfs_handle_entry *file,
+			uint32_t offset, const uint8_t *map, uint16_t addr,
+			uint16_t length)
+{
+	struct kos_ipc_frame frame;
+	struct exec_dat here;
+	int result;
+
+	if (file->endpoint == VFS_NS_FILE_ENDPOINT) {
+		if (romfs_read_pages(&file->u.ns.romfs, offset, map, addr,
+				     length) != (int)length) {
+			return EXE_EXEC_ERR_READ;
+		}
+		return EXE_EXEC_OK;
+	}
+	if (map == (const uint8_t *)0) {
+		here = *(volatile const struct exec_dat *)KOS_DAT_SYSTEM;
+		map = here.page;
+	}
+	while (length != 0u) {
+		uint16_t chunk = (length > KOS_IPC_DESC_MAX)
+			? (uint16_t)KOS_IPC_DESC_MAX : length;
+
+		if (offset != exec_pos) {
+			result = exec_seek(file, offset);
+			if (result != 0) {
+				return result;
+			}
+		}
+		/* A failed read ends the load; the next one seeks. */
+		exec_pos = offset + chunk;
+		frame.op = KFILE_OP_READ;
+		frame.flags = 0u;
+		frame.desc = KOS_IPC_DESC_NONE;
+		frame.arg0 = 0u;
+		frame.arg1 = chunk;
+		frame.payload[0] = file->object;
+		result = vfs_ns_file_call(file->number, file->object, &frame,
+					  map, addr, chunk);
+		if (result < 0) {
+			return result;
+		}
+		if (result != (int)chunk) {
+			return EXE_EXEC_ERR_READ;
+		}
+		offset = exec_pos;
+		addr = (uint16_t)(addr + chunk);
+		length = (uint16_t)(length - chunk);
+	}
+	return EXE_EXEC_OK;
+}
+
+/* The primary image and its BSS, then each segment: its object's pages
+ * (kos_xmem_segment_alloc, in table order), its payload from offset 0 of
+ * the object and its zeroed BSS.  A far-code segment and a mappable data
+ * segment are linked at 8000h, where the far window shows the object's
+ * first byte.  A failure leaves what was placed for the rollback. */
+static int exec_load_child(const struct vfs_handle_entry *file,
+			   const struct exe_header *header, uint8_t pid,
+			   uint8_t *image)
+{
+	uint8_t i;
+	int result;
+
+	result = exec_payload(file, header->primary_payload_offset, image,
+			      EXE_LOAD_BASE, header->image_size);
+	if (result != EXE_EXEC_OK) {
+		return result;
+	}
+	kos_pages_zero(image, (uint16_t)(EXE_LOAD_BASE + header->image_size),
+		       header->bss_size);
+	for (i = 0u; i < header->segment_count; ++i) {
+		const struct exe_segment *segment = &exe_pending_segments[i];
+		uint8_t pages[KOS_DAT_ENTRIES]; /* the gate stack: common */
+
+		if (kos_xmem_segment_alloc(pid, segment->id, segment->kind,
+					   segment->flags,
+					   (uint16_t)(segment->image_size +
+						      segment->bss_size),
+					   pages) != 0) {
+			return EXE_EXEC_ERR_NOSPACE;
+		}
+		result = exec_payload(file, segment->payload_offset, pages, 0u,
+				      segment->image_size);
+		if (result != EXE_EXEC_OK) {
+			return result;
+		}
+		kos_pages_zero(pages, segment->image_size, segment->bss_size);
+	}
+	return EXE_EXEC_OK;
+}
+
+/* The EXE container loader on pages, in process_prepare_program's order:
+ * the path binds as a FILE (a `/system` one must be an EXE entry), the
+ * header and the segment table are read and validated before anything is
+ * allocated, then the slot, the CWD and the pages, page zero and the
+ * startup block, the image and its BSS and the segments; the source is
+ * unbound before the child is entered.  Every failure after the slot
+ * rolls back through process_slot_release(), which releases the
+ * segments' objects and pages with the rest. */
+int process_prepare(const char *path, uint8_t parent_pid, uint16_t args,
+		    uint16_t args_length, struct process_child *child)
+{
+	struct vfs_handle_entry *file;
+	struct exe_geometry geo;
+	uint8_t type = 0u;
+	uint8_t pid;
+	uint32_t file_size = 0u;
+	int result;
+
+	if (path == (const char *)0 || child == (struct process_child *)0 ||
+	    args_length > KOS_STARTUP_TAIL_MAX) {
+		return -KOS_EINVAL;
+	}
+	vfs_ws_enter(VFS_WS_VIEW_PATH);
+	result = vfs_ns_bind(vfs_owner_current(), path,
+			     (uint16_t)KFS_O_READ, &type);
+	vfs_ws_leave(VFS_WS_VIEW_PATH);
+	if (result < 0) {
+		return result;
+	}
+	if (type != KOS_TYPE_FILE) {
+		(void)vfs_ns_unbind(vfs_owner_current(), (uint8_t)result);
+		return -KOS_EISDIR;
+	}
+	file = vfs_handle_find(vfs_owner_current(), (uint8_t)result);
+	if (file == (struct vfs_handle_entry *)0) {
+		return -KOS_EINVAL;
+	}
+	if (file->endpoint == VFS_NS_FILE_ENDPOINT &&
+	    file->u.ns.romfs.flags != ROMFS_FLAG_EXE) {
+		exec_close(file, vfs_owner_current());
+		return EXE_EXEC_ERR_TYPE;
+	}
+	result = exec_file_size(file, &file_size);
+	if (result == 0) {
+		result = exec_read_header(file);
+	}
+	if (result == 0) {
+		result = exe_validate_header(&exe_pending_header, file_size,
+					     &geo);
+	}
+	if (result == 0) {
+		result = exec_read_segments(file, &exe_pending_header);
+	}
+	if (result != 0) {
+		exec_close(file, vfs_owner_current());
+		return result;
+	}
+	result = exec_child_pages(parent_pid, args, args_length, 1u);
+	if (result < 0) {
+		exec_close(file, vfs_owner_current());
+		return result;
+	}
+	pid = (uint8_t)result;
+	result = exec_load_child(file, &exe_pending_header, pid,
+				 kos_dat_images[pid]);
+	exec_close(file, vfs_owner_current());
+	if (result != EXE_EXEC_OK) {
+		process_slot_release(pid);
+		return result;
+	}
+
+	child->pid = pid;
+	child->bank = kos_dat_images[pid][0];
+	child->entry = geo.entry;
+	return 0;
+}
+
+#else /* Mk1 */
 
 /* Common-resident copy gate and the deterministic page-zero vector. */
 extern const uint8_t kos_process_page_zero_vector[];
-
-#define EXE_LOAD_CHUNK KOS_SYSCALL_STAGE_SIZE
 
 /* Slots 0-2 live below the mode-11 window boundary and are copied through
  * the mode-10 gate; 6000h and above go through the window. */
 #define EXEC_WINDOW_BASE 0x6000u
 
-/* The header and segment table of the container being loaded.  They live
- * in bank-7 `_DATA`, not on the caller's stack: process_prepare() runs on
- * the 256-byte gate stack under SYS_EXEC and declares no automatic object
- * larger than 32 bytes, and the rows must stay visible for the whole load.
- * Single-tasking: exactly one load is in progress at a time. */
-static struct exe_header exe_pending_header;
-static struct exe_segment exe_pending_segments[EXE_MAX_SEGMENTS];
+/* Where each segment of the container being loaded was placed. */
 static uint8_t exe_segment_bank[EXE_MAX_SEGMENTS];
 static uint8_t exe_segment_slot[EXE_MAX_SEGMENTS];
-
-#if defined(__SDCC)
-_Static_assert(sizeof(exe_pending_segments) <= 256u,
-	       "the segment table must stay small enough for bank-7 data");
-#endif
 
 /* One copy request against the child bank, through the common gate. */
 static uint8_t exec_bank_write(uint8_t bank, uint16_t addr,
@@ -192,319 +870,6 @@ static uint8_t exec_startup_block(uint8_t child_bank, uint16_t args,
 	return kos_bank_copy(&req);
 }
 
-/* --- format validation ------------------------------------------------ */
-
-/* The one up-front feasibility check: every count and size in the header,
- * validated in 32 bits before anything is allocated or written.  Segment
- * rows are checked separately before they are used. */
-int exe_validate_header(const struct exe_header *header, uint32_t file_size,
-			struct exe_geometry *out)
-{
-	uint32_t image_end;
-	uint32_t bss_end;
-	uint32_t stack_base;
-	uint32_t table_end;
-
-	if (header == (const struct exe_header *)0) {
-		return EXE_EXEC_ERR_ARG;
-	}
-	if (header->magic[0] != EXE_MAGIC_0 ||
-	    header->magic[1] != EXE_MAGIC_1 ||
-	    header->magic[2] != EXE_MAGIC_2 ||
-	    header->magic[3] != EXE_MAGIC_3) {
-		return EXE_EXEC_ERR_MAGIC;
-	}
-	if (header->format_version != EXE_FORMAT_VERSION) {
-		return EXE_EXEC_ERR_FORMAT;
-	}
-	if (header->abi_version != EXE_ABI_VERSION) {
-		return EXE_EXEC_ERR_ABI;
-	}
-	if (header->flags != EXE_FLAG_NONE) {
-		return EXE_EXEC_ERR_FLAGS;
-	}
-	if (header->reserved0 != 0) {
-		return EXE_EXEC_ERR_RESERVED0;
-	}
-	if (header->header_size != EXE_HEADER_SIZE) {
-		return EXE_EXEC_ERR_HEADER;
-	}
-	if (header->reserved1 != 0u) {
-		return EXE_EXEC_ERR_RESERVED1;
-	}
-	if (header->image_size == 0) {
-		return EXE_EXEC_ERR_IMAGE;
-	}
-	if (file_size != header->file_size) {
-		return EXE_EXEC_ERR_FILESIZE;
-	}
-	if (header->entry_offset >= header->image_size) {
-		return EXE_EXEC_ERR_ENTRY;
-	}
-	if (header->stack_size < EXE_MIN_STACK_SIZE) {
-		return EXE_EXEC_ERR_STACK;
-	}
-	if (header->segment_count > EXE_MAX_SEGMENTS ||
-	    header->total_segment_slots > EXE_MAX_TOTAL_SLOTS) {
-		return EXE_EXEC_ERR_SEG_SLOTS;
-	}
-
-	/* The segment table and the primary payload must lie inside the
-	 * file (all arithmetic 32-bit before it is used). */
-	table_end = header->segment_table_offset +
-		    ((uint32_t)header->segment_count *
-		     EXE_SEGMENT_ENTRY_SIZE);
-	if (table_end < header->segment_table_offset ||
-	    table_end > file_size) {
-		return EXE_EXEC_ERR_SEG_TABLE;
-	}
-	if ((uint32_t)header->primary_payload_offset + header->image_size >
-	    file_size) {
-		return EXE_EXEC_ERR_FILESIZE;
-	}
-
-	/* All geometry arithmetic is checked in 32 bits before it is
-	 * narrowed, so a 16-bit wrap can never be mistaken for a fit. */
-	image_end = (uint32_t)EXE_LOAD_BASE + header->image_size;
-	if (image_end > EXE_STACK_TOP) {
-		return EXE_EXEC_ERR_IMAGE_END;
-	}
-	bss_end = image_end + header->bss_size;
-	if (bss_end > EXE_STACK_TOP) {
-		return EXE_EXEC_ERR_BSS_END;
-	}
-	stack_base = (uint32_t)EXE_STACK_TOP - header->stack_size;
-	if (stack_base < EXE_LOAD_BASE || bss_end > stack_base) {
-		return EXE_EXEC_ERR_COLLISION;
-	}
-
-	if (out != (struct exe_geometry *)0) {
-		out->image_size = header->image_size;
-		out->bss_size = header->bss_size;
-		out->entry = (uint16_t)(EXE_LOAD_BASE + header->entry_offset);
-		out->stack_size = header->stack_size;
-		out->stack_base = (uint16_t)stack_base;
-	}
-	return EXE_EXEC_OK;
-}
-
-/* Protective bounds for one segment row, checked before the row is
- * allocated or copied: a known kind, a non-empty image + BSS that fits its
- * placement (a DATA segment the four non-aperture slots of one bank, a
- * FAR_CODE segment or a mappable DATA segment the 16 KiB aperture slice),
- * a known flag set and a payload inside the file.  The packer proves the
- * same geometry on the host. */
-int exe_validate_segment(const struct exe_segment *segment,
-			 uint32_t file_size)
-{
-	uint32_t total;
-	uint16_t limit;
-
-	if (segment == (const struct exe_segment *)0) {
-		return EXE_EXEC_ERR_ARG;
-	}
-	if (segment->kind != EXE_SEG_KIND_DATA &&
-	    segment->kind != EXE_SEG_KIND_FAR_CODE) {
-		return EXE_EXEC_ERR_SEG_KIND;
-	}
-	if (segment->image_size == 0 ||
-	    (segment->flags & ~EXE_SEG_FLAG_MAPPABLE) != 0u ||
-	    segment->reserved1 != 0u) {
-		return EXE_EXEC_ERR_SEGMENT;
-	}
-	/* Only a DATA row may ask for the aperture (9). */
-	if (segment->flags != 0u && segment->kind != EXE_SEG_KIND_DATA) {
-		return EXE_EXEC_ERR_SEGMENT;
-	}
-	limit = (segment->kind == EXE_SEG_KIND_FAR_CODE ||
-		 segment->flags != 0u)
-		? EXE_SEG_MAX_FAR_SIZE : EXE_SEG_MAX_SIZE;
-	total = (uint32_t)segment->image_size + segment->bss_size;
-	if (total > limit) {
-		return EXE_EXEC_ERR_SEGMENT;
-	}
-	if ((uint32_t)segment->payload_offset + segment->image_size >
-	    file_size) {
-		return EXE_EXEC_ERR_SEGMENT;
-	}
-	return EXE_EXEC_OK;
-}
-
-/* --- loading ---------------------------------------------------------- */
-
-/* One FILE call on the bound executable.  `length` nonzero reads that many
- * bytes into the common staging block and returns the count (the caller
- * copies them where they belong); zero is the descriptor-less form
- * (metadata, seek, sync).  Returns the call status. */
-static int exec_file_call(const struct vfs_handle_entry *file, uint8_t op,
-			  uint8_t arg0, uint16_t arg1, uint16_t length,
-			  uint8_t dir, struct kos_ipc_frame *reply)
-{
-	struct kos_ipc_frame frame;
-	int result;
-
-	frame.op = op;
-	frame.flags = 0u;
-	frame.desc = KOS_IPC_DESC_NONE;
-	frame.arg0 = arg0;
-	frame.arg1 = arg1;
-	frame.payload[0] = file->object;
-	result = vfs_ns_file_call(file->number, file->object, &frame, length,
-				  dir);
-	if (reply != (struct kos_ipc_frame *)0) {
-		*reply = frame;
-	}
-	return result;
-}
-
-/* The file's size, from the FILE metadata operation. */
-static int exec_file_size(const struct vfs_handle_entry *file,
-			  uint32_t *size)
-{
-	struct kos_ipc_frame frame;
-	int result;
-
-	result = exec_file_call(file, KFILE_OP_META, 0u, 0u, 0u,
-				KOS_IPC_DESC_NONE, &frame);
-	if (result < 0) {
-		return result;
-	}
-	*size = (uint32_t)frame.payload[4] |
-		((uint32_t)frame.payload[5] << 8) |
-		((uint32_t)frame.payload[6] << 16) |
-		((uint32_t)frame.payload[7] << 24);
-	return 0;
-}
-
-static int exec_seek(const struct vfs_handle_entry *file, uint32_t offset)
-{
-	struct kos_ipc_frame frame;
-	int result;
-
-	frame.op = KFILE_OP_SEEK;
-	frame.flags = 0u;
-	frame.desc = KOS_IPC_DESC_NONE;
-	frame.arg0 = KFS_SEEK_SET;
-	frame.arg1 = 0u;
-	frame.payload[0] = file->object;
-	frame.payload[1] = (uint8_t)offset;
-	frame.payload[2] = (uint8_t)(offset >> 8);
-	frame.payload[3] = (uint8_t)(offset >> 16);
-	frame.payload[4] = (uint8_t)(offset >> 24);
-	result = vfs_ns_file_call(file->number, file->object, &frame, 0u,
-				  KOS_IPC_DESC_NONE);
-	return result;
-}
-
-/* Read the EXE header into the loader's bank-7 storage through the common
- * staging block. */
-static int exec_read_header(const struct vfs_handle_entry *file)
-{
-	uint16_t i;
-	int result;
-
-	result = exec_seek(file, 0u);
-	if (result != 0) {
-		return result; /* provider error, passed through */
-	}
-	result = exec_file_call(file, KFILE_OP_READ, 0u, EXE_HEADER_SIZE,
-				EXE_HEADER_SIZE, KOS_IPC_DESC_OUT,
-				(struct kos_ipc_frame *)0);
-	if (result < 0) {
-		return result;
-	}
-	if (result != (int)EXE_HEADER_SIZE) {
-		return EXE_EXEC_ERR_FILESIZE;
-	}
-	for (i = 0u; i < EXE_HEADER_SIZE; ++i) {
-		((uint8_t *)&exe_pending_header)[i] = kos_user_copy_staging[i];
-	}
-	return EXE_EXEC_OK;
-}
-
-/* Stream `length` bytes at `file_offset` into `dst` through the staging
- * block, `chunk` at a time.  Returns a native provider error (negative) or
- * a EXE_EXEC_ERR_* code. */
-static int exec_stream(const struct vfs_handle_entry *file, uint32_t offset,
-		       uint8_t *dst, uint16_t length)
-{
-	while (length != 0u) {
-		uint16_t chunk = length;
-		int result;
-
-		if (chunk > EXE_LOAD_CHUNK) {
-			chunk = EXE_LOAD_CHUNK;
-		}
-		result = exec_seek(file, offset);
-		if (result != 0) {
-			return result;
-		}
-		result = exec_file_call(file, KFILE_OP_READ, 0u, chunk, chunk,
-					KOS_IPC_DESC_OUT,
-					(struct kos_ipc_frame *)0);
-		if (result < 0) {
-			return result;
-		}
-		if (result != (int)chunk) {
-			return EXE_EXEC_ERR_READ;
-		}
-		{
-			uint16_t i;
-
-			for (i = 0u; i < chunk; ++i) {
-				dst[i] = kos_user_copy_staging[i];
-			}
-		}
-		dst = dst + chunk;
-		offset += chunk;
-		length = (uint16_t)(length - chunk);
-	}
-	return EXE_EXEC_OK;
-}
-
-/* Read the segment table into the loader's own storage and validate every
- * row against the header before anything is allocated: the row's bounds,
- * its ascending container id and the slot total the header promised. */
-static int exec_read_segments(const struct vfs_handle_entry *file,
-			      const struct exe_header *header)
-{
-	uint16_t rows_size =
-		(uint16_t)((uint16_t)header->segment_count *
-			   EXE_SEGMENT_ENTRY_SIZE);
-	uint8_t slots = 0u;
-	uint8_t i;
-	int result;
-
-	if (rows_size != 0u) {
-		result = exec_stream(file, header->segment_table_offset,
-				     (uint8_t *)exe_pending_segments,
-				     rows_size);
-		if (result != EXE_EXEC_OK) {
-			return result;
-		}
-	}
-	for (i = 0u; i < header->segment_count; ++i) {
-		const struct exe_segment *segment = &exe_pending_segments[i];
-
-		result = exe_validate_segment(segment, header->file_size);
-		if (result != EXE_EXEC_OK) {
-			return result;
-		}
-		if (segment->id != (uint8_t)(i + 1u)) {
-			return EXE_EXEC_ERR_SEGMENT;
-		}
-		slots = (uint8_t)(slots +
-				  ((uint8_t)(((uint32_t)segment->image_size +
-					      segment->bss_size +
-					      (EXE_SEG_SLOT_SIZE - 1u)) >>
-					     13)));
-	}
-	if (slots != header->total_segment_slots) {
-		return EXE_EXEC_ERR_SEG_SLOTS;
-	}
-	return EXE_EXEC_OK;
-}
-
 /* Stream the primary payload (the header payload) into the child bank at
  * 0100h. */
 static int exec_load_image(const struct vfs_handle_entry *file,
@@ -588,16 +953,6 @@ static int exec_load_segment(const struct vfs_handle_entry *file,
 		return EXE_EXEC_ERR_READ;
 	}
 	return EXE_EXEC_OK;
-}
-
-/* The loader reads forward from a fixed offset and never needs the reply
- * position, so no KFILE_OP_SEEK/CUR/END use exists. */
-
-/* Release the bound executable: the provider's release runs (a driver's
- * CLOSE for `/fs`, the entry itself for ROMFS), then the entry. */
-static void exec_close(const struct vfs_handle_entry *file, uint8_t pid)
-{
-	(void)vfs_ns_unbind(pid, file->number);
 }
 
 /* Every allocating and fallible step, with the executable source closed
@@ -794,3 +1149,5 @@ int process_prepare(const char *path, uint8_t parent_pid, uint16_t args,
 	child->entry = geo.entry;
 	return EXE_EXEC_OK;
 }
+
+#endif /* Mk1 */

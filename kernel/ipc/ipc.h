@@ -21,11 +21,18 @@
 
 #include "driver.h"
 
+#if defined(KOS_BOARD_MK2)
+/* Mk2: the caller's mapping value (its page-0 page), saved by the syscall
+ * gate in common state (kernel/memory/mk2/banking.asm). */
+extern uint8_t kos_gate_saved_latch;
+#define ipc_gate_latch() (kos_gate_saved_latch)
+#else
 /* The syscall gate's saved caller latch (bank, mode and page), read from
  * common state (kernel/ipc/ipc_asm.asm).  The copy resolver and the
  * buffer-identity rule (kernel/syscall.c `kos_syscall_buffer_bank`) both
  * resolve caller addresses against it. */
 uint8_t ipc_gate_latch(void);
+#endif
 
 /* One host-built endpoint record (architecture 5.3), read from a
  * resident driver container by the loader and installed verbatim.  The
@@ -62,6 +69,17 @@ extern uint8_t kos_driver_deps[KOS_IPC_DRIVER_MAX_DEPS];
 /* The boot bundle the loader hands a driver's init entry in HL. */
 const struct driver_boot *driver_boot(void);
 
+#if defined(KOS_BOARD_MK2)
+/* The driver domain's pages by domain logical page (entry 7 the common
+ * page): the loader allocates them as segments land. */
+extern uint8_t kos_driver_domain[];
+
+/* Run a driver's boot entry (`boot` 1: masked, the domain's page 0 at
+ * system entry 0 too) or its init entry (HL = `arg`) with the domain
+ * mapped; returns the entry's 8-bit result. */
+uint8_t ipc_driver_run(uint16_t entry, uint16_t arg, uint8_t boot);
+#endif
+
 /* --- in-process (nucleus) endpoints ------------------------------------
  *
  * Architecture 4.10: a namespace provider the nucleus serves itself -
@@ -91,22 +109,11 @@ int16_t ipc_call_object(uint8_t endpoint, uint8_t object, uint8_t handle,
  * in the caller window (visible while the gate dispatches with P = 0);
  * the reply frame, status and descriptor capture land back in it, and the
  * caller's bound handle resolved to `endpoint`/`object` by the syscall
- * body first (kernel/vfs/router.c).  The return value is the IPC status
- * (the
- * syscall publishes it in HL with carry clear). */
+ * body first (its handle entry, kernel/vfs/handles.c).  The return
+ * value is the IPC status (the syscall publishes it in HL with carry
+ * clear). */
 int16_t ipc_syscall_call_object(struct kos_ipc_call_args *args,
 				uint8_t endpoint, uint8_t object);
-
-/* Descriptor capture and release for a nucleus caller that has a caller
- * buffer of its own to hand a driver (the FS provider's enumeration
- * forward, the cold loader's image stream).  `latch` is the buffer's
- * execution latch: the syscall gate's saved latch for a caller buffer,
- * or 0 when the address is in the common window, which every mapping
- * shows.  A returned id is valid for the call the nucleus makes next and
- * must be released afterwards. */
-int8_t ipc_desc_capture(uint8_t latch, uint16_t addr, uint16_t length,
-			uint8_t dir);
-void ipc_desc_release(void);
 
 /* --- nucleus-side calls -------------------------------------------------- */
 
@@ -124,6 +131,20 @@ int16_t ipc_nucleus_call(uint8_t handle, struct kos_ipc_frame *frame);
 int16_t ipc_nucleus_call_gate(uint8_t handle, struct kos_ipc_frame *frame,
 			      uint16_t addr, uint16_t length, uint8_t dir);
 
+#if defined(KOS_BOARD_MK2)
+/* Nucleus call on endpoint `endpoint` for a bound instance (the
+ * object/handle pair is set for an in-process provider that reads its
+ * instance from it; 0/0 for a driver): with a nonzero `length`, one OUT
+ * descriptor of `length` bytes (at most KOS_IPC_DESC_MAX) at `addr`
+ * through the page list `map` (in the fixed region or common, which the
+ * driver's call keeps mapped), so the provider's bytes land straight in
+ * those pages (the cold loader's FILE reads into a child's pages or its
+ * own data); length 0 is the descriptor-less form. */
+int16_t ipc_nucleus_call_pages(uint8_t endpoint, uint8_t object,
+			       uint8_t handle, struct kos_ipc_frame *frame,
+			       const uint8_t *map, uint16_t addr,
+			       uint16_t length);
+#else
 /* Nucleus call whose buffer is the common staging block, `length` bytes
  * (the cold loader's FILE reads, `length` at most
  * KOS_SYSCALL_STAGE_SIZE): path A in every mapping, so no bank-7 scratch
@@ -140,6 +161,7 @@ int16_t ipc_nucleus_call_object_common(uint8_t endpoint, uint8_t object,
 				       uint8_t handle,
 				       struct kos_ipc_frame *frame,
 				       uint16_t length, uint8_t dir);
+#endif
 
 /* Descriptor copy for an in-process provider: `length` requested bytes
  * move between the caller buffer of descriptor `desc` (at `offset`) and

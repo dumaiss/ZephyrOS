@@ -186,9 +186,7 @@ static void object_ns_enum(uint16_t block)
 static void object_call(uint16_t block)
 {
 	struct kos_ipc_call_args *args = (struct kos_ipc_call_args *)block;
-	uint8_t endpoint = 0u;
-	uint8_t object = 0u;
-	int result;
+	const struct vfs_handle_entry *entry;
 
 	if (!kos_syscall_block_ok(block, sizeof(*args)) ||
 	    args->frame_length == 0u ||
@@ -197,19 +195,20 @@ static void object_call(uint16_t block)
 		kos_syscall_error(KOS_EINVAL);
 		return;
 	}
-	result = vfs_ns_resolve(process_current_pid(), args->handle,
-				&endpoint, &object);
-	if (result < 0) {
-		object_fail(result);
+	/* The caller's bound handle: its entry names the endpoint and the
+	 * provider object (vfs_ns_resolve's lookup, read in place). */
+	entry = vfs_handle_find(process_current_pid(), args->handle);
+	if (entry == (const struct vfs_handle_entry *)0) {
+		kos_syscall_error(KOS_EINVAL);
 		return;
 	}
-	if (endpoint == VFS_NS_FS_ENDPOINT) {
+	if (entry->endpoint == VFS_NS_FS_ENDPOINT) {
 		kos_syscall_success((uint16_t)vfs_ns_fs_call(
-			args->handle, object, args));
+			args->handle, entry->object, args));
 		return;
 	}
-	kos_syscall_success(
-		(uint16_t)ipc_syscall_call_object(args, endpoint, object));
+	kos_syscall_success((uint16_t)ipc_syscall_call_object(
+		args, entry->endpoint, entry->object));
 }
 
 /* SYS_CHDIR: normalize against the caller's CWD, ask the owning provider

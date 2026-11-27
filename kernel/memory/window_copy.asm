@@ -38,6 +38,7 @@
 	.module window_copy
 	.include "hardware.inc"
 	.include "memory.inc"
+	.include "kernel/memory/map_ops.inc"
 	.include "kernel/runtime/fastcopy.inc"
 
 	.globl _kos_window_copy
@@ -126,20 +127,15 @@ window_copy_iff1:
 	inc	a
 004$:
 	ld	(kos_window_saved_iff),a
-	in	a,(KOS_MEMCTL_PORT)
+	KOS_MAP_CURRENT
 	ld	(kos_window_saved_latch),a
-	and	#(KOS_MODE_MASK | KOS_BANK_MASK)
+	KOS_MAP_NO_PAGE
 	ld	c,a
 	ld	a,(kos_window_bank)
 	ld	b,a
 	ld	a,#7
 	sub	b			; page = 7 - bank (1..7)
-	rrca
-	rrca
-	rrca
-	and	#KOS_ROM_PAGE_MASK
-	or	c
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_WINDOW
 	; Everything below is fetched from the fixed core or common memory;
 	; the window now shows the auxiliary bank.
 	ld	a,(kos_window_op)
@@ -155,7 +151,7 @@ window_copy_iff1:
 	KOS_FASTCOPY
 006$:
 	ld	a,(kos_window_saved_latch)
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_RESTORE
 	ld	a,(kos_window_saved_iff)
 	or	a
 	jr	z,007$

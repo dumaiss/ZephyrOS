@@ -1,4 +1,5 @@
-"""Structural and simulated checks for ColecoGo's no-return Stage B."""
+"""Structural and simulated checks for ColecoGo's no-return Stage B (the
+Zephyr-80 latch handoff)."""
 
 from __future__ import annotations
 
@@ -9,15 +10,21 @@ import unittest
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-SDK_TOOLS = ROOT / "build" / "kos-sdk-0.1.0" / "tools"
-KONA_TESTS = ROOT.parents[3] / "ZephyrOS" / "tests"
-sys.path.insert(0, str(SDK_TOOLS))
+KONA_TESTS = ROOT.parents[1] / "tests"
 sys.path.insert(0, str(KONA_TESTS))
+
+from replay import BOARDS, app_board  # noqa: E402
+
+SDK_TOOLS = ROOT / "build" / BOARDS[app_board()]["sdk"] / "tools"
+sys.path.insert(0, str(SDK_TOOLS))
 
 import ihx  # noqa: E402
 from z80sim import Z80  # noqa: E402
 
 
+@unittest.skipUnless(app_board() == "mk1",
+                     "the Mk2 board enters through SYS_PERSONALITY "
+                     "(tests/test_personality.py)")
 class HandoffTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:

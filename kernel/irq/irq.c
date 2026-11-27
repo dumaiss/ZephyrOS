@@ -6,9 +6,11 @@
 
 extern volatile uint8_t irq_active_source;
 extern uint8_t irq_kernel_code_end;
+#if !defined(KOS_BOARD_MK2)
 /* Exclusive end of the linked cold-half code (kernel/memory/bank7_end.asm
  * and the derived build/geometry/bank7_end.inc). */
 extern uint8_t __kernel_code_end[];
+#endif
 
 static irq_handler_t handlers[IRQ_SOURCE_COUNT];
 static void *contexts[IRQ_SOURCE_COUNT];
@@ -27,12 +29,20 @@ static irq_source_t last_source;
  * are addressable.  A bank-6 resident driver never registers its own
  * address here: it hands the nucleus an in-image handler through the
  * driver API, and the nucleus's trampoline (fixed core) is what this
- * registry holds (architecture 5.2, driver IRQ upcall). */
+ * registry holds (architecture 5.2, driver IRQ upcall).  On Mk2 the
+ * nucleus code is one run in the system bank's nucleus pages, from
+ * KOS_NUCLEUS_BASE to the linked code end. */
 static uint8_t handler_is_valid(irq_handler_t handler)
 {
 	uint16_t address = (uint16_t)handler;
 
 	if (handler != (irq_handler_t)0) {
+#if defined(KOS_BOARD_MK2)
+		if (address >= KOS_NUCLEUS_BASE &&
+		    address < (uint16_t)&irq_kernel_code_end) {
+			return 1;
+		}
+#else
 		if (address >= KOS_BANK7_BASE &&
 		    address < (uint16_t)&irq_kernel_code_end) {
 			return 1;
@@ -41,6 +51,7 @@ static uint8_t handler_is_valid(irq_handler_t handler)
 		    address < (uint16_t)__kernel_code_end) {
 			return 1;
 		}
+#endif
 	}
 	return 0;
 }

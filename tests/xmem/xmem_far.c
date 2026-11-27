@@ -41,6 +41,15 @@
  *   * exit from far context: the last act is a far call whose entry runs
  *     SYS_EXIT with the aperture open; the parent's capacity check and
  *     the launcher's report prove the release.
+ *
+ * Built for Zephyr-80 Mk2 (KOS_BOARD_MK2) the rows that name banks or the
+ * latch take the Mk2 model (architecture 2.7.6): a token is a one-byte
+ * mapping handle, every segment and mappable object has its own pages
+ * and its own handle at 8000h, and no latch reads back, so the window's
+ * state is read by opening it - the far code re-opens the handle the
+ * primary half expects (`xmem_far_window`), which returns the handle in
+ * force, and the primary half opens handle 0 to check the window is
+ * closed.
  */
 
 #include "kos.h"
@@ -58,9 +67,20 @@
 #define BK_32_A  0x01020304ul
 #define BK_32_B  0x11121314ul
 
+#if defined(KOS_BOARD_MK2)
+/* The handle the far code expects in force (it re-opens it). */
+unsigned char xmem_far_window;
+
+/* The handle in force; opening 0 closes a window left open by mistake. */
+static unsigned int in_force(unsigned int token)
+{
+	return (unsigned int)aperture_open((unsigned char)token);
+}
+#else
 /* The banking latch (port 00h): mode in D4-D3, bank in D2-D0, page in
  * D7-D5.  Read directly - no SDK call touches it. */
 __sfr __at 0x00 latch_port;
+#endif
 
 /* The far halves: tests/xmem/xmem_far_code.c (linked at 8000h as segment
  * 1) and tests/xmem/xmem_far_code2.c (segment 2).  The plain entries are
@@ -199,9 +219,13 @@ int main(void)
 	result = segmap(1u);
 	t1 = (unsigned int)result;
 	check("seg-map-token", result >= 1);
+#if defined(KOS_BOARD_MK2)
+	check("seg-map-handle", t1 <= 0xFFu);
+#else
 	check("seg-map-page",
 	      ((t1 >> 5) & 7u) >= 2u &&
 	      (t1 & 7u) == ((unsigned int)latch_port & 7u));
+#endif
 	result = segmap(2u);
 	t2 = (unsigned int)result;
 	check("seg-map-several", result >= 1 && t2 != t1);
@@ -217,6 +241,9 @@ int main(void)
 	if ((int)handle >= 1) {
 		xmem_far_marker = 0u;
 		make_tail(handle);
+#if defined(KOS_BOARD_MK2)
+		xmem_far_window = (unsigned char)t1;
+#endif
 		result = farcall(1u, xmem_far_entry, (int)handle,
 				      (int)tail);
 		check("far-call-1",
@@ -225,6 +252,9 @@ int main(void)
 		check("far-latch-1", ((unsigned int)result >> 8) == t1);
 		check("far-exec-status",
 		      (result & 0xFF) == CHILD_STATUS);
+#if defined(KOS_BOARD_MK2)
+		xmem_far_window = (unsigned char)t2;
+#endif
 		result = farcall(2u, xmem_far_entry2, (int)handle, 0);
 		check("far-call-2",
 		      result == (int)((t2 << 8) |
@@ -232,8 +262,12 @@ int main(void)
 				       0xFFu)));
 		check("far-latch-2", ((unsigned int)result >> 8) == t2);
 		check("far-banks-differ", t2 != t1);
+#if defined(KOS_BOARD_MK2)
+		check("far-aperture-closed", in_force(0u) == 0u);
+#else
 		check("far-aperture-closed",
 		      ((unsigned int)latch_port & 0xE0u) == 0u);
+#endif
 		/* The far entry bumped the primary static once and the
 		 * primary code it called bumped it again, in each call. */
 		check("far-marker", xmem_far_marker == 4u);
@@ -258,9 +292,16 @@ int main(void)
 	if ((int)mappable >= 1) {
 		result = xmap(mappable, &address);
 		tm = (unsigned int)result;
+#if defined(KOS_BOARD_MK2)
+		/* Mk2: the object has its own pages and its own handle. */
+		check("far-mappable-own-handle",
+		      result >= 1 && tm != t1 && tm != t2 &&
+		      address == APERTURE_BASE);
+#else
 		check("far-mappable-same-bank",
 		      result >= 1 && (tm == t1 || tm == t2) &&
 		      address == APERTURE_BASE + 0x2000u);
+#endif
 		(void)xfree(mappable);
 	}
 	if ((int)handle >= 1) {
@@ -311,6 +352,9 @@ int main(void)
 	 * call must restore *its* caller's mapping, so the latch and the
 	 * far literal it reads after that call are segment 2's own.  Byte
 	 * 1 of tests/xmem/xmem_far_code2.c's literal is 'a'. */
+#if defined(KOS_BOARD_MK2)
+	xmem_far_window = (unsigned char)t2;
+#endif
 	value16 = xmem_bk2(BK_16_A);
 	check("bk-2-bank", (value16 >> 8) == (t2 & 0xFFu));
 	check("bk-2-value",
@@ -325,8 +369,12 @@ int main(void)
 	check("bk-invalid-segment", result == -KOS_RT_EFARMAP);
 
 	/* Every call above restored this caller's latch. */
+#if defined(KOS_BOARD_MK2)
+	check("bk-aperture-closed", in_force(0u) == 0u);
+#else
 	check("bk-aperture-closed",
 	      ((unsigned int)latch_port & 0xE0u) == 0u);
+#endif
 
 	printf("xmem-far: %u checks, %u failures\r\n", checks, failures);
 	if (failures == 0u) {

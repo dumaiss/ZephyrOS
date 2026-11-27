@@ -31,8 +31,9 @@
 #include "kos/errno.h"
 #include "kos/process.h"
 
-/* Native syscall numbers.  01h-03h and 0Fh-1Fh are unassigned and return
- * KOS_ENOSYS.  Console I/O is the CONSOLE protocol on the standard
+/* Native syscall numbers.  01h-03h and 13h-1Fh are unassigned and return
+ * KOS_ENOSYS; 0Fh is the Mk2 board's SYS_PERSONALITY (the ABI's
+ * kos/xmem.h) and unassigned on Mk1.  Console I/O is the CONSOLE protocol on the standard
  * handles, and files are typed handles behind `bind`/`call`/`unbind`
  * (the ABI's kos/object.h); the SDK builds `open`/`close` on them. */
 #define KOS_SYSCALL_EXIT          0x00u
@@ -72,6 +73,7 @@ struct kos_exit_args {
  *   missing file            KOS_ENOENT
  *   directory               KOS_EISDIR
  *   malformed/oversize EXE  KOS_EINVAL
+ *   built for another board KOS_EBOARD
  *   bad argument block      KOS_EINVAL
  *   no free slot or bank    KOS_ENOSPC
  *   nesting/frame limit     KOS_EBUSY

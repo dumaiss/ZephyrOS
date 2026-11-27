@@ -192,6 +192,7 @@ guard refuses overlapping use with `KOS_EBUSY`.
 | `KIOC_OP_BULK_WRITE` | 3 | `arg1` length (1-512); desc in, or `payload[0..1]` a hot-tier buffer of the caller's | the length |
 | `KIOC_OP_STATUS` | 4 | — | the semantic status word (`KIOC_STATUS_*`) |
 | `KIOC_OP_READY` | 5 | — | 1 when the link is up and no recovery is pending |
+| `KIOC_OP_COMMAND_READ` | 6 | as `KIOC_OP_COMMAND` with DATA 0-20, `payload[20..21]` the capacity, `payload[22..23]` the buffer: a hot-tier buffer of the caller's, or inside the live lend (`borrowed`) | the bulk length, 0 when the reply admitted no bulk phase; the READY is refused (`-KOS_EINVAL`, the link recovers before the next command) unless it admits at most the capacity into that buffer and echoes the request's DATA 2-5 (the FS2 offset) at its DATA 4-7, all checked before the first payload byte is stored |
 | `KIOC_OP_RT_CLOCK` | 7 | `arg1` rate in Hz, 0 stops | 0; `-KOS_EINVAL` without the `/dev/rtclock` hold or for a rate the controller refuses, `-KOS_ENOTSUP` for firmware without the RT clock |
 
 **The RT clock** (architecture 4.12). The driver publishes a second object,
@@ -551,8 +552,38 @@ that fit it whole are also kept in a 16 KiB cache (32 blocks) in the
 driver's bulk extent (a larger file is a stream and would only cycle
 through it),
 keyed by the path as opened and the size that open reported; a hit never
-touches the IOC link. Coherence is coarse and safe: an open for writing, a
+touches the IOC link. A block the cache holds and the ring does not
+reaches the caller straight from its slot, one `bulk_copy_out` per block,
+and a fill stops before a cached block, so a cached byte is never staged
+in the ring. Coherence is coarse and safe: an open for writing, a
 write, an unlink, a rename or a stale-media answer drops the whole cache.
+
+**Lent reads.** A read of an uncached file at a block boundary, of at
+least a block the ring does not hold, asks the nucleus to lend the
+caller's buffer (`borrow`, architecture 4.9; on Mk2 a page-0 buffer at
+`0105h-1FFFh`). Lent, each block is one `FS2_READ` received straight into
+the caller's buffer (`iocfat_read`, `drivers/iocfat/iocfat_trunc.asm`):
+no ring fill and no copy. The ring serves the rest as above. A failed read
+leaves the requested range unspecified and the position where it was.
+
+**Costs** (simulator T-states, Mk2 / Mk1, a 512-byte `KFILE_OP_READ`
+into a page-0 buffer, `RST 30h` through return, interrupts masked,
+`tests/perf_os_sdk.py`; the IOC peer models the protocol, not card or
+link timing):
+
+| state | Mk2 | Mk1 | payload passes in RAM |
+|---|---:|---:|---|
+| ring hit | 28,111 | 24,696 | ring to caller |
+| block-cache hit | 28,459 | 44,185 | cache to caller (Mk1: through a common buffer) |
+| uncached, lent (Mk2) / ring (Mk1) | 77,930 | 89,493 | none on Mk2; ring to caller on Mk1 |
+| populating miss | 111,917 | 106,017 | ring to cache and ring to caller |
+
+The device exchange is per block: a one-byte miss costs within 10 % of a
+512-byte one. About 32,500 T-states of every received block is the IOC
+receive loop (`ioc_io_bulk_read`, 521 bytes with header and CRC), which no
+mapping change removes. A seek is a driver call without device traffic;
+16 seeks with 128-byte reads at scattered offsets cost 1,557,439 T-states
+uncached (one `FS2_READ` each) and 584,334 cached on Mk2.
 
 ## 9. TIMER (`drivers/timer/`)
 
@@ -702,7 +733,12 @@ them directly, so one reset routine recovers from any register state:
   **before any write**, because the driver validates the whole sequence,
   chunk by chunk, before the first `OUT`.  It returns the bytes consumed.
   The pairs pass through a 64-byte `DRIVER_IO` buffer, 32 pairs per
-  `copy_in`, and the write loop is assembly.
+  `copy_in`, and the write loop is assembly. Because nothing is written
+  before the whole sequence is checked, the validate pass copies every
+  chunk in, last chunk first, and the write pass copies all but the first
+  again, which the validate pass left in the buffer: a sequence of up to
+  32 pairs moves once. A 128-pair write costs 64,973 T-states on Mk2
+  (Mk1 86,154) through `sound_write` on the simulator.
 - `KSOUND_OP_RESET` (2), descriptor-less: the reset.
 - `KOS_OP_ACQUIRE` takes the exclusive hold and resets the card; a second
   hold is `-KOS_EBUSY`.  WRITE and RESET are served on any handle.
@@ -813,8 +849,8 @@ field. Inside a span:
 - the request frame and every caller buffer are out of reach (a syscall's
   frame lives in the caller window); copy what the operation needs into
   locals or the hot tier before `bulk_map`;
-- `call`, `copy_in`, `copy_out`, `bulk_read` and `bulk_write` answer
-  `-KOS_EBUSY`, `event_post` ignores the post, and a second `bulk_map`
+- `call`, `copy_in`, `copy_out`, `bulk_read`, `bulk_write` and
+  `bulk_copy_out` answer `-KOS_EBUSY`, `event_post` ignores the post, and a second `bulk_map`
   answers `-KOS_EBUSY`;
 - an interrupt returns to the span; its handler runs as anywhere else and
   cannot open a span of its own (`bulk_map` refuses in a handler).

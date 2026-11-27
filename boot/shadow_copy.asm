@@ -22,6 +22,7 @@
 	.module reset
 	.include "hardware.inc"
 	.include "memory.inc"
+	.include "kernel/memory/map_ops.inc"
 
 	.globl _boot_common_entry
 
@@ -32,8 +33,7 @@ _reset::
 	di
 
 	; Canonicalize: page 0, mode 00, bank 0.
-	ld	a,#KOS_MODE_BOOT
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_ROM_AT 0, 0
 
 	; Copy ROM page 0 -> SRAM bank 0 (65536 transfers).
 	ld	hl,#0x0000
@@ -44,8 +44,7 @@ _reset::
 	; Select ROM page 1, mode 00, SRAM bank 7: 20h | 00h | 07h = 27h.
 	; The next instruction fetch comes from ROM page 1 at the same
 	; address; its bytes here are identical (mirrored copier).
-	ld	a,#(KOS_BOOT_OS_ROM_PAGE << KOS_ROM_PAGE_SHIFT) | KOS_MODE_BOOT | KOS_BOOT_OS_BANK
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_ROM_AT KOS_BOOT_OS_ROM_PAGE, KOS_BOOT_OS_BANK
 
 	; Copy ROM page 1 -> SRAM bank 7 (65536 transfers).
 	ld	hl,#0x0000
@@ -55,8 +54,7 @@ _reset::
 
 	; Application mode over bank 0: 10h | 00h = 10h.  Execution continues
 	; from the identical copier bytes in SRAM bank 0.
-	ld	a,#KOS_MODE_APPLICATION
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_APP_AT 0
 
 	jp	_boot_common_entry
 

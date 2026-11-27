@@ -52,6 +52,17 @@ include the synthetic host defaults are used.  When <build_dir> is given,
 <build_dir>/modules/drivers.plan.json supplies the bank-6 driver ledger;
 when it is None (host unit tests) an all-FF recovery store is emitted
 unless `romfs` is passed explicitly.
+
+    pack_image.py --board mk2 <konaos-mk2.ihx> <konaos-mk2.map>
+                  <recovery.romfs> <out.bin>
+                  <platform/zephyr80mk2/private/memory.inc>
+
+lays out the Zephyr-80 Mk2 image (architecture 2.7.5) of 64 ROM pages of
+8 KiB: ROM pages 00h-07h are the linked image's logical pages (00h the
+reset and boot view, 01h-04h the nucleus, 07h the common page; a linked
+byte in logical pages 5-6, the copy windows, is an error), and the
+recovery store follows from KOS_ROMFS_FIRST_PAGE, logical byte L at page
+first + L / 2000h, offset L % 2000h.  Every other byte is FFh.
 """
 
 import json
@@ -961,7 +972,136 @@ def pack(ihx_text, map_text, build_dir, suffix="", romfs=None,
     return image
 
 
+# --- Zephyr-80 Mk2 (architecture 2.7.5, 2.7.6) ------------------------------
+#
+#   ROM page L, L = 00h-07h   the linked image's logical page L: 00h the
+#                             reset and boot view, 01h-04h the nucleus
+#                             pages (the fixed region and cold set 0),
+#                             07h the common page
+#   ROM pages 05h-06h         cold set 1, linked at 16000h-19FFFh (logical
+#                             6000h-9FFFh); the bootstrap copies 01h-07h
+#                             to SRAM
+#   ROM page KOS_ROMFS_FIRST_PAGE on   the recovery store, logical byte L
+#                             at page first + L / 2000h, offset L % 2000h
+#
+# The linked image's first 64 KiB may hold bytes only in the boot view's
+# page 0, the nucleus pages and the common page: never in logical pages
+# 5-6, the copy windows, whose ROM pages hold cold set 1.  Every other
+# byte is FFh.
+
+MK2_PAGE = 0x2000
+
+
+def mk2_layout(memory_inc):
+    values = {}
+    for line in open(memory_inc):
+        match = re.match(r"\s*([A-Za-z_]\w*)\s*=\s*(0[xX][0-9a-fA-F]+|\d+)",
+                         line.split(";")[0])
+        if match:
+            values[match.group(1)] = int(match.group(2), 0)
+    for name in ("KOS_ROM_IMAGE_SIZE", "KOS_ROM_IMAGE_PAGES",
+                 "KOS_ROMFS_FIRST_PAGE", "KOS_ROMFS_PAGE_COUNT",
+                 "KOS_ROMFS_WINDOW_SIZE", "KOS_ROMFS_CAPACITY",
+                 "KOS_NUCLEUS_FIRST_ENTRY", "KOS_NUCLEUS_ENTRIES",
+                 "KOS_DAT_COPY_SRC_ENTRY", "KOS_DAT_COPY_DST_ENTRY",
+                 "KOS_COLD_SETS", "KOS_COLD_FIRST_ENTRY",
+                 "KOS_COLD_FIRST_ROM_PAGE"):
+        if name not in values:
+            raise LayoutError("%s defines no %s" % (memory_inc, name))
+    return values
+
+
+def pack_mk2(ihx_text, romfs, memory_inc):
+    """The Mk2 512 KiB image and its layout facts (a dict)."""
+    lay = mk2_layout(memory_inc)
+    if lay["KOS_ROMFS_WINDOW_SIZE"] != MK2_PAGE:
+        raise LayoutError("the Mk2 store window is one 8 KiB page")
+    sets = lay["KOS_COLD_SETS"]
+    mem = parse_ihx(ihx_text, top=sets * 0x10000)
+    loaded = {0, lay["KOS_DAT_COPY_DST_ENTRY"] + 1}
+    loaded |= set(range(lay["KOS_NUCLEUS_FIRST_ENTRY"],
+                        lay["KOS_NUCLEUS_FIRST_ENTRY"] +
+                        lay["KOS_NUCLEUS_ENTRIES"]))
+    # Cold set n >= 1 links at n * 10000h + its logical address in the
+    # cold entries; its ROM pages follow set 0's.
+    cold = lay["KOS_COLD_FIRST_ENTRY"]
+    image = bytearray(b"\xFF" * lay["KOS_ROM_IMAGE_SIZE"])
+    rom_pages = set()
+    for addr in sorted(mem):
+        index, logical = addr >> 16, addr & 0xFFFF
+        page = logical // MK2_PAGE
+        if index == 0:
+            if page not in loaded:
+                raise LayoutError("linked byte at %04Xh in logical page %d, "
+                                  "which the image does not load"
+                                  % (addr, page))
+            rom = addr
+        else:
+            if page not in (cold, cold + 1):
+                raise LayoutError("cold set %d byte at %05Xh outside the "
+                                  "cold entries" % (index, addr))
+            rom = (lay["KOS_COLD_FIRST_ROM_PAGE"] + 2 * index +
+                   page - cold) * MK2_PAGE + (logical % MK2_PAGE)
+        rom_pages.add(rom // MK2_PAGE)
+        image[rom] = mem[addr]
+    if max(rom_pages) >= lay["KOS_ROM_IMAGE_PAGES"]:
+        raise LayoutError("the linked image reaches ROM page %02Xh, past "
+                          "its %d pages" % (max(rom_pages),
+                                            lay["KOS_ROM_IMAGE_PAGES"]))
+    for index in range(1, sets):
+        first = lay["KOS_COLD_FIRST_ROM_PAGE"] + 2 * index
+        if first < lay["KOS_DAT_COPY_SRC_ENTRY"] or \
+                first + 1 > lay["KOS_DAT_COPY_DST_ENTRY"]:
+            raise LayoutError("cold set %d's ROM pages %02Xh-%02Xh are "
+                              "not the copy windows' free pages"
+                              % (index, first, first + 1))
+    capacity = lay["KOS_ROMFS_CAPACITY"]
+    if capacity != lay["KOS_ROMFS_PAGE_COUNT"] * MK2_PAGE:
+        raise LayoutError("store capacity is not its pages")
+    first = lay["KOS_ROMFS_FIRST_PAGE"] * MK2_PAGE
+    if lay["KOS_ROMFS_FIRST_PAGE"] < lay["KOS_ROM_IMAGE_PAGES"] or \
+            first + capacity > len(image):
+        raise LayoutError("store pages overlap the image or leave the ROM")
+    if len(romfs) > capacity:
+        raise LayoutError("recovery store is %d bytes, capacity %d"
+                          % (len(romfs), capacity))
+    image[first:first + len(romfs)] = romfs
+    return bytes(image), {
+        "image_bytes": len(mem),
+        "romfs_bytes": len(romfs),
+        "romfs_first_page": lay["KOS_ROMFS_FIRST_PAGE"],
+        "romfs_last_page": lay["KOS_ROMFS_FIRST_PAGE"] +
+        max(0, len(romfs) - 1) // MK2_PAGE,
+        "romfs_capacity": capacity,
+    }
+
+
+def main_mk2(argv):
+    """pack_image.py --board mk2 <ihx> <map> <recovery.romfs> <out.bin>
+    <memory.inc>"""
+    if len(argv) != 5:
+        print(main_mk2.__doc__, file=sys.stderr)
+        return 2
+    ihx_path, _map_path, romfs_path, out_path, memory_inc = argv
+    try:
+        image, facts = pack_mk2(Path(ihx_path).read_text(),
+                                Path(romfs_path).read_bytes(), memory_inc)
+    except LayoutError as exc:
+        print("pack_image.py: layout error: %s" % exc, file=sys.stderr)
+        return 1
+    Path(out_path).write_bytes(image)
+    print("pack_image.py: mk2 %d bytes, sha256 %s"
+          % (len(image), hashlib.sha256(image).hexdigest()))
+    print("pack_image.py: mk2 romfs %d bytes in ROM pages %02Xh-%02Xh "
+          "(capacity %d)" % (facts["romfs_bytes"], facts["romfs_first_page"],
+                             facts["romfs_last_page"],
+                             facts["romfs_capacity"]))
+    return 0
+
+
 def main(argv):
+    if len(argv) >= 3 and argv[1:3] == ["--board", "mk2"]:
+        return main_mk2(argv[3:])
     production = "--production" in argv
     argv = [arg for arg in argv if arg != "--production"]
     if len(argv) not in (4, 5, 6):

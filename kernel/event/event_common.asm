@@ -15,7 +15,8 @@
 ;
 ; The frame is 24 bytes on the program's own stack, from the new SP upward:
 ;
-;   +0   latch, 0        the exact latch the interruption saved (page too)
+;   +0   latch, 0        the exact latch the interruption saved (page too);
+;                       on Mk2 the far-window handle in force instead
 ;   +2   HL', DE', BC', AF'     the alternate set
 ;   +10  IY, IX, HL, DE, BC, AF the main set
 ;   +22  PC                     the resume address
@@ -28,6 +29,15 @@
 ; show it: the program stack is a mode-10 address, so it may not sit in the
 ; 8000h-BFFFh aperture (docs/sdk.md; the SDK's stack reservation and the far
 ; link rule keep it below it).
+;
+; On Mk2 the latch is the mapping value (architecture 2.7.6): the owner
+; check (the program's page 0) and the restore go through the mapping
+; operations, which the build selects per board.  The mapping value names
+; no far window, so the frame's first word holds the far-window handle in
+; force (kernel/memory/mk2/far.asm): the handler runs with the window
+; closed (KOS_MAP_HOME) and the unwind opens the frame's handle again, so
+; the interrupted code gets its exact window back whatever the handler
+; mapped.
 ;
 ; Three entry points:
 ;
@@ -48,6 +58,7 @@
 	.module event_common
 	.include "hardware.inc"
 	.include "memory.inc"
+	.include "map_ops.inc"
 
 	.globl _kos_event_irq_exit
 	.globl _kos_event_syscall_exit
@@ -67,6 +78,9 @@
 	.globl irq_saved_sp, irq_common_sp, irq_saved_latch
 	.globl kos_gate_saved_sp, kos_gate_saved_latch, kos_gate_saved_iff
 	.globl kos_gate_result_a, kos_gate_result_c, kos_gate_result_hl
+	.ifdef	KOS_MAP_DAT
+	.globl _kos_far_current
+	.endif
 
 ; Table shape, byte for byte: kernel/event/event.h owns the C view and
 ; tests/test_events.py pins the two together.
@@ -126,8 +140,7 @@ _kos_event_pick_keep::
 ; Clobbers: AF, BC, DE, HL, IX.
 _kos_event_pick_core::
 	ld	a,(_kos_event_latch)
-	and	#KOS_MODE_MASK
-	cp	#KOS_MODE_APPLICATION
+	KOS_MAP_IS_PROGRAM
 	jr	nz,event_pick_none
 	ld	a,(_kos_event_maybe)
 	or	a
@@ -135,7 +148,7 @@ _kos_event_pick_core::
 	xor	a
 	ld	(_kos_event_maybe),a
 	ld	a,(_kos_event_latch)
-	and	#KOS_BANK_MASK
+	KOS_MAP_BANK_OF
 	ld	c,a
 	ld	ix,#_kos_event_table
 	ld	b,#EVENT_MAX
@@ -178,8 +191,9 @@ event_pick_none:
 ; the interrupted code; kos_event_frame[owner] = the frame already built.
 ;
 ; Marks the handler active, snapshots and clears both counters, selects the
-; application latch with the page field cleared (the trampoline is program
-; image code, so it runs in the primary mapping), moves SP to the frame and
+; application latch with the page field cleared - on Mk2 the far window
+; closed - (the trampoline is program image code, so it runs in the
+; primary mapping), moves SP to the frame and
 ; RETIs to the trampoline with BC = handler, HL = count, DE = missed.  The
 ; trampoline's return address lands directly below the frame.
 ; Clobbers: everything (the frame is the application's state now).
@@ -196,8 +210,7 @@ _kos_event_enter::
 	ld	a,(_kos_event_latch)	; the exact latch, for EVENT_RETURN
 	ld	(hl),a
 	ld	a,(_kos_event_latch)
-	and	#(KOS_MODE_MASK | KOS_BANK_MASK)
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_HOME
 	sla	e			; the frame array is one word per process
 	rl	d
 	ld	hl,#_kos_event_frame
@@ -230,13 +243,20 @@ _kos_event_enter::
 ; Entry: HL = the frame; kos_event_latch = the exact latch it was built
 ; under (mode, bank and page).  Restore that latch (the program stack is
 ; visible again), pop the frame in reverse and return to the interrupted PC
-; with interrupts enabled.
+; with interrupts enabled.  On Mk2 the frame's first word opens the far
+; window the interrupted code had (a handle the handler freed is refused
+; and the window stays closed).
 ; ---------------------------------------------------------------------------
 _kos_event_unwind::
 	ld	a,(_kos_event_latch)
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_RESTORE
 	ld	sp,hl
-	pop	hl			; the (latch, 0) pair
+	pop	hl			; the (latch, 0) pair; Mk2: the handle
+	.ifdef	KOS_MAP_DAT
+	ld	a,h
+	or	l
+	call	nz,kos_far_map		; below the frame, on the program stack
+	.endif
 	exx
 	pop	hl			; HL'
 	pop	de			; DE'
@@ -270,15 +290,14 @@ _kos_event_post_bank::
 	or	a
 	jr	z,event_post_bank_gate
 	ld	a,(irq_saved_latch)
-	and	#KOS_MODE_MASK
-	cp	#KOS_MODE_APPLICATION
+	KOS_MAP_IS_PROGRAM
 	jr	nz,event_post_bank_gate
 	ld	a,(irq_saved_latch)
 	jr	event_post_bank_have
 event_post_bank_gate:
 	ld	a,(kos_gate_saved_latch)
 event_post_bank_have:
-	and	#KOS_BANK_MASK
+	KOS_MAP_BANK_OF
 	ld	l,a
 	ret
 
@@ -320,10 +339,17 @@ _kos_event_irq_exit::
 	ld	hl,(irq_saved_sp)
 	ld	de,#-(EVENT_FRAME_SIZE - 4)
 	add	hl,de			; HL = irq_saved_sp - 20
+	.ifdef	KOS_MAP_DAT
+	ld	de,(_kos_far_current)
+	ld	(hl),e			; +0: the far-window handle
+	inc	hl
+	ld	(hl),d			; +1
+	.else
 	ld	a,(_kos_event_latch)
 	ld	(hl),a			; +0: the latch
 	inc	hl
 	ld	(hl),#0			; +1
+	.endif
 	inc	hl			; HL = the copy target, frame + 2
 	ex	de,hl
 	ld	hl,(irq_common_sp)	; the saved registers, HL' first
@@ -396,10 +422,15 @@ _kos_event_syscall_exit::
 	push	de			; +4
 	push	hl			; +2
 	exx
+	.ifdef	KOS_MAP_DAT
+	ld	hl,(_kos_far_current)
+	push	hl			; +0: the far-window handle
+	.else
 	ld	a,(_kos_event_latch)
 	ld	l,a
 	ld	h,#0
 	push	hl			; +0: the latch byte, then 0
+	.endif
 	; Record the frame for its owner: SP is the frame.
 	ld	hl,#0
 	add	hl,sp

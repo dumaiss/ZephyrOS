@@ -14,12 +14,12 @@
 
 #include "stdio_internal.h"
 
-/* Write one item of `size` bytes from `src`; returns the bytes written,
- * which fall short of `size` after an error (that sets the stream's
- * flag).  One item at a time keeps the loop free of a multiply
- * (docs/sdk.md section 5) and lets fwrite count whole items only. */
-static int fwrite_item(struct kos_stream *s, const unsigned char *src,
-		       unsigned int size)
+/* Write `size` bytes from `src`; returns the bytes written, which fall
+ * short of `size` after an error (that sets the stream's flag).  A
+ * request of a buffer or more flushes the pending bytes and goes out
+ * directly; a smaller tail is collected in the buffer. */
+static unsigned int fwrite_span(struct kos_stream *s,
+				const unsigned char *src, unsigned int size)
 {
 	unsigned int done = 0u;
 
@@ -57,14 +57,19 @@ static int fwrite_item(struct kos_stream *s, const unsigned char *src,
 			break;
 		}
 	}
-	return (int)done;
+	return done;
 }
 
+/* `ptr` must name `size * nmemb` bytes inside the 64 KiB address space
+ * (the product is not checked against a wrap of it).  The items go in
+ * groups of whole items of at most 65535 bytes, so no 16-bit total
+ * wraps; the count is the whole items accepted, and the bytes of a
+ * partial final item stay accepted by the stream. */
 size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream)
 {
 	struct kos_stream *s = KOS_STREAM_SLOT(stream);
 	const unsigned char *at = (const unsigned char *)ptr;
-	unsigned int items;
+	unsigned int limit, group, bytes, done, items = 0u;
 
 	if (size == 0u || nmemb == 0u) {
 		return 0u;
@@ -76,11 +81,29 @@ size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream)
 		}
 		return 0u;
 	}
-	for (items = 0u; items < nmemb; ++items) {
-		if (fwrite_item(s, at, size) != (int)size) {
+	if (size == 1u) {
+		return (size_t)fwrite_span(s, at, nmemb);
+	}
+	if (nmemb == 1u) {
+		return fwrite_span(s, at, size) == size ? 1u : 0u;
+	}
+	if ((size | nmemb) <= 0xFFu) {
+		bytes = nmemb * size;
+		done = fwrite_span(s, at, bytes);
+		return (size_t)(done == bytes ? nmemb : done / size);
+	}
+	limit = 0xFFFFu / size;
+	while (nmemb != 0u) {
+		group = nmemb < limit ? nmemb : limit;
+		bytes = group * size;
+		done = fwrite_span(s, at, bytes);
+		if (done != bytes) {
+			items += done / size;
 			break;
 		}
-		at += size;
+		items += group;
+		at += bytes;
+		nmemb -= group;
 	}
 	return (size_t)items;
 }

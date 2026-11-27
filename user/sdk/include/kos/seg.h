@@ -6,14 +6,14 @@
  * and the handle that the ABI's kos/xmem.h read/write calls use.  A loader
  * segment is released only at exit, so `xfree` refuses it.
  *
- * A `FAR_CODE` segment is linked at `8000h`, placed in the aperture slice
- * of its own auxiliary bank (one far-code segment per bank) and executed
- * in place: the program's primary image, its BSS and its stack stay
- * outside `8000h-BFFFh` (the build enforces the link rule), so when the
- * mode-10 aperture is open onto the segment, an address in `8000h-BFFFh`
- * names the far bank.  `segmap(segment)` returns the aperture token,
- * and `farcall` maps the segment, makes the far call, and restores
- * the previous latch:
+ * A `FAR_CODE` segment is linked at `8000h`, placed where the aperture
+ * shows it (the aperture slice of its own auxiliary bank on Zephyr-80, an
+ * object of its own pages on Mk2) and executed in place: the program's
+ * primary image, its BSS and its stack stay outside `8000h-BFFFh` (the
+ * build enforces the link rule), so when the aperture is open onto the
+ * segment, an address in `8000h-BFFFh` names the segment.
+ * `segmap(segment)` returns the aperture token, and `farcall` maps the
+ * segment, makes the far call, and restores the previous mapping:
  *
  *     extern int far_main(int a, int b);   (built with FAR1=, linked
  *                                           at 8000h as segment 1)

@@ -38,6 +38,29 @@ Usage:
     mapcheck.py geometry derive <probe.map> <memory.inc>
                 <out_bank7_end.inc> [<out_memory_variant.inc>]
 
+    mapcheck.py mk2 --cold-stems <config/residency-mk2.json>
+    mapcheck.py mk2 --link <config/residency-mk2.json>
+                <platform/zephyr80mk2/private/memory.inc> <objdir>
+                <outdir> <veneers.asm>
+    mapcheck.py mk2 <konaos-mk2.map> <config/residency-mk2.json>
+                <platform/zephyr80mk2/private/memory.inc>
+                [--objdir DIR] [--mk1-residency config/residency.json]
+
+`mk2` checks the Zephyr-80 Mk2 nucleus instead (none of the bank-7/bank-6
+rules apply): the fixed areas inside the fixed region (system entries 1-2,
+below the driver and ISR stacks), each cold set inside the cold region
+(entries 3-4; set n linked at n * 10000h + 6000h) and no undeclared set,
+nothing linked into the copy windows (entries 5-6), the packed common run
+under KOS_COMMON_CEILING, every object placed once and its bytes in its
+region's areas, no Mk1 fixed-required object in a cold set, and the
+assembly-sized tables of kernel/memory/mk2 (the DAT images, the gate's
+per-depth DAT block, the far table) against the C constants that size
+their users.  `mk2 --link` writes the link's objects: each set's areas
+named, every reference into a set from outside it renamed to a generated
+fixed-region veneer (kernel/memory/mk2/cold_call.asm), and the build
+refused for a data reference into a set from outside it or a reference
+from a driver_api object into any set.
+
 --production additionally rejects every acceptance symbol (static
 driver symbols, target-test runners/results and their generic seam hooks,
 CTC0 acceptance helpers, an IRQ vector lookup, fixture catalogs,
@@ -751,6 +774,10 @@ DRIVER_API_ENTRIES = (
     "_api_irq_claim",
     "_api_irq_release",
     "_api_event_post",
+    "_api_bulk_copy_out",
+    "_api_borrow",
+    "_api_borrow_release",
+    "_api_borrowed",
 )
 
 # The nucleus has no device registry: discovery is the host-built `/dev`
@@ -1714,7 +1741,510 @@ def geometry_main(argv):
         return 1
 
 
+# --- Zephyr-80 Mk2 (architecture 2.7.6, config/residency-mk2.json) ---------
+#
+# The Mk2 nucleus has none of the Mk1 bank-7/bank-6 rules above.  Its
+# residency file lists every nucleus object in the fixed region (system
+# entries 1-2) or in one cold set (a page pair mapped at entries 3-4 for
+# the code that runs in it), and records the system DAT layout; `mk2
+# --link` builds the link from the objects (the cold-set areas and the
+# veneers) and `mk2` checks the linked map and the objects against it.
+
+MK2_FORMAT = "kos-residency-mk2/2"
+MK2_FIXED_AREAS = FIXED_AREAS
+MK2_COLD_AREAS = COLD_AREAS
+MK2_COMMON_AREAS = ("_COMMON", "_COMMON_DATA")
+# Cold set n's code and data areas in the link: set 0 keeps the compiled
+# names, set n >= 1 is renamed and based at n * 10000h + 6000h (the linker
+# truncates every reference to 16 bits, so the code runs at 6000h).
+MK2_SET_STRIDE = 0x10000
+# A veneer's name: the referenced symbol with this prefix.
+MK2_VENEER_PREFIX = "__cold"
+
+# The asm-sized tables of kernel/memory/mk2/{banking,far}.asm against the C
+# constants that size their users: (first symbol, end symbol, header,
+# constant, bytes per row).
+MK2_TABLES = (
+    ("_kos_dat_images", "_kos_dat_images_end", "kernel/include/process.h",
+     "PROCESS_TABLE_SIZE", 8),
+    ("kos_dat_gate_shadow", "_kos_dat_images", "abi/kos/process.h",
+     "KOS_EXEC_MAX_DEPTH", 12),
+    ("_kos_far_table", "_kos_far_table_end", "kernel/syscall/xmem.c",
+     "XMEM_MAX_OBJECTS", 3),
+)
+
+
+def mk2_set_areas(index):
+    """The (code, data) area names of cold set `index` in the link."""
+    if index == 0:
+        return MK2_COLD_AREAS
+    return ("_COLD%d" % index, "_COLD%d_DATA" % index)
+
+
+class Mk2Residency:
+    """One parsed residency-mk2 file."""
+
+    def __init__(self, regions, fixed, sets, driver_api, never=(),
+                 remaps=()):
+        self.regions = regions
+        self.fixed = fixed
+        self.sets = sets
+        self.driver_api = driver_api
+        self.never = set(never)     # system entries never remapped
+        self.remaps = list(remaps)  # driver_call_remaps rows
+
+    @property
+    def cold(self):
+        return [name for members in self.sets for name in members]
+
+    def region_of(self, stem):
+        """'fixed', a set index, or None for an unplaced object."""
+        if stem in self.fixed:
+            return "fixed"
+        for index, members in enumerate(self.sets):
+            if stem in members:
+                return index
+        return None
+
+
+def load_mk2_residency(path):
+    """The Mk2Residency of a residency file."""
+    with open(path) as handle:
+        data = json.load(handle)
+    if data.get("format") != MK2_FORMAT:
+        raise MapError("%s is not a %s file" % (path, MK2_FORMAT))
+    regions = {}
+    for name, (lo, hi) in data.get("regions", {}).items():
+        regions[name] = (int(lo, 16), int(hi, 16))
+    for name in ("fixed", "cold", "copy_windows", "common"):
+        if name not in regions:
+            raise MapError("%s: no %s region" % (path, name))
+    fixed = list(data.get("fixed", ()))
+    sets = [list(members) for members in data.get("cold_sets", ())]
+    if not sets:
+        raise MapError("%s: no cold set" % path)
+    placed = list(fixed)
+    for members in sets:
+        placed.extend(members)
+    twice = sorted(name for name in set(placed) if placed.count(name) > 1)
+    if twice:
+        raise MapError("%s: placed twice: %s" % (path, ", ".join(twice)))
+    driver_api = list(data.get("driver_api", ()))
+    outside = sorted(set(driver_api) - set(fixed))
+    if outside:
+        raise MapError("%s: driver_api objects not fixed: %s"
+                       % (path, ", ".join(outside)))
+    entries = [row.get("entry") for row in data.get("system_dat", ())]
+    if entries != list(range(8)):
+        raise MapError("%s: system_dat must list entries 0-7" % path)
+    never = [row["entry"] for row in data["system_dat"]
+             if row.get("remapped") == "never"]
+    remaps = list(data.get("driver_call_remaps", ()))
+    for row in remaps:
+        if not row.get("entries") or \
+                not set(row["entries"]) <= set(range(8)) or \
+                not row.get("stack") or not row.get("by"):
+            raise MapError("%s: driver_call_remaps row %r needs entries "
+                           "0-7, by and stack" % (path, row))
+    return Mk2Residency(regions, fixed, sets, driver_api, never, remaps)
+
+
+def c_constant(path, name):
+    """The first `#define name value` of a C source, as an integer."""
+    with open(path) as handle:
+        for line in handle:
+            match = re.match(r"\s*#\s*define\s+%s\s+(\w+)" % name, line)
+            if match:
+                return int(match.group(1).rstrip("uU"), 0)
+    raise MapError("%s defines no %s" % (path, name))
+
+
+# --- the cold-set link (mapcheck.py mk2 --link) ------------------------------
+
+REL_SYMBOL_LINE = re.compile(r"^S (\S+) (Def|Ref)([0-9A-Fa-f]+)\s*$")
+
+
+def read_rel(path):
+    """(lines, definitions {symbol: area}, references [symbol]) of a .rel."""
+    with open(path, errors="replace") as handle:
+        lines = handle.read().splitlines()
+    definitions = {}
+    references = []
+    area = None
+    for line in lines:
+        match = REL_AREA_LINE.match(line)
+        if match:
+            area = match.group(1)
+            continue
+        match = REL_SYMBOL_LINE.match(line)
+        if match:
+            if match.group(2) == "Def":
+                definitions[match.group(1)] = area
+            else:
+                references.append(match.group(1))
+    return lines, definitions, references
+
+
+def mk2_cold_link(residency, objdir, outdir):
+    """Write the link's objects to `outdir` and return the veneer table.
+
+    Every object of `objdir` is copied, with set n >= 1's cold areas
+    renamed (mk2_set_areas), and every reference from outside a cold set
+    to a code symbol inside it renamed to the symbol's veneer.  A data
+    reference into a set from outside it, a reference from a driver_api
+    object into any set, an unplaced object and a veneer name that is
+    already a symbol are errors.  Returns [(veneer, symbol, set)], sorted.
+    """
+    rels = {}
+    for name in sorted(os.listdir(objdir)):
+        if name.endswith(".rel"):
+            rels[name[:-4]] = read_rel(os.path.join(objdir, name))
+    unplaced = sorted(stem for stem in rels
+                      if residency.region_of(stem) is None)
+    if unplaced:
+        raise MapError("unplaced Mk2 objects: %s" % ", ".join(unplaced))
+    owner = {}
+    for stem, (_lines, definitions, _refs) in rels.items():
+        for symbol, area in definitions.items():
+            if symbol.startswith("."):
+                continue
+            owner[symbol] = (stem, area)
+    veneers = {}
+    rename = {}
+    for stem, (_lines, _definitions, references) in rels.items():
+        here = residency.region_of(stem)
+        for symbol in references:
+            if symbol not in owner:
+                continue
+            target, area = owner[symbol]
+            where = residency.region_of(target)
+            if where == "fixed" or where == here or \
+                    area not in MK2_COLD_AREAS:
+                continue
+            if stem in residency.driver_api:
+                raise MapError(
+                    "%s (driver_api) references %s in cold set %d: a "
+                    "driver's call cannot reach a cold set"
+                    % (stem, symbol, where))
+            if area != MK2_COLD_AREAS[0]:
+                raise MapError(
+                    "%s references %s, data of cold set %d: a set's data "
+                    "is visible only to its own code" % (stem, symbol,
+                                                         where))
+            veneer = MK2_VENEER_PREFIX + symbol
+            if veneer in owner:
+                raise MapError("veneer name %s is already a symbol"
+                               % veneer)
+            veneers[veneer] = (symbol, where)
+            rename.setdefault(stem, set()).add(symbol)
+    os.makedirs(outdir, exist_ok=True)
+    for stem, (lines, _definitions, _references) in rels.items():
+        where = residency.region_of(stem)
+        renamed = rename.get(stem, set())
+        out = []
+        for line in lines:
+            match = REL_AREA_LINE.match(line)
+            if match and where not in ("fixed", 0):
+                code, data = mk2_set_areas(where)
+                name = {MK2_COLD_AREAS[0]: code,
+                        MK2_COLD_AREAS[1]: data}.get(match.group(1))
+                if name is not None:
+                    line = "A %s%s" % (name, line[2 + len(match.group(1)):])
+            match = REL_SYMBOL_LINE.match(line)
+            if match and match.group(2) == "Ref" and \
+                    match.group(1) in renamed:
+                line = "S %s%s Ref%s" % (MK2_VENEER_PREFIX, match.group(1),
+                                          match.group(3))
+            out.append(line)
+        with open(os.path.join(outdir, stem + ".rel"), "w") as handle:
+            handle.write("\n".join(out) + "\n")
+    return sorted((veneer, symbol, where)
+                  for veneer, (symbol, where) in veneers.items())
+
+
+def mk2_veneer_asm(veneers, first_page):
+    """The generated veneers: each calls kos_cold_call with its target and
+    its set's two pages (cold set n is SRAM first_page + 2n, + 2n + 1)."""
+    out = ["; Generated by tools/mapcheck.py mk2 --link from",
+           "; config/residency-mk2.json: one veneer per code symbol that is",
+           "; referenced from outside its cold set (kernel/memory/mk2/",
+           "; cold_call.asm).  Do not edit.",
+           "",
+           "\t.module cold_veneers",
+           "\t.globl kos_cold_call"]
+    for veneer, symbol, _where in veneers:
+        out.append("\t.globl %s, %s" % (veneer, symbol))
+    out += ["", "\t.area _CODE", ""]
+    for veneer, symbol, where in veneers:
+        page = first_page + 2 * where
+        out += ["%s::" % veneer,
+                "\tcall\tkos_cold_call",
+                "\t.dw\t%s" % symbol,
+                "\t.db\t0x%02X, 0x%02X\t; cold set %d" % (page, page + 1,
+                                                          where)]
+    return "\n".join(out) + "\n"
+
+
+def mk2_area_extent(areas, symbols, names):
+    """(lowest start, highest end) of the named areas holding bytes, or
+    None.  Empty areas carry only their s__/l__ symbols."""
+    spans = []
+    for name in names:
+        start = symbols.get("s_" + name, areas.get(name, (None, 0))[0])
+        size = symbols.get("l_" + name, areas.get(name, (0, 0))[1])
+        if start is not None and size:
+            spans.append((start, start + size))
+    if not spans:
+        return None
+    return min(lo for lo, _ in spans), max(hi for _, hi in spans)
+
+
+# A stack: a symbol pair X_stack (its base) and X_stack_top (its top).
+MK2_STACK_SUFFIX = "_stack"
+MK2_STACK_TOP_SUFFIX = "_stack_top"
+
+
+def mk2_stacks(symbols):
+    """{base symbol: (base, top)} of every stack pair with bytes."""
+    stacks = {}
+    for name, top in symbols.items():
+        if name.endswith(MK2_STACK_TOP_SUFFIX):
+            base = name[:-len("_top")]
+            if base in symbols and top > symbols[base]:
+                stacks[base] = (symbols[base], top)
+    return stacks
+
+
+def mk2_entries(span):
+    """The system entries (8 KiB each) a span [lo, hi) touches."""
+    lo, hi = span
+    return set(range(lo >> 13, ((hi - 1) >> 13) + 1))
+
+
+def mk2_driver_stacks(plan_path):
+    """[(driver, stack, base, top)]: each resident driver's private
+    stacks, the stack pairs of its image report (the .report.json of each
+    container the plan lists, beside the plan), at the segment's linked
+    base."""
+    with open(plan_path) as handle:
+        plan = json.load(handle)
+    stacks = []
+    for driver in plan.get("drivers", ()):
+        stem = os.path.splitext(os.path.basename(driver["container"]))[0]
+        report = os.path.join(os.path.dirname(plan_path),
+                              stem + ".report.json")
+        with open(report) as handle:
+            data = json.load(handle)
+        bases = {segment["role"]: segment["base"]
+                 for segment in data.get("segments", ())}
+        located = {}
+        for name, offset in data.get("symbols", {}).items():
+            role = data.get("symbol_segments", {}).get(name)
+            if role in bases:
+                located[name] = bases[role] + offset
+        for name, (lo, hi) in sorted(mk2_stacks(located).items()):
+            stacks.append((driver["name"], name, lo, hi))
+    return stacks
+
+
+def check_mk2_stacks(symbols, residency, plan_path=None):
+    """No stack lies in a system entry that is remapped while it is in
+    use.  Every nucleus stack lies in entries that are never remapped; a
+    driver_call_remaps row names a nucleus stack or the caller's; and
+    each driver's private stack lies outside every entry a service
+    remaps on the caller's stack.  Returns (nucleus, driver) stack
+    counts."""
+    stacks = mk2_stacks(symbols)
+    for name, span in sorted(stacks.items()):
+        bad = sorted(mk2_entries(span) - residency.never)
+        if bad:
+            raise MapError("nucleus stack %s %04Xh-%04Xh lies in system "
+                           "entry %d, which a call remaps"
+                           % (name, span[0], span[1] - 1, bad[0]))
+    caller = []
+    for row in residency.remaps:
+        if row["stack"] == "caller":
+            caller.append(row)
+        elif row["stack"] not in stacks:
+            raise MapError("driver_call_remaps: %s runs on %s, which the "
+                           "map does not define (%s, %s%s)"
+                           % (row["by"], row["stack"], row["stack"],
+                              row["stack"], "_top"))
+    driver_stacks = mk2_driver_stacks(plan_path) if plan_path else []
+    for driver, name, lo, hi in driver_stacks:
+        for row in caller:
+            hit = sorted(mk2_entries((lo, hi)) & set(row["entries"]))
+            if hit:
+                raise MapError("%s private stack %s %04Xh-%04Xh lies in "
+                               "system entry %d, which %s remaps on the "
+                               "caller's stack" % (driver, name, lo, hi - 1,
+                                                   hit[0], row["by"]))
+    return len(stacks), len(driver_stacks)
+
+
+def check_mk2(map_text, residency, root, objdir=None, mk1_tiers=None,
+              common_ceiling=0x0C00, plan_path=None):
+    """The Mk2 layout rules.  Returns a ledger dict; raises MapError."""
+    areas, symbols = parse_map(map_text)
+    regions = residency.regions
+
+    def inside(span, region, what, offset=0):
+        lo, hi = regions[region]
+        lo, hi = lo + offset, hi + offset
+        if span is not None and (span[0] < lo or span[1] > hi):
+            raise MapError("%s %04Xh-%04Xh outside the %s region "
+                           "%04Xh-%04Xh" % (what, span[0], span[1] - 1,
+                                            region, lo, hi - 1))
+
+    fixed_span = mk2_area_extent(areas, symbols, MK2_FIXED_AREAS)
+    common_span = mk2_area_extent(areas, symbols, MK2_COMMON_AREAS)
+    inside(fixed_span, "fixed", "the fixed areas")
+    inside(common_span, "common", "the common areas")
+    set_spans = []
+    for index in range(len(residency.sets)):
+        span = mk2_area_extent(areas, symbols, mk2_set_areas(index))
+        inside(span, "cold", "cold set %d" % index, index * MK2_SET_STRIDE)
+        set_spans.append(span)
+    # No set is linked that the residency file does not declare.
+    for name in areas:
+        match = re.match(r"_COLD(\d+)(_DATA)?$", name)
+        if match and int(match.group(1)) >= len(residency.sets):
+            raise MapError("area %s names an undeclared cold set" % name)
+    # Nothing the nucleus links may lie in the copy windows: every area
+    # with bytes, ABS ones included, and every symbol.
+    win_lo, win_hi = regions["copy_windows"]
+    for name, (addr, size) in sorted(areas.items()):
+        if size and addr < win_hi and addr + size > win_lo:
+            raise MapError("area %s %04Xh-%04Xh lies in the copy windows"
+                           % (name, addr, addr + size - 1))
+    for name, addr in sorted(symbols.items()):
+        if name.startswith(("s__", "l__")):
+            continue
+        if win_lo <= addr < win_hi:
+            raise MapError("symbol %s at %04Xh lies in the copy windows"
+                           % (name, addr))
+    common_used = sum(symbols.get("l_" + name, 0)
+                      for name in MK2_COMMON_AREAS)
+    if common_used > common_ceiling:
+        raise MapError("common areas use %d bytes, over the %d-byte "
+                       "ceiling" % (common_used, common_ceiling))
+    for first, end, header, constant, row in MK2_TABLES:
+        if first not in symbols or end not in symbols:
+            raise MapError("map has no %s/%s" % (first, end))
+        want = c_constant(os.path.join(root, header), constant) * row
+        have = symbols[end] - symbols[first]
+        if have != want:
+            raise MapError("%s is %d bytes; %s %s gives %d"
+                           % (first, have, header, constant, want))
+    if objdir is not None:
+        sizes = rel_area_sizes(objdir)
+        listed = set(residency.fixed) | set(residency.cold)
+        missing = sorted(set(sizes) - listed)
+        if missing:
+            raise MapError("unplaced Mk2 objects: %s" % ", ".join(missing))
+        absent = sorted(listed - set(sizes))
+        if absent:
+            raise MapError("placed objects not built: %s"
+                           % ", ".join(absent))
+        for name in residency.fixed:
+            if any(sizes[name].get(area, 0) for area in MK2_COLD_AREAS):
+                raise MapError("fixed object %s has cold-area bytes" % name)
+        # A cold object's initialized data is copied from _INITIALIZER to
+        # _INITIALIZED by the crt0, in the fixed region like every image's.
+        for name in residency.cold:
+            if any(sizes[name].get(area, 0) for area in MK2_FIXED_AREAS
+                   if area not in ("_INITIALIZER", "_INITIALIZED")):
+                raise MapError("cold object %s has fixed-area bytes" % name)
+    if mk1_tiers is not None:
+        for name in residency.cold:
+            if mk1_tiers.get(name) == "fixed-required":
+                raise MapError("cold object %s is fixed-required on Mk1"
+                               % name)
+    nucleus_stacks, driver_stacks = check_mk2_stacks(symbols, residency,
+                                                     plan_path)
+    cold_lo, cold_hi = regions["cold"]
+    ledger = {
+        "nucleus_stacks": nucleus_stacks,
+        "driver_stacks": driver_stacks,
+        "fixed_end": fixed_span[1] if fixed_span else regions["fixed"][0],
+        "fixed_room": regions["fixed"][1] - (fixed_span[1] if fixed_span
+                                             else regions["fixed"][0]),
+        "set_room": [cold_hi - ((span[1] & 0xFFFF) if span else cold_lo)
+                     for span in set_spans],
+        "set_end": [(span[1] & 0xFFFF) if span else cold_lo
+                    for span in set_spans],
+        "common_used": common_used,
+        "common_ceiling": common_ceiling,
+    }
+    ledger["cold_end"] = ledger["set_end"][0]
+    ledger["cold_room"] = ledger["set_room"][0]
+    return ledger
+
+
+def mk2_main(args):
+    """mapcheck.py mk2 --cold-stems <residency-mk2.json>
+    mapcheck.py mk2 --link <residency-mk2.json> <memory.inc> <objdir>
+                <outdir> <veneers.asm>
+    mapcheck.py mk2 <map> <residency-mk2.json> <memory.inc>
+                [--objdir DIR] [--mk1-residency residency.json]
+                [--drivers drivers.plan.json]"""
+    try:
+        if len(args) == 2 and args[0] == "--cold-stems":
+            print("\n".join(load_mk2_residency(args[1]).cold))
+            return 0
+        if len(args) == 6 and args[0] == "--link":
+            residency = load_mk2_residency(args[1])
+            first = parse_inc(args[2]).get("KOS_COLD_FIRST_PAGE")
+            if first is None:
+                raise MapError("%s defines no KOS_COLD_FIRST_PAGE" % args[2])
+            veneers = mk2_cold_link(residency, args[3], args[4])
+            with open(args[5], "w") as handle:
+                handle.write(mk2_veneer_asm(veneers, first))
+            print("mapcheck: mk2 link: %d objects, %d veneers"
+                  % (len(os.listdir(args[4])), len(veneers)))
+            return 0
+    except MapError as exc:
+        print("mapcheck: %s" % exc, file=sys.stderr)
+        return 1
+    options = {}
+    for flag in ("--objdir", "--mk1-residency", "--drivers"):
+        if flag in args:
+            at = args.index(flag)
+            options[flag] = args[at + 1]
+            del args[at:at + 2]
+    if len(args) != 3:
+        print(mk2_main.__doc__, file=sys.stderr)
+        return 2
+    map_path, residency_path, memory_inc = args
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        residency = load_mk2_residency(residency_path)
+        values = parse_inc(memory_inc)
+        ceiling = values.get("KOS_COMMON_CEILING", 0x0C00)
+        mk1_tiers = None
+        if "--mk1-residency" in options:
+            mk1_tiers, _cold, _test = load_residency(
+                options["--mk1-residency"])
+        ledger = check_mk2(open(map_path).read(), residency, root,
+                           options.get("--objdir"), mk1_tiers, ceiling,
+                           options.get("--drivers"))
+    except MapError as exc:
+        print("mapcheck: %s" % exc, file=sys.stderr)
+        return 1
+    sets = " | ".join("set %d end %04Xh room %d" % (index, end, room)
+                      for index, (end, room) in enumerate(
+                          zip(ledger["set_end"], ledger["set_room"])))
+    print("mapcheck: mk2 OK | fixed end %04Xh room %d | %s | common %d "
+          "of %d | stacks %d nucleus, %d driver"
+          % (ledger["fixed_end"], ledger["fixed_room"], sets,
+             ledger["common_used"], ledger["common_ceiling"],
+             ledger["nucleus_stacks"], ledger["driver_stacks"]))
+    return 0
+
+
 def main(argv):
+    if len(argv) >= 2 and argv[1] == "mk2":
+        return mk2_main(argv[2:])
     if len(argv) >= 2 and argv[1] == "geometry":
         return geometry_main(argv[2:])
     if len(argv) >= 2 and argv[1] == "residency":

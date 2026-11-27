@@ -16,12 +16,22 @@
  * bank-copy gate (exact latch/IFF/SP restoration).  A rejected request
  * leaves the process table, the selected bank, and every device
  * untouched.
+ *
+ * On Mk2 (KOS_BOARD_MK2) there are no banks: bank 0 is the caller's own
+ * memory, resolved through its current mapping (architecture 2.7.6,
+ * buffer identity), and every other bank is refused; BANK_INFO reports
+ * bank 0 alone, and SYSTEM_INFO's latch-mode, kernel-bank and ROM-page
+ * fields are 0.
  */
 
 #include "kernel.h"
 #include "process.h"
 
+#if defined(KOS_BOARD_MK2)
+#include "kernel/memory/mk2/pages.h"
+#else
 #include "kernel/memory/banking.h"
+#endif
 #include "kernel/irq/irq_private.h"
 
 #include "diag.h"
@@ -33,6 +43,30 @@ static uint16_t diag_read_le16(const uint8_t *p)
 {
 	return (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
 }
+
+#if defined(KOS_BOARD_MK2)
+/* The one Mk2 bank: the caller's own memory. */
+#define DIAG_BANK_MAX 0u
+#define DIAG_BANK_MASK 0x01u
+
+static uint8_t diag_bank_read(uint8_t bank, uint16_t address, uint8_t *out)
+{
+	(void)bank;
+	kos_pages_copy(kos_caller_map(), address, (const uint8_t *)0,
+		       (uint16_t)out, 1u);
+	return 1;
+}
+
+static uint8_t diag_bank_write(uint8_t bank, uint16_t address, uint8_t value)
+{
+	(void)bank;
+	kos_pages_copy((const uint8_t *)0, (uint16_t)&value, kos_caller_map(),
+		       address, 1u);
+	return 1;
+}
+#else
+#define DIAG_BANK_MAX KOS_DIAG_MEM_BANK_MAX
+#define DIAG_BANK_MASK KOS_DIAG_BANK_MASK
 
 /* One byte from `bank` at `address` through the checked copy gate. */
 static uint8_t diag_bank_read(uint8_t bank, uint16_t address, uint8_t *out)
@@ -64,6 +98,7 @@ static uint8_t diag_bank_write(uint8_t bank, uint16_t address, uint8_t value)
 	req.length = 1;
 	return (uint8_t)(kos_bank_copy(&req) == 0);
 }
+#endif /* KOS_BOARD_MK2 */
 
 static uint8_t diag_block_byte(uint16_t block, uint8_t offset)
 {
@@ -91,7 +126,7 @@ void kos_diag_mem_read(uint16_t block)
 	bank = diag_block_byte(block, 0);
 	reserved = diag_block_byte(block, 1);
 	address = diag_block_word(block, 2);
-	if (bank > KOS_DIAG_MEM_BANK_MAX || reserved != 0 ||
+	if (bank > DIAG_BANK_MAX || reserved != 0 ||
 	    address > KOS_DIAG_MEM_READ_MAX) {
 		kos_syscall_error(KOS_EINVAL);
 		return;
@@ -118,7 +153,7 @@ void kos_diag_mem_write(uint16_t block)
 	bank = diag_block_byte(block, 0);
 	value = diag_block_byte(block, 1);
 	address = diag_block_word(block, 2);
-	if (bank > KOS_DIAG_MEM_BANK_MAX ||
+	if (bank > DIAG_BANK_MAX ||
 	    address < KOS_DIAG_MEM_WRITE_MIN ||
 	    address > KOS_DIAG_MEM_WRITE_MAX) {
 		kos_syscall_error(KOS_EINVAL);
@@ -176,6 +211,9 @@ void kos_diag_io_out(uint16_t block)
 
 void kos_diag_bank_info(void)
 {
+#if defined(KOS_BOARD_MK2)
+	kos_syscall_success(((uint16_t)DIAG_BANK_MASK << 8) | 0u);
+#else
 	uint8_t bank = process_current_bank();
 
 	/* Kernel context has no process descriptor; report the selected
@@ -186,7 +224,8 @@ void kos_diag_bank_info(void)
 			bank = 0;
 		}
 	}
-	kos_syscall_success(((uint16_t)KOS_DIAG_BANK_MASK << 8) | bank);
+	kos_syscall_success(((uint16_t)DIAG_BANK_MASK << 8) | bank);
+#endif
 }
 
 void kos_diag_system_info(uint16_t block)
@@ -200,12 +239,22 @@ void kos_diag_system_info(uint16_t block)
 	record = (uint8_t *)block;
 	record[0] = (uint8_t)KOS_DIAG_SYSTEM_INFO_SIZE;
 	record[1] = (uint8_t)KOS_DIAG_SYSTEM_INFO_ABI;
+#if defined(KOS_BOARD_MK2)
+	record[2] = 0u;
+	record[3] = 0u;
+#else
 	record[2] = (uint8_t)KOS_MODE_APPLICATION;
 	record[3] = (uint8_t)KOS_MODE_OS;
+#endif
 	record[4] = (uint8_t)(KOS_COMMON_BASE & 0xFFu);
 	record[5] = (uint8_t)(KOS_COMMON_BASE >> 8);
+#if defined(KOS_BOARD_MK2)
+	record[6] = 0u;
+	record[7] = 0u;
+#else
 	record[6] = (uint8_t)PROCESS_KERNEL_BANK;
 	record[7] = (uint8_t)KOS_ROMFS_FIRST_PAGE;
+#endif
 	/* The executive's dispatch counters, copied by the fixed-core helper:
 	 * this body is cold-half code and the image's cold half is the
 	 * loaded region, so only the call belongs here. */

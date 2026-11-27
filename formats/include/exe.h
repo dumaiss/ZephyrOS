@@ -12,7 +12,7 @@
  *   04 format_version          2
  *   05 abi_version             1
  *   06 flags                   0
- *   07 reserved0               0
+ *   07 board                   EXE_BOARD_* (the CPU board it runs on)
  *   08 header_size             36
  *   0A segment_count           rows in the segment table (0..8)
  *   0B total_segment_slots     whole 8-KiB slots all segments need
@@ -65,6 +65,14 @@
 #define EXE_ABI_VERSION    1u
 #define EXE_FLAG_NONE      0u
 
+/* The CPU board a program is built for (header offset 07): its SDK's
+ * mapping members open the far window the way that board does, so a
+ * loader refuses a program built for another board (EXE_EXEC_ERR_BOARD,
+ * which SYS_EXEC reports as KOS_EBOARD).  Any other value is refused by
+ * the packer and every loader. */
+#define EXE_BOARD_MK1 0u /* Zephyr-80: the banking latch        */
+#define EXE_BOARD_MK2 1u /* Zephyr-80 Mk2: the LS612 DAT mapper */
+
 #define EXE_HEADER_SIZE        36u
 #define EXE_SEGMENT_ENTRY_SIZE 16u
 
@@ -109,7 +117,7 @@ struct exe_header {
 	uint8_t  format_version;
 	uint8_t  abi_version;
 	uint8_t  flags;
-	uint8_t  reserved0;
+	uint8_t  board;
 	uint16_t header_size;
 	uint8_t  segment_count;
 	uint8_t  total_segment_slots;
@@ -147,8 +155,8 @@ _Static_assert(__builtin_offsetof(struct exe_header, abi_version) == 0x05,
 	       "EXE abi_version offset");
 _Static_assert(__builtin_offsetof(struct exe_header, flags) == 0x06,
 	       "EXE flags offset");
-_Static_assert(__builtin_offsetof(struct exe_header, reserved0) == 0x07,
-	       "EXE reserved0 offset");
+_Static_assert(__builtin_offsetof(struct exe_header, board) == 0x07,
+	       "EXE board offset");
 _Static_assert(__builtin_offsetof(struct exe_header, header_size) == 0x08,
 	       "EXE header_size offset");
 _Static_assert(__builtin_offsetof(struct exe_header, segment_count) == 0x0A,
@@ -206,7 +214,7 @@ _Static_assert(__builtin_offsetof(struct exe_segment, payload_offset) == 0x08,
 #define EXE_EXEC_ERR_FORMAT    (-0x32) /* format_version field         */
 #define EXE_EXEC_ERR_ABI       (-0x33) /* abi_version field            */
 #define EXE_EXEC_ERR_FLAGS     (-0x34) /* flags field                  */
-#define EXE_EXEC_ERR_RESERVED0 (-0x35)
+#define EXE_EXEC_ERR_BOARD     (-0x35) /* built for another board      */
 #define EXE_EXEC_ERR_HEADER    (-0x36) /* header_size field            */
 #define EXE_EXEC_ERR_RESERVED1 (-0x37)
 #define EXE_EXEC_ERR_IMAGE     (-0x38) /* zero image                   */

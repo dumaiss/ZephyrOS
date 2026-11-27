@@ -145,12 +145,21 @@ def _ar_members(path):
     return names
 
 
-def _rule_sources(variable):
-    """The source list of one ``:=`` assignment in user/sdk/exe.mk."""
-    match = re.search(r"^%s\s*:=\s*((?:.*\\\n)*.*)" % variable,
+def _rule_sources(variable, board="mk1"):
+    """The source list of one ``:=`` assignment in user/sdk/exe.mk, a
+    per-board list (``$(NAME.$(KOS_BOARD))``) expanded for `board` (the
+    tree's build/ is the Zephyr-80 build)."""
+    match = re.search(r"^%s\s*:=\s*((?:.*\\\n)*.*)" % re.escape(variable),
                       _read(EXE_MK), re.M)
     assert match is not None, "exe.mk defines no %s" % variable
-    return match.group(1).replace("\\\n", " ").split()
+    sources = []
+    for word in match.group(1).replace("\\\n", " ").split():
+        per_board = re.match(r"^\$\(([\w.]+)\.\$\(KOS_BOARD\)\)$", word)
+        if per_board:
+            sources += _rule_sources("%s.%s" % (per_board.group(1), board))
+        else:
+            sources.append(word)
+    return sources
 
 
 def _split_call_arguments(text, start):
@@ -424,7 +433,9 @@ class TestSdkBoundary(unittest.TestCase):
         # (`tests/test_exeplace.py`); `gfx_mouse` is the graphics
         # pointer example (`tests/test_gfx.py`); `joy` is the
         # game-controller outcome program (`tests/test_joy.py`); `serial`
-        # is the serial-hold card program (`tests/test_serial.py`).
+        # is the serial-hold card program (`tests/test_serial.py`);
+        # `persona` is the Mk2 personality probe
+        # (`tests/test_mk2_personality.py`).
         self.assertEqual(sorted(name for name, _d, _s, _o in programs),
                          ["banks", "beat", "devtest", "events",
                           "exe2big", "exe2probe", "exe2seg", "exetest",
@@ -435,7 +446,7 @@ class TestSdkBoundary(unittest.TestCase):
                           "hwtest", "iobench", "iomix", "iomix_child",
                           "iostream", "ipc", "ipccopy", "joy",
                           "kresread", "krestest", "monitor", "mouse", "ns",
-                          "nschild", "placetest", "readermap", "readertest",
+                          "nschild", "perf_printf", "perf_probe", "persona", "placetest", "readermap", "readertest",
                           "readphase", "rt", "serial",
                           "shell", "sndpcm", "sndprobe", "sndtest", "sound",
                           "textbench", "timer",

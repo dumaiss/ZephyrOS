@@ -37,6 +37,16 @@
  * Boot-tier code runs with bank 7 unmapped (see kernel/driver/
  * driver_boot.asm): the boot entry may touch bank 6, the common region
  * and I/O ports, and it must not call the bootstrap interface.
+ *
+ * On Mk2 (KOS_BOARD_MK2, architecture 2.7.6) the driver domain is the
+ * bank-6 layout on nucleus-owned pages (kos_driver_domain, kernel/ipc):
+ * the loader allocates the page of every 8 KiB domain page a segment
+ * touches the first time one does (page 0 gets the low entry stubs, which
+ * a bulk-map span or a boot entry maps at 0000h), copies the segment
+ * images from the store straight into those pages through the copy
+ * windows, zeroes the BSS there, and runs the boot and init entries with
+ * the domain mapped (ipc_driver_run).  The plans are the same images and
+ * the same checks as Mk1's.
  */
 
 #include "mod.h"
@@ -47,7 +57,11 @@
 #include "romfs.h"
 
 #include "kernel/ipc/ipc.h"
+#if defined(KOS_BOARD_MK2)
+#include "kernel/memory/mk2/pages.h"
+#else
 #include "kernel/memory/upcall.h"
+#endif
 #include "kernel/syscall/diag.h"
 #include "kernel/vfs/vfs.h"
 
@@ -62,26 +76,28 @@
 #define KOS_DRIVER_TEST_EVIDENCE KOS_TARGET_TEST_BUILD
 #endif
 
-/* Bank 6 is the resident driver domain (revision 13: bank = KOS_BANK_MASK
- * - window page; the same derivation kernel/ipc/ipc.c uses). */
-#define DRIVER_BANK (uint8_t)(KOS_BANK_MASK - 1u)
-
 /* Destination tiers (architecture 5.2): the hot tier 6000h-DFFFh (the io
  * role lives inside 8000h-BFFFh, which the hot-tier bound already
  * contains), the boot/bulk tier 0000h-5FFFh.  The host computed each
  * address; these are the ranges the loader checks. */
-#define DRIVER_HOT_BASE  KOS_REV13_WINDOW_BASE /* 6000h */
-#define DRIVER_HOT_END   KOS_BANK7_RUNTIME_END /* E000h */
-#define DRIVER_BOOT_END  KOS_REV13_WINDOW_BASE /* 6000h */
+#define DRIVER_HOT_BASE  0x6000u
+#define DRIVER_HOT_END   0xE000u
+#define DRIVER_BOOT_END  0x6000u
 /* The mapped range (5.2): what a bulk-map span shows at 0000h-1FFFh, above
  * bank 6's reserved page zero. */
 #define DRIVER_MAPPED_BASE 0x0100u
 #define DRIVER_MAPPED_END  0x2000u
 
+#if !defined(KOS_BOARD_MK2)
+/* Bank 6 is the resident driver domain (revision 13: bank = KOS_BANK_MASK
+ * - window page; the same derivation kernel/ipc/ipc.c uses). */
+#define DRIVER_BANK (uint8_t)(KOS_BANK_MASK - 1u)
+
 /* The boot gate (kernel/driver/driver_boot.asm) and the upcall shim's
  * fixed-core request block and entry point (kernel/memory/upcall.h). */
 extern uint8_t kos_driver_run_boot(uint16_t entry);
 extern struct kos_upcall_req kos_driver_upcall_block;
+#endif
 
 /* Manifest entry N's logical offset: 24 = 16 + 8, computed with shifts
  * because the kernel links no multiply runtime (kernel/romfs/romfs.c). */
@@ -190,6 +206,75 @@ static int driver_record(const romfs_file_t *file, uint16_t *at,
 	return MOD_OK;
 }
 
+#if defined(KOS_BOARD_MK2)
+/* --- the driver domain's pages ------------------------------------------- */
+
+/* The system page-0 image's page, the source of the low entry stubs a
+ * domain page 0 carries. */
+static const uint8_t driver_stub_page[1] = { KOS_SYSTEM_PAGE0 };
+
+/* Own a page for every domain page [base, base + length) touches. */
+static int driver_domain_pages(uint16_t base, uint16_t length)
+{
+	uint8_t first = (uint8_t)(base >> KOS_DAT_PAGE_SHIFT);
+	uint8_t last = (uint8_t)((uint16_t)(base + length - 1u) >>
+				 KOS_DAT_PAGE_SHIFT);
+
+	if (length == 0u) {
+		return MOD_OK;
+	}
+	kos_driver_domain[KOS_DAT_ENTRIES - 1u] = kos_dat_common_page();
+	for (; first <= last; ++first) {
+		if (kos_driver_domain[first] != 0u) {
+			continue;
+		}
+		if (kos_pages_alloc(KOS_PAGE_PID_NUCLEUS, 1u,
+				    &kos_driver_domain[first]) != 0) {
+			return MOD_ENOTSUP;
+		}
+		if (first == 0u) {
+			kos_pages_copy(driver_stub_page, 0u, kos_driver_domain,
+				       0u, KOS_PAGE_ZERO_END);
+		}
+	}
+	return MOD_OK;
+}
+
+/* A segment image from the container straight into its domain pages. */
+static int driver_place(const romfs_file_t *file, uint16_t offset,
+			 uint16_t dst, uint16_t length)
+{
+	if (driver_domain_pages(dst, length) != MOD_OK) {
+		return MOD_ENOTSUP;
+	}
+	if (romfs_read_pages(file, offset, kos_driver_domain, dst,
+			     length) != (int)length) {
+		return MOD_EFORMAT;
+	}
+	return MOD_OK;
+}
+
+static int driver_zero(uint16_t dst, uint16_t length)
+{
+	if (driver_domain_pages(dst, length) != MOD_OK) {
+		return MOD_ENOTSUP;
+	}
+	kos_pages_zero(kos_driver_domain, dst, length);
+	return MOD_OK;
+}
+
+static int driver_run_boot(uint16_t entry)
+{
+	(void)ipc_driver_run(entry, 0u, 1u);
+	return MOD_OK;
+}
+
+static int driver_run_init(uint16_t entry)
+{
+	return ipc_driver_run(entry, (uint16_t)driver_boot(), 0u) != 0u
+		? MOD_EINVAL : MOD_OK;
+}
+#else
 /* --- bank-6 access through the common copy gate -------------------------- */
 
 static uint8_t driver_bank_op(uint8_t op, uint16_t addr, uint16_t length)
@@ -230,6 +315,34 @@ static int driver_place(const romfs_file_t *file, uint16_t offset,
 	}
 	return MOD_OK;
 }
+
+static int driver_zero(uint16_t dst, uint16_t length)
+{
+	return driver_bank_op(KOS_BANK_OP_ZERO, dst, length) != 0u
+		? MOD_ENOTSUP : MOD_OK;
+}
+
+static int driver_run_boot(uint16_t entry)
+{
+	return kos_driver_run_boot(entry) != 0u ? MOD_EINVAL : MOD_OK;
+}
+
+/* The mode-11 window shows bank 6 and the fixed core stays visible, so
+ * the driver reads its boot bundle and claims its IRQs here.  The init's
+ * uint8_t return is published by the upcall shim; a non-zero status
+ * fails the image and the boot (5.3). */
+static int driver_run_init(uint16_t entry)
+{
+	kos_driver_upcall_block.page = KOS_UPCALL_PAGE_DRIVER;
+	kos_driver_upcall_block.entry = entry;
+	kos_driver_upcall_block.args = (void *)driver_boot();
+	if (kos_upcall(&kos_driver_upcall_block) != 0u ||
+	    kos_upcall_ret_a != 0u) {
+		return MOD_EINVAL;
+	}
+	return MOD_OK;
+}
+#endif /* KOS_BOARD_MK2 */
 
 /* The plan line the acceptance transcript pins: the roles in the order
  * tools/modpack.py's `drivers` command prints them, absent roles left
@@ -348,10 +461,8 @@ static int driver_load_image(const romfs_file_t *file,
 			return MOD_ENOTSUP;
 		}
 		if (segment.bss_size != 0u &&
-		    driver_bank_op(KOS_BANK_OP_ZERO,
-				    (uint16_t)(segment.base +
-					       segment.image_size),
-				    segment.bss_size) != 0u) {
+		    driver_zero((uint16_t)(segment.base + segment.image_size),
+				segment.bss_size) != MOD_OK) {
 			return MOD_ENOTSUP;
 		}
 #if KOS_DRIVER_TEST_EVIDENCE
@@ -455,22 +566,12 @@ static int driver_load_image(const romfs_file_t *file,
 	/* The boot segment once, through the mode-10 gate, then the hot
 	 * init once, through the fixed upcall shim. */
 	if (boot_entry != MOD_NO_ENTRY &&
-	    kos_driver_run_boot(boot_entry) != 0u) {
+	    driver_run_boot(boot_entry) != MOD_OK) {
 		return MOD_EINVAL;
 	}
-	if (header->init_entry != MOD_NO_ENTRY) {
-		/* The mode-11 window shows bank 6 and the fixed core stays
-		 * visible, so the driver reads its boot bundle and claims
-		 * its IRQs here.  The init's uint8_t return is published by
-		 * the upcall shim; a non-zero status fails the image and
-		 * the boot (5.3). */
-		kos_driver_upcall_block.page = KOS_UPCALL_PAGE_DRIVER;
-		kos_driver_upcall_block.entry = header->init_entry;
-		kos_driver_upcall_block.args = (void *)driver_boot();
-		if (kos_upcall(&kos_driver_upcall_block) != 0u ||
-		    kos_upcall_ret_a != 0u) {
-			return MOD_EINVAL;
-		}
+	if (header->init_entry != MOD_NO_ENTRY &&
+	    driver_run_init(header->init_entry) != MOD_OK) {
+		return MOD_EINVAL;
 	}
 #if KOS_DRIVER_TEST_EVIDENCE
 	driver_report();

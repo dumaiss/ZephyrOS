@@ -79,6 +79,15 @@ int romfs_lookup_ci(const char *name, romfs_file_t *out);
 int romfs_read(const romfs_file_t *file, uint32_t offset, void *dst,
 	       uint16_t length);
 
+#if defined(KOS_BOARD_MK2)
+/* The same read into pages (Zephyr-80 Mk2): `dst` resolves through
+ * `dst_map`, a page per 8 KiB of logical address (kernel/memory/mk2/
+ * pages.h; 0 for a nucleus address), so the bytes move from the store's
+ * ROM page to their destination page directly. */
+int romfs_read_pages(const romfs_file_t *file, uint32_t offset,
+		     const uint8_t *dst_map, uint16_t dst, uint16_t length);
+#endif
+
 /* --- provider support ---------------------------------------------------
  * Indexed access to the validated directory.  It exists for the VFS ROMFS
  * provider's `readdir`, which is the only consumer that needs to enumerate;

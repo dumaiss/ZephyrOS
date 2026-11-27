@@ -56,6 +56,25 @@
  * Argument blocks live in the caller window `0100h-1FFFh`; `read`/`write`
  * buffers and the info record must lie in the caller buffer window
  * `0100h-DFFFh` and are moved only through the checked copy gates.
+ *
+ * The text above is the Zephyr-80 Mk1 board's.  On the Mk2 board
+ * (`KOS_BOARD_MK2`, docs/abi.md section 8.3) the family keeps its
+ * numbers, blocks and errors with these differences:
+ *
+ * - An object is any whole number of 8 KiB units up to
+ *   `KOS_XMEM_MAX_OBJECT` (56 KiB); a `MAPPABLE` object is at most the
+ *   16 KiB far window.  There are no slots and no placement classes; a
+ *   loader segment is an object of its own pages.
+ * - `SYS_XMEM_MAP` (and `SYS_SEG_MAP`) returns a **mapping handle**, not
+ *   a latch value, and `address` is always `KOS_XMEM_APERTURE_BASE`.  The
+ *   handle is opaque, nonzero and one byte; the far-window vector every
+ *   program page zero carries (`RST 28h`, docs/abi.md section 8.3) opens
+ *   the window onto it and returns the handle in force before, and
+ *   handle 0 is the program's own memory, so passing the returned handle
+ *   back closes the window.  A freed object's handle is refused there.
+ * - Buffer identity: a caller address is resolved through the caller's
+ *   current mapping, far window included, so a buffer may also straddle
+ *   the window's edges.
  */
 
 #ifndef KOS_XMEM_H
@@ -89,9 +108,14 @@
 #define KOS_XMEM_APERTURE_BASE 0x8000u
 #define KOS_XMEM_APERTURE_SIZE 0x4000u
 /* The largest mappable object (the aperture slice) and the largest object
- * of any kind (the four non-aperture data slots of one bank). */
+ * of any kind (Mk1: the four non-aperture data slots of one bank; Mk2:
+ * seven 8 KiB units). */
 #define KOS_XMEM_MAX_MAPPABLE  0x4000u
+#if defined(KOS_BOARD_MK2)
+#define KOS_XMEM_MAX_OBJECT    0xE000u
+#else
 #define KOS_XMEM_MAX_OBJECT    0x8000u
+#endif
 
 /* SYS_XMEM_ALLOC 20h {size:u16, flags:u16} -> HL = handle (>= 1).
  * A zero size, an unknown flag or a mappable size over 16 KiB is
@@ -144,7 +168,8 @@ struct kos_xmem_info_args {
 
 /* SYS_XMEM_MAP 25h {handle:u16, address:u16 out}
  *   -> HL = the map token (the latch value that opens the aperture onto
- *      this object) and `address` = the object's aperture address.
+ *      this object; on Mk2 the mapping handle the far-window operation
+ *      opens) and `address` = the object's aperture address.
  * Only the caller's own mappable objects can be mapped: any other handle,
  * a non-mappable object or a bad block is KOS_EINVAL. */
 struct kos_xmem_map_args {
@@ -152,7 +177,44 @@ struct kos_xmem_map_args {
 	uint16_t address; /* out */
 };
 
+/* SYS_PERSONALITY 0Fh {list:u16, count:u8, reserved:u8, entry:u16} - the
+ * Mk2 board's one-way handoff to another machine personality (docs/abi.md
+ * section 8.4); it does not return.  `list` addresses `count` page
+ * records in the caller buffer window; record n names the object page
+ * that becomes logical page n (n * 2000h) of the personality's 64 KiB space, so
+ * `count` is KOS_PERSONALITY_PAGES.  Every record is checked before
+ * anything changes: a bad block, a wrong count, a nonzero reserved byte,
+ * a handle that is not one of the caller's live objects (freed, stale,
+ * foreign), a page past the object's end, or an entry whose two bytes
+ * below it hold the nucleus's switch code is KOS_EINVAL and KonaOS stays
+ * intact.  Then the nucleus stops its interrupt and NMI sources, maps
+ * the eight pages as the whole working mapping and jumps to `entry` with
+ * interrupts masked and IM 1; leaving takes a reset.  No physical page
+ * number crosses the ABI.  On the Mk1 board the number is unassigned
+ * (KOS_ENOSYS). */
+#define KOS_SYSCALL_PERSONALITY 0x0Fu
+#define KOS_PERSONALITY_PAGES   8u
+
+struct kos_personality_page {
+	uint16_t handle;   /* the caller's object                  */
+	uint8_t  page;     /* its 8 KiB page: object offset >> 13  */
+	uint8_t  reserved; /* 0                                    */
+};
+
+struct kos_personality_args {
+	uint16_t list;     /* count kos_personality_page records */
+	uint8_t  count;    /* KOS_PERSONALITY_PAGES              */
+	uint8_t  reserved; /* 0                                  */
+	uint16_t entry;    /* the first instruction              */
+};
+
 #if defined(__SDCC)
+_Static_assert(sizeof(struct kos_personality_page) == 4,
+	       "personality page record must be 4 packed bytes");
+_Static_assert(sizeof(struct kos_personality_args) == 6,
+	       "personality block must be 6 packed bytes");
+_Static_assert(__builtin_offsetof(struct kos_personality_args, entry) == 4,
+	       "personality entry is the last word");
 _Static_assert(sizeof(struct kos_xmem_alloc_args) == 4,
 	       "xmem alloc block must be 4 packed bytes");
 _Static_assert(sizeof(struct kos_xmem_free_args) == 2,

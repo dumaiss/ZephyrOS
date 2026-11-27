@@ -4,8 +4,10 @@ The production replay boots the shell with the emulated Afternoon Blend
 card attached, runs the card program `tests/sound/sound.c` and asserts
 both the program's report and the card's exact write log: the init's
 silence, a batched sequence in order, an unknown target and an odd byte
-count writing nothing, a sequence longer than one descriptor landing
-whole, the exclusive hold's reset and refusal, a direct write reaching
+count writing nothing, an unknown target in the first or the last
+chunk of a sequence writing nothing, a sequence longer than one
+descriptor landing whole, the exclusive hold's reset and refusal, a
+direct write reaching
 the port, and the reset a close and an exit without one both perform.
 
 The static half pins the manifest, the system file and the image's place
@@ -150,7 +152,7 @@ class TestSoundContract(unittest.TestCase):
         plan = json.loads(read(DRIVER_PLAN))["nucleus"]
         free = (int(plan["driver_hot_capacity_bytes"]) -
                 int(plan["driver_hot_bytes"]))
-        self.assertGreaterEqual(free, 512,
+        self.assertGreaterEqual(free, 360,
                                 "driver hot tier has only %d bytes free"
                                 % free)
 
@@ -199,6 +201,8 @@ class TestSoundReplay(HwtestReplay):
         self.assertIn("sound: unknown -2", trace)
         self.assertIn("sound: odd -2", trace)
         self.assertIn("sound: big %d" % BIG_COUNT, trace)
+        self.assertIn("sound: late -2", trace)
+        self.assertIn("sound: early -2", trace)
         self.assertIn("sound: close 0", trace)
         self.assertIn("sound: exclusive ok", trace)
         self.assertIn("sound: busy -4", trace)

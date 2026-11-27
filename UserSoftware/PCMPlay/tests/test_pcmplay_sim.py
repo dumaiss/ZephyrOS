@@ -1,6 +1,7 @@
 """PCMPlay on the production image in the Zephyr-80 simulator.
 
-Boots ZephyrOS's build/konaos.bin with the emulated Afternoon Blend card,
+Boots ZephyrOS's production image of BOARD (mk2 by default, mk1) with the
+emulated Afternoon Blend card,
 the CTC and the IOC card peer (tests/snd_harness.py), runs pcmplay.exe
 (a client of libsnd's snd_pcm_*) from the card and checks the DAC's byte
 stream against the file for both codecs, the report, and the state every
@@ -20,9 +21,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 ZEPHYR = os.path.abspath(os.path.join(ROOT, "..", ".."))
 EXE = os.path.join(ROOT, "build", "user", "pcmplay.exe")
-IMAGE = os.path.join(ZEPHYR, "build", "konaos.bin")
-sys.path.insert(0, os.path.join(ROOT, "build", "kos-sdk-0.2.0", "tools"))
 sys.path.insert(0, os.path.join(ZEPHYR, "tests"))
+
+from replay import BOARDS, Mk2Board, app_board  # noqa: E402
+
+BOARD = app_board()
+SPEC = BOARDS[BOARD]
+IMAGE = os.path.join(ZEPHYR, SPEC["subdir"], SPEC["image"])
+sys.path.insert(0, os.path.join(ROOT, "build", SPEC["sdk"], "tools"))
 
 import pcmconv  # noqa: E402
 
@@ -32,6 +38,9 @@ try:
 except ImportError:
     SndReplay = unittest.TestCase
     HARNESS = False
+if BOARD == "mk2" and HARNESS:
+    class SndReplay(Mk2Board, SndReplay):  # noqa: F811
+        """The sound harness on the Mk2 image."""
 
 DAC = 0xE4
 RT_VECTOR = 0xEF08              # JP target: the handler, or the idle RETN
@@ -49,6 +58,9 @@ def pattern(count, seed=0):
 @unittest.skipUnless(HARNESS and os.path.isfile(EXE),
                      "needs ZephyrOS build/konaos.bin and pcmplay.exe")
 class PcmPlaySim(SndReplay):
+
+    def setUp(self):
+        self.load_image(SPEC["subdir"], SPEC["image"], SPEC["map"])
 
     def run_player(self, files, args, before=None, during=None, end=END):
         with open(EXE, "rb") as handle:
@@ -68,7 +80,7 @@ class PcmPlaySim(SndReplay):
         return z, text, dac
 
     def word(self, z, address):
-        return z.bank0[address] | (z.bank0[address + 1] << 8)
+        return z.rd16(address)
 
     def assert_restored(self, z):
         self.assertEqual(self.word(z, RT_VECTOR + 1), RT_IDLE)

@@ -87,8 +87,12 @@ class TestRtReplay(HwtestReplay):
         self.assertIn("rt: open 0", trace)
         self.assertIn("rt: held 1", trace)
         self.assertIn("rt: again -4", trace)
+        # 50 ms is 800 ticks.  The wait polls the clock and ends at the
+        # first reading at or past its deadline, and under this NMI load
+        # one reading costs about 23 ticks: the count is 800 plus the
+        # first reading's latency plus up to one reading.
         ticked = int(re.search(r"rt: ticked (\d+)", trace).group(1))
-        self.assertTrue(780 <= ticked <= 840, ticked)
+        self.assertTrue(780 <= ticked <= 860, ticked)
         self.assertIn("rt: system -4", trace)
         self.assertIn("rt: reboot -4", trace)
         self.assertIn("rt: child held 2", trace)

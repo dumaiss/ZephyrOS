@@ -36,8 +36,9 @@ static uint8_t ioc_reply_frame[KIOC_PROTOCOL_FRAME_SIZE];
 /* The bulk transfer block: one admitted lane transfer, 1..512 bytes. */
 static uint8_t ioc_bulk_buffer[KIOC_BULK_MAX];
 
-static const struct driver_api *ioc_api;
-static uint16_t ioc_reply_address;
+/* Both read by ioc_driver_command_read (ioc_io.asm). */
+const struct driver_api *ioc_api;
+uint16_t ioc_reply_address;
 static uint16_t ioc_bulk_address;
 #if KOS_IOC_PHASES
 /* The phase table's address, captured once at init: the reply publishes
@@ -107,7 +108,8 @@ static int16_t ioc_driver_reply(struct kos_ipc_frame *frame)
  * the bulk loop moves the bytes straight to or from it.
  * Every resident image is mapped together in bank 6's hot tier
  * (6000h-DFFFh, formats/include/mod.h), so the address is valid here as it
- * is in the caller; anything outside that tier is refused. */
+ * is in the caller; anything outside that tier is refused, except that
+ * COMMAND_READ (ioc_io.asm) also accepts a buffer inside the live borrow. */
 #define IOC_DIRECT_BASE 0x6000u
 #define IOC_DIRECT_END  0xE000u
 
@@ -192,39 +194,25 @@ static int16_t ioc_driver_bulk_write(struct kos_ipc_frame *frame)
 
 /* KIOC_OP_COMMAND_READ: the command, then the bulk receive its READY
  * admitted, in one call - a run's packets back to back when it admitted
- * more than one.  The buffer word is read before the reply reuses the
- * payload. */
-static int16_t ioc_driver_command_read(struct kos_ipc_frame *frame)
-{
-	uint8_t word[2];
-	uint8_t *dst;
-	uint16_t length;
-	int16_t result;
-	int bulk;
-
-	if (frame->arg1 > KIOC_COMMAND_READ_BUFFER) {
-		return (int16_t)-KOS_EINVAL;
-	}
-	word[0] = frame->payload[KIOC_COMMAND_READ_BUFFER];
-	word[1] = frame->payload[KIOC_COMMAND_READ_BUFFER + 1u];
-	result = ioc_driver_command(frame);
-	if (result != 0) {
-		return result;
-	}
-	length = ioc_admitted_read((void *)&ioc_state);
-	if (length == 0u) {
-		return 0;
-	}
-	dst = ioc_direct_at(word, length);
-	if (dst == (uint8_t *)0) {
-		return (int16_t)-KOS_EINVAL;
-	}
-	bulk = ioc_bulk_read((void *)&ioc_state, dst, length);
-	if (bulk != KIOC_OK) {
-		return (int16_t)bulk;
-	}
-	return (int16_t)length;
-}
+ * more than one - in ioc_io.asm.  The READY is judged before the first
+ * byte lands: ioc_command admits only a status-0, eight-byte READY with a
+ * nonzero transfer id from a bulk-arming class, ioc_admitted_read only
+ * the MCU-to-Z80 direction, and the assembly adds the capacity
+ * (payload[20..21]), the echoed offset (READY DATA 4-7 against the
+ * request's DATA 2-5) and the buffer (payload[22..23]: the hot tier, or
+ * inside the live borrow, KOS_IPC_DESC_OUT).  A refused READY leaves the
+ * controller mid-phase, so it is abandoned (phase IDLE, and the link
+ * recovers before the next command) and the call answers -KOS_EINVAL.
+ * Each packet's header and trailer still follow its payload on the wire
+ * (ioc_io_run_read). */
+extern int16_t ioc_driver_command_read(struct kos_ipc_frame *frame);
+#if defined(__SDCC)
+_Static_assert(KIOC_COMMAND_READ_CAPACITY == 20u &&
+	       KIOC_COMMAND_READ_BUFFER == 22u && KIOC_OK == 0 &&
+	       KOS_EINVAL == 2 && KOS_IPC_DESC_OUT == 1u &&
+	       __builtin_offsetof(struct driver_api, borrowed) == 34u,
+	       "ioc_io.asm IOC_CR_*");
+#endif
 
 /* The RT clock's three operations (KIOC_OP_RT_CLOCK, KOS_OP_ACQUIRE,
  * KOS_OP_RELEASE), in ioc_io.asm; anything else is -KOS_EINVAL. */

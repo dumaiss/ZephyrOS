@@ -40,7 +40,12 @@ user/sdk/
   src/ipcgate.asm         the call gate
   src/nsgate.asm          the bind, unbind, list and exec blocks
   src/diaggate.asm        the diagnostic gates
-  src/xmemgate.asm        extended memory and the aperture helpers
+  src/xmemgate.asm        the aperture helpers (Zephyr-80: the latch)
+  src/vcall.asm           kos_vcall, the placed programs' veneer
+                          trampoline (Zephyr-80)
+  src/mk2/xmemgate.asm    the aperture helpers (Zephyr-80 Mk2: the
+                          far-window vector)
+  src/mk2/vcall.asm       the veneer trampoline (Zephyr-80 Mk2)
   src/sdcc_calls.asm      SDCC's indirect-call trampolines
   src/bcall.asm           ___sdcc_bcall_ehl, the banked-call trampoline
   src/args.c              startup(), splitargs()
@@ -49,6 +54,7 @@ user/sdk/
   src/truncate.c          truncate
   src/exec.c              run()
   src/xmem.c              xalloc and friends
+  src/personality.c       personality (Mk2)
   src/seg.c               seginfo, segmap, farcall, farmap, blob
   src/xload.c             xload()
   src/console_proto.c     the CONSOLE protocol client
@@ -161,6 +167,7 @@ build in parallel. Each declaration also defines a `NAME` target.
 | `TUI_GRID=CxR` | `85x26` | the libtui capacity: `tui` in `LIBS` links `lib/libtui_<C>x<R>.lib` (`128x35`), or `libtui.lib` for `85x26`; any other grid is a build error |
 | `RESIDENT=SRC:SRC` | none | sources that stay resident: event handlers and anything else that must run while a far segment is mapped (architecture 7.2) |
 | `PLACE=MOD=ZONE:…` | none | placement pins, colon separated: a program source (`view.c=far1`) or a library member (`libgfx.lib(gfx_text.rel)=home`) pinned to `resident`, `home` or `farN`. The member form is written as shown, parentheses included, with no shell quotes: the rule quotes each pin. A library built for another grid is named by its archive (`libtui_128x35.lib(tui_mouse.rel)`) |
+| `HEADROOM=N` | `64` | the resident bytes a placed program's fill leaves unused (section 3) |
 | `FAR1=SRC:SRC` … `FAR4=SRC:SRC` | none | hand-declared far-code sources of segment n, linked at `8000h` (section 6.6); such a program is not placed |
 | `DATA1=SRC:SRC` … `DATA4=SRC:SRC` | none | far-data sources of data segment n, linked at `8000h` (section 12) |
 | `BLOBS=a.bin:b.bin` | none | binary payloads bundled as plain data segments (at most 32 KiB each) |
@@ -389,7 +396,11 @@ cannot tell them from instructions, so the SDK declares the members
 reached through function pointers (`KOS_POINTER_MEMBERS_<library>` in
 `mk/kos.mk`: libtui's `tui_mouse.rel`; libkres's `kres_mut.rel`,
 `kres_adapter.rel`, `kres_adapter_mut.rel` and `kres_cache_xmem.rel`) and
-every placed program that links the library gets them resident. A `PLACE=`
+every placed program that links the library gets them resident. The placer
+fills what is left of the resident zone with the most-called code, counting
+the veneers each unit creates, and stops `HEADROOM=` bytes short of the end
+(64 by default); pins and the resident set that alone overflow the zone are
+an error naming the pins and the bytes. A `PLACE=`
 pin of such a unit to `home` or a far segment is refused, naming the unit
 and the table that points at it; a pin to `resident` is redundant but
 accepted. The link writes the placement (each module's zone and size, every
@@ -521,7 +532,20 @@ the open failed); each carries its own 512-byte buffer, so a read is one
 card read per 512 bytes and a write leaves when the buffer fills, at
 `fclose`, at `fflush` and at exit. A read or write of a buffer or more
 bypasses the buffer and moves the bytes once, straight into or out of the
-caller's memory. `fseek` flushes pending writes and drops the read
+caller's memory. `fread` and `fwrite` treat `size * nmemb` as one run of
+bytes whatever the item size, so `fread(p, 1, n, f)` and `fread(p, n, 1, f)`
+make the same backend requests; the result is the count of whole items, and
+the bytes of a partial final item are still consumed (read) or accepted
+(written). The caller's range `size * nmemb` must fit the 64 KiB address
+space; the sum is formed in groups of at most 65535 bytes, so it never wraps.
+Measured on the simulator (`tests/perf_os_sdk.py`: the call's entry to its
+return, a freshly opened stream, 4,096 bytes of a file the driver's cache
+holds, interrupts masked), `fread` costs about 190,000 T-states on Mk2
+(Mk1 about 387,000) whether it asks for 4,096 one-byte items or one
+4,096-byte item, and `fwrite` of the same bytes to a card file about
+892,000 (Mk1 1,085,000), most of it the card writes; `fputs` of 512
+characters into an empty buffer costs 137,929 (Mk1 160,627).
+`fseek` flushes pending writes and drops the read
 buffer, so the next read starts where it says; `ftell` is the logical
 position, counting the bytes still buffered either way. `feof`/`ferror`
 report the stream's state, and a call that cannot report an error through
@@ -532,8 +556,9 @@ does gets the exit flush for free, because `exit` calls the console
 flush and that calls back into the stream layer when it is linked
 (section 8).
 
-One trap: the runtime provides *division* helpers, not a multiply. SDCC
-turns a variable or 32-bit product into a call to `__mulint`/`__mulong`,
+One trap: the runtime provides 16-bit multiply helpers (`__mulint`, member
+`klibc/mul`) and division helpers, but no 32-bit multiply. A 16-bit variable
+product links `__mulint`; a 32-bit product becomes a call to `__mullong`,
 which no member defines, so such a program does not link. Products of a
 value and a small constant fit only when the low byte matters or the
 constant is a power of two (a shift); otherwise write the shift-and-add
@@ -610,6 +635,13 @@ int  rename(const char *oldpath, const char *newpath);
 
 Paths are at most 127 bytes; a longer or empty one is refused locally with
 `-KOS_EINVAL`. `docs/filesystem.md` has the semantics.
+
+A `read` that fails (a negative result) leaves the bytes of the requested
+range unspecified: a device can deliver a block straight into the buffer
+and judge its packet only once the bytes have landed. Bytes outside the
+range are never changed, and the file position stays where it was. A
+short count means the bytes it names arrived and the rest of the range is
+untouched by that read.
 
 ### 6.3 Objects and the namespace (`kos/ipc.h`)
 
@@ -689,11 +721,28 @@ int xwrite(unsigned int handle, unsigned int offset,
            const void *buffer, unsigned int length);
 int xinfo(unsigned int handle, struct kos_xmem_info *out);
 int xmap(unsigned int handle, unsigned int *address);
-unsigned char aperture_open(unsigned char token);   /* returns the previous latch */
+unsigned char aperture_open(unsigned char token);   /* returns the previous token */
 void aperture_close(unsigned char previous);
+int personality(const struct kos_personality_page *pages, unsigned char count,
+                unsigned int entry);              /* Mk2; returns only on a refusal */
 ```
 
-`aperture_open` and `aperture_close` are register-only: no syscall.
+`aperture_open` and `aperture_close` are register-only: no syscall.  The
+token is the board's: on Zephyr-80 the latch value they write to the
+memory-control port, on Zephyr-80 Mk2 a one-byte mapping handle they
+hand to the far-window vector (`RST 28h`, `docs/abi.md` section 8.3).
+Both keep `DE` and `HL`.
+
+`personality` hands the Zephyr-80 Mk2 to another machine (`docs/abi.md`
+section 8.4): `pages[n]` names the object page (`handle`, `page`, the
+8 KiB unit of the object) that becomes `n * 2000h` of the personality's 64 KiB
+space, `count` is `KOS_PERSONALITY_PAGES`, and the CPU continues at
+`entry` there with interrupts masked and `IM 1`, KonaOS's interrupt and
+NMI sources stopped. It does not return; a reset leaves the
+personality. A refused list returns `-KOS_EINVAL` with KonaOS intact (a
+wrong count, a freed or foreign handle, a page past its object); Mk1
+returns `-KOS_ENOSYS`. The program sets the video chip up for that
+machine before the call, and nothing draws on the console after that.
 
 ### 6.6 Segments and far code (`kos/seg.h`)
 
@@ -720,13 +769,13 @@ result = far_main(a, b);
 SDCC emits `ld e,#b_<fn>` / `ld hl,#_<fn>` / `call ___sdcc_bcall_ehl`;
 the SDK's trampoline (`src/bcall.asm`) keeps one token per segment (only
 the first call of a segment costs a `SYS_SEG_MAP`), opens the aperture,
-calls, and restores the caller's latch. Arguments travel on the stack;
+calls, and restores the caller's mapping. Arguments travel on the stack;
 results come back in `A`, `DE` or `DEHL`. Far code may make banked calls of
 its own. A banked call that names no far segment reports `KOS_RT_EFARMAP`
 (an SDK-level code outside the syscall error range) and does not run.
 
 **`farcall`** is the primitive under it: it maps a segment, calls a far
-entry by its linked address and restores the latch. Far code may call
+entry by its linked address and restores the caller's mapping. Far code may call
 primary code directly and make syscalls, whose buffers follow the
 buffer-identity rule while the aperture is open.
 
@@ -900,9 +949,11 @@ ways to use it:
 - **Batched writes.** Build a sequence of `struct ksound_write`
   `{target, value}` pairs (target 0-3 a PSG, 4 the DAC; the
   `KSOUND_TARGET_*` names) and send it with `sound_write`: one call into
-  the driver for the whole sequence, which is the point, since a call
-  costs about 15,500 T-states. A music tick's register writes belong in
-  one call. A sequence longer than one descriptor (4 KiB) is split over
+  the driver for the whole sequence. On the simulator a `sound_write` of
+  16 pairs costs 20,111 T-states on Mk2 (Mk1 21,200) and of 128 pairs
+  64,973 (Mk1 86,154), against 7,359 (Mk1 4,651) for a null IPC call
+  (architecture 2.7.7). A music tick's register writes belong in one
+  call. A sequence longer than one descriptor (4 KiB) is split over
   several calls; an unknown target is `-KOS_EINVAL` with nothing of that
   call written. It returns the writes performed.
 - **Direct I/O.** `sound_open(1)` takes the card exclusively (a second
@@ -1223,6 +1274,7 @@ needed.
 | `key_pending`, `key_poll`, `key_reset` | `key`, `console_proto` |
 | `key_get` | `key_get`, `key`, `idle_input` |
 | `xalloc` and friends | `xmem`, `kos_xmemgate` |
+| `personality` | `personality` |
 | `seginfo`, `segmap`, `farcall`, `farmap`, `blob` | `seg` |
 | `xload` | `xload` |
 | a `__banked` call | `kos_bcall` |
@@ -1230,7 +1282,8 @@ needed.
 | `diag_*` | `kos_diaggate` |
 | `printf` | `printf`, `strlen`, `utoa`, `ultoa`, `itoa`, `ltoa` |
 | `/` or `%` on integers | `sdcc_arith` / `sdcc_arith_signed` and their entry stubs |
-| a product of two variables, or a 32-bit product | nothing: `__mullong`, which no member defines - the link fails (section 5) |
+| a 16-bit product of two variables | `klibc/mul` (`__mulint`) |
+| a 32-bit product | nothing: `__mullong`, which no member defines - the link fails (section 5) |
 | `strcmp`, `memset`, ... | that one member |
 | `fopen`, `fclose` | `stdio`, with `fs`, `timer`, `console_proto` and the IPC gates it calls into |
 | `fread`, `fgetc`, `getc`, `fgets` | `fread`, plus the `stdio` group |
@@ -1381,8 +1434,25 @@ The examples:
 ## 11. The standalone SDK
 
 ```sh
-make sdk        # build/kos-sdk-<version>/ and its .tar.gz
+make sdk             # build/kos-sdk-<version>/ and its .tar.gz
+make sdk BOARD=mk2   # build-mk2/sys/kos-sdk-<version>-mk2/ and its .tar.gz
 ```
+
+**One SDK per board.** A program runs only on the CPU board it was built
+for: the SDK's mapping members open the far aperture the board's way
+(`src/xmemgate.asm` and `src/vcall.asm` write the Zephyr-80 latch,
+`src/mk2/` hands a mapping handle to the Zephyr-80 Mk2 far-window
+vector), and the loader refuses a program packed for the other board
+(`docs/exe-format.md`, the header's `board`).  `make sdk BOARD=mk2`
+builds the Mk2 SDK: its libraries carry the Mk2 members and are
+compiled with `-DKOS_BOARD_MK2`, and its `mk/board.mk` sets `KOS_BOARD :=
+mk2`, so `mk/kos.mk` compiles every program with the board's definitions
+and packs it with `exepack.py pack --board mk2`.  The headers, the
+program rule, the placement (zones, veneers, the `8000h` far link
+address) and every source are the same on both boards; a program that
+must know its board tests `KOS_BOARD_MK2`.  In the OS tree the build's
+`BOARD` selects the same (`user/sdk/exe.mk`), and `make BOARD=mk2`
+builds the Mk2 image's programs and store with it.
 
 The package holds everything a program needs and nothing from the tree it
 was built in. Repacking unchanged sources reproduces it byte for byte (the
@@ -1405,6 +1475,7 @@ kos-sdk-<version>/
                    kres, the KRES container tool (§13), an executable
                    built for the machine that built the SDK
   mk/kos.mk        the program rule
+  mk/board.mk      KOS_BOARD, the board the libraries are built for
   template/        Makefile and hello.c
   examples/        hello, fardemo, fardata, files, tui_demo, tui_keys,
                    tui_dialog, tui_mouse, gfx_mouse
@@ -1507,6 +1578,10 @@ Data that does not fit in the program's 56 KiB. Four ways in:
 | `BLOBS=` files | at build time, binary files | `blob(n)` gives the handle; `xread`/`xwrite` copy | slots only; a copy per access |
 | `xalloc` | at run time | `xread`/`xwrite`, or `xmap` + `aperture_open` if mappable | a bank's aperture slice for a mappable object, slots otherwise |
 | `xload(path, flags)` | at run time, a file | its handle, as for `xalloc` | one copy of the file |
+
+The costs are Zephyr-80's; on Zephyr-80 Mk2 every segment and object is
+whole 8 KiB pages of its own, wherever free pages are, so the bounds are
+the free pages and the 32-entry object table (`docs/abi.md` section 8.3).
 
 ```c
 unsigned char saved;

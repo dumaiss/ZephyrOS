@@ -1,8 +1,10 @@
 ; Common IM2 source stubs and the non-nested mode-crossing, P-normalizing
-; gate (revision 13).
+; gate (revision 13).  Assembled for Mk2, the gate saves the mapping value
+; and runs the dispatcher in the system DAT bank (architecture 2.7.6).
 	.module irq_entry
 	.include "hardware.inc"
 	.include "memory.inc"
+	.include "map_ops.inc"
 	.include "irq.inc"
 
 	.globl _irq_dispatch
@@ -68,7 +70,7 @@ irq_common_entry::
 	push	hl
 	exx
 
-	in	a,(KOS_MEMCTL_PORT)
+	KOS_MAP_CURRENT
 	ld	(irq_saved_latch),a
 	; Revision 13: the IRQ gate normalizes the page field.  The whole
 	; latch (Q, mode, P) is saved in the gate's own slot above; dispatch
@@ -78,16 +80,15 @@ irq_common_entry::
 	; decode.  The exit path below restores the saved latch exactly, so
 	; an interrupted window call (4.5) finds its page selection
 	; untouched.
-	and	#(KOS_MODE_MASK | KOS_BANK_MASK)
-	or	#KOS_MODE_OS
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_BANK_OF
+	KOS_MAP_SYSTEM
 	ld	(irq_common_sp),sp
 	ld	sp,#irq_isr_stack_top
 	call	_irq_dispatch
 	ld	sp,(irq_common_sp)
 
 	ld	a,(irq_saved_latch)
-	out	(KOS_MEMCTL_PORT),a
+	KOS_MAP_RESTORE
 
 	; Device events (architecture 4.10): the interrupted latch is back, so
 	; the code about to return is the process the event belongs to.  The

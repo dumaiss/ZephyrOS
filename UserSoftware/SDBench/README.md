@@ -1,7 +1,7 @@
 # SDBench for KonaOS
 
 This is a C port of the read-only parts of
-`Code/HOST/Utilities/src/ioc_sdbench.asm`. It uses the KonaOS 0.1.0
+`Code/HOST/Utilities/src/ioc_sdbench.asm`. It uses the KonaOS
 application SDK supplied by ZephyrOS. Both normal FILE-API benchmarking and
 the original controller `/SHARED` benchmark are supported.
 
@@ -33,9 +33,9 @@ From this directory:
 make
 ```
 
-The first build unpacks
-`../../../../ZephyrOS/build/kos-sdk-0.1.0.tar.gz` beneath the ignored local
-`build/` directory. The resulting application is:
+The first build unpacks the SDK of the selected board (`BOARD=mk2`, the
+default, or `BOARD=mk1`; `../sdk.mk`) into the ignored local `build/`
+directory; `make clean` before changing board. The resulting application is:
 
 ```text
 build/user/sdbench.exe
@@ -43,6 +43,11 @@ build/user/sdbench.exe
 
 `KOS_SDK_ARCHIVE` and `KOS_SDK_ROOT` can be overridden for a different SDK
 location or an already unpacked SDK.
+
+`make test` launches the timed run and `-n` from the shell of the board's
+production image (`../../tests/test_app_launch.py`), so the OS images of the
+selected board must be built (`make BOARD=mk2` and `make sdk BOARD=mk2` in
+`../..`, or `make` and `make sdk` for `BOARD=mk1`).
 
 ## Run
 

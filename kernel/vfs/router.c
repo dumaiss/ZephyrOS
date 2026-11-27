@@ -35,6 +35,9 @@
 #include "kernel/lib/name.h"
 #include "kernel/ipc/ipc.h"
 #include "kernel/syscall/diag.h"
+#if defined(KOS_BOARD_MK2)
+#include "kernel/memory/mk2/pages.h"
+#endif
 
 #include "kernel.h"
 #include "kos/errno.h"
@@ -117,12 +120,16 @@ int vfs_ns_resolve(uint8_t pid, uint8_t handle, uint8_t *endpoint,
 
 /* One entry, assembled on the gate stack and written to the caller's bank
  * through the checked copy gate (the common staging buffer is the gate's
- * single staging block; single-tasking makes it unambiguously ours). */
+ * single staging block; single-tasking makes it unambiguously ours).  On
+ * Mk2 the entry goes to the caller's pages through its current mapping
+ * (kos_caller_map), and `bank` only names the caller. */
 int vfs_emit(uint8_t bank, uint16_t out, uint16_t slot,
 		   const char *name, uint16_t name_length, uint8_t type,
 		   uint8_t flags)
 {
+#if !defined(KOS_BOARD_MK2)
 	struct kos_bank_copy_req req;
+#endif
 	struct kos_ns_entry entry;
 	uint8_t i;
 
@@ -136,6 +143,13 @@ int vfs_emit(uint8_t bank, uint16_t out, uint16_t slot,
 	for (i = 0; i < KOS_NS_NAME_MAX; ++i) {
 		entry.name[i] = (i < name_length) ? name[i] : '\0';
 	}
+#if defined(KOS_BOARD_MK2)
+	(void)bank;
+	kos_pages_copy((const uint8_t *)0, (uint16_t)&entry, kos_caller_map(),
+		       (uint16_t)(out + slot * KOS_NS_ENTRY_SIZE),
+		       KOS_NS_ENTRY_SIZE);
+	return 0;
+#else
 	for (i = 0; i < KOS_NS_ENTRY_SIZE; ++i) {
 		kos_user_copy_staging[i] = ((const uint8_t *)&entry)[i];
 	}
@@ -148,6 +162,7 @@ int vfs_emit(uint8_t bank, uint16_t out, uint16_t slot,
 		return -KOS_EFAULT;
 	}
 	return 0;
+#endif
 }
 
 /* Room for one more entry in this batch?  The kernel links no arithmetic
@@ -279,6 +294,36 @@ int vfs_fs_namespace_op(uint8_t op, const char *norm,
 	return result;
 }
 
+#if defined(KOS_BOARD_MK2)
+/* One nucleus-side FILE call on a bound handle (the cold loader): a read's
+ * bytes land at `addr` through `map`.  The `/fs` provider is a driver,
+ * called with no instance pair. */
+int16_t vfs_ns_file_call(uint8_t handle, uint8_t object,
+			 struct kos_ipc_frame *frame, const uint8_t *map,
+			 uint16_t addr, uint16_t length)
+{
+	struct vfs_handle_entry *entry;
+	uint8_t endpoint;
+
+	entry = vfs_handle_find(vfs_owner_current(), handle);
+
+	if (entry == (struct vfs_handle_entry *)0) {
+		return -KOS_EINVAL;
+	}
+	endpoint = entry->endpoint;
+	if (endpoint == VFS_NS_FS_ENDPOINT) {
+		if (vfs_ns_fs_endpoint == 0u) {
+			return -KOS_ENODEV;
+		}
+		endpoint = vfs_ns_fs_endpoint;
+		frame->payload[0] = object;
+		handle = 0u;
+		object = 0u;
+	}
+	return ipc_nucleus_call_pages(endpoint, object, handle, frame, map,
+				      addr, length);
+}
+#else
 /* One nucleus-side FILE call on a bound handle (the cold loader). */
 int16_t vfs_ns_file_call(uint8_t handle, uint8_t object,
 			 struct kos_ipc_frame *frame, uint16_t length,
@@ -309,6 +354,7 @@ int16_t vfs_ns_file_call(uint8_t handle, uint8_t object,
 	return ipc_nucleus_call_object_common(entry->endpoint, object, handle,
 					      frame, length, dir);
 }
+#endif
 
 /* `chdir` asks the owning provider whether `norm` is traversable. */
 int vfs_ns_dir_check(const char *norm, uint8_t *ok)

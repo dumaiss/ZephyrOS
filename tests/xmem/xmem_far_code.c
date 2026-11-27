@@ -35,9 +35,18 @@
 
 #define CHILD_PATH "/system/xmem_child.exe"
 
+#if defined(KOS_BOARD_MK2)
+/* Zephyr-80 Mk2 reads back no latch: re-opening the handle the primary
+ * half expects (xmem_far_window) returns the handle in force, and leaves
+ * the window as it is when the two agree. */
+extern unsigned char xmem_far_window;
+#define WINDOW_TOKEN() aperture_open(xmem_far_window)
+#else
 /* The banking latch (port 00h): mode in D4-D3, bank in D2-D0, page in
  * D7-D5.  Read directly. */
 __sfr __at 0x00 latch_port;
+#define WINDOW_TOKEN() latch_port
+#endif
 
 /* The primary half: a function and a static, both outside the aperture. */
 extern int xmem_far_primary(int value);
@@ -50,7 +59,7 @@ static const char far_text[] = "xmem-far: far code says hello\r\n";
 
 int xmem_far_entry(int handle, int arg)
 {
-	unsigned char latch = latch_port;
+	unsigned char latch = WINDOW_TOKEN();
 	unsigned int text = (unsigned int)(sizeof(far_text) - 1u);
 	int status;
 

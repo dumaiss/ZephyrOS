@@ -108,6 +108,7 @@ part of the ABI:
 | `0Ch` | `REBOOT` | none | does not return; `KOS_EBUSY` while a program holds the real-time interrupt |
 | `0Dh` | `NOTIFY` | `{handle:u8, reserved:u8, handler:u16, trampoline:u16}` | `HL` = 0 |
 | `0Eh` | `EVENT_RETURN` | none | does not return |
+| `0Fh` | `PERSONALITY` | `{list:u16, count:u8, reserved:u8, entry:u16}` | Mk2 only (section 8.4): does not return; `KOS_ENOSYS` on Mk1 |
 | `10h` | `RT_REGISTER` | `{handler:u16}` | `HL` = 0; the handler must lie in the RT region (`KOS_EINVAL`), `KOS_EBUSY` while another program holds it |
 | `11h` | `RT_RELEASE` | none | `HL` = 0 |
 | `12h` | `RT_INFO` | `{buffer:u16}` | 8-byte record at `buffer`: region base, size, held (0 free, 1 the caller, 2 another program) |
@@ -173,6 +174,7 @@ there is no `wait` and no asynchronous spawn.
 | a directory | `KOS_EISDIR` |
 | no card behind `/fs` | `KOS_ENODEV` |
 | malformed, oversize or wrong-ABI EXE, or not an EXE entry in `/system` | `KOS_EINVAL` |
+| an EXE built for another CPU board (its header's `board`) | `KOS_EBOARD` |
 | bad block, tail over 125 bytes, tail outside the window | `KOS_EINVAL` |
 | no free slot, bank or auxiliary space | `KOS_ENOSPC` |
 | depth limit reached, or the gate frame too large | `KOS_EBUSY` |
@@ -210,6 +212,13 @@ V9958, the SIO, the CTC, the IOC and the keyboard controller. Each driver's
 bring-up therefore programs its device fully from any state rather than
 from power-on defaults, which is what makes the reboot indistinguishable
 from a cold start (`docs/devices.md` section 15).
+
+On the Mk2 board (architecture 2.7.5) `REBOOT` is a reset: the IOC
+driver sends the IO controller its reset command, the controller holds
+the Z80 in reset, stops the real-time clock and releases it into the
+pass-mode ROM view, and the bootstrap runs from the first instruction.
+The call returns only when no reset came: `KOS_ENODEV` in a build without
+the IOC driver, `KOS_EIO` when the controller did not take the command.
 
 The SDK wrapper is `void reboot(void)`; it does not return. The monitor's
 `B` command and the shell's `reboot` built-in call it.
@@ -258,7 +267,8 @@ the handle's protocol (`abi/kos/protocol.h`).
 
 - **Carry set, `A` = `KOS_EINVAL`:** the request never reached the IPC
   layer: the block was outside the window, `frame_length` was 0 or above
-  32, or a reserved byte was not zero.
+  32, a reserved byte was not zero, or `handle` is not one of the caller's
+  bound handles (unknown, released, stale or another process's).
 - **Carry clear, `HL` = the status** (also written to `status`, and the
   reply frame written back into the block): 0 or positive is the driver's
   result. Negative is `-KOS_E*`, either a driver's protocol error or a
@@ -266,7 +276,6 @@ the handle's protocol (`abi/kos/protocol.h`).
 
   | refusal | error |
   |---|---|
-  | unknown, stale or foreign handle | `KOS_EINVAL` |
   | forged or released descriptor id | `KOS_EINVAL` |
   | `offset + length` past the descriptor | `KOS_EINVAL` |
   | re-entry into a non-re-entrant endpoint | `KOS_EBUSY` |
@@ -274,6 +283,12 @@ the handle's protocol (`abi/kos/protocol.h`).
 
 A negative status with carry clear is a normal reply, not a syscall
 failure.
+
+**A failed read.** When a call that names an OUT buffer fails - a FILE
+`read` (`KFILE_OP_READ`) with a negative status - the bytes of the
+requested range are unspecified (a device may have received a packet into
+the buffer before its header or check failed); bytes outside the range are
+unchanged, and the file position is not advanced.
 
 **The descriptor.** One optional caller buffer per call, named by `buffer`,
 `length` and `direction` (`KOS_IPC_DESC_IN` = 0, the caller supplies data;
@@ -284,8 +299,10 @@ and the frame's `desc` is `KOS_IPC_DESC_NONE` (`FFh`). Otherwise:
   memory, and be at most `KOS_IPC_DESC_MAX` (4,096) bytes;
 - the nucleus captures it at entry from the caller's saved latch and hands
   the driver a small id; the driver never sees the address;
-- drivers reach it only through `copy_in`/`copy_out`, which check
-  `offset + length` on every use;
+- drivers reach it only through the nucleus: `copy_in`/`copy_out`, which
+  check `offset + length` on every use, or a borrow of part of it as plain
+  memory (Mk2: a page-0 buffer at `0105h-1FFFh`, clear of the call block),
+  which the nucleus bounds the same way and ends with the call;
 - an id is valid only below the level that captured it, so ids flow down a
   call chain and a driver can never forge one;
 - with a non-zero saved page, a buffer wholly inside `8000h-BFFFh` names the
@@ -477,6 +494,124 @@ offset 6  u16  flags    KOS_XMEM_FLAG_MAPPABLE for a mappable data segment
 The SDK wrappers are `seginfo`, `segmap`, `farcall`, the `__banked`
 trampoline and `farmap`/`farunmap` (`docs/sdk.md`).
 
+### 8.3 Zephyr-80 Mk2
+
+On the Mk2 board (architecture 2.7.6; `KOS_BOARD_MK2` selects the
+board-conditional parts of `kos/xmem.h`) the family keeps its numbers,
+blocks, records and error rules. An object is a list of 8 KiB pages;
+nothing about them is visible.
+
+- `ALLOC`: the size rounds up to whole 8 KiB units, at most
+  `KOS_XMEM_MAX_OBJECT` (56 KiB); a `MAPPABLE` object is at most 16 KiB,
+  the far window. A zero size, an unknown flag or a mappable size over
+  16 KiB is `-KOS_EINVAL`; a larger size, a full object table (32
+  objects system-wide) or too few free pages is `-KOS_ENOSPC`, and an
+  allocation takes all its pages or none. Contents are undefined.
+- `READ`, `WRITE`: the buffer lies in `0100h-DFFFh` and the range inside
+  the object (`-KOS_EINVAL`, checked before a byte moves). The buffer is
+  resolved through the caller's current mapping, far window included, so
+  it may also straddle the window's edges; the bytes move directly
+  between the caller's pages and the object's.
+- `INFO` reports `allocated` in whole 8 KiB units; `type` is
+  `KOS_XMEM_TYPE_RUNTIME`, or `KOS_XMEM_TYPE_SEGMENT` for a loader
+  segment.
+- `MAP` returns in `HL` a **mapping handle** and `address` = `8000h`.
+  The handle is opaque, nonzero and one byte (`H` = 0), so the SDK keeps
+  it in the same `unsigned char` a Mk1 token uses. The far window
+  (`8000h-BFFFh`) then shows the object's first 16 KiB, or a one-unit
+  object at `8000h` and the program's own memory at `A000h`. A stale,
+  foreign or non-mappable handle is `-KOS_EINVAL`.
+- **The far-window vector.** Every program page-0 image carries
+  `JP kos_far_map` at `0028h` (`KOS_FAR_VECTOR`), beside the syscall
+  vector at `0030h`, so a program opens the window with `RST 28h`:
+
+  ```text
+  entry   RST 28h        HL = a mapping handle, or 0 for the program's own memory
+  return  carry clear:   HL = the handle in force before
+          carry set:     nothing changed (a handle that names no live
+                         mapping: its object freed, a malformed value)
+  ```
+
+  Passing the returned handle back closes what the call opened. It
+  preserves the caller's interrupt state and clobbers `AF`, `BC`, `DE`.
+  The vector is not a syscall: the window changes in common memory, with
+  interrupts masked for the two entry writes, without crossing the gate.
+  On the simulator an open costs about 474 T-states and a close about
+  429, the `RST` included (`tests/test_mk2_programs.py`), against about
+  1,520 for a syscall round trip without its body - the reason the ABI
+  is a vector.
+- **The window is part of the program's context.** The handle in force is
+  the program's own: a child starts with handle 0 and its parent's
+  window is unchanged when it resumes. A syscall made with the window
+  open names buffers through it and returns with it open (the gate keeps
+  the exact working bank); an interrupt returns to the exact window. An
+  event handler runs with the window closed (handle 0), and
+  `EVENT_RETURN` opens the window the interrupted code had, whatever the
+  handler mapped (a handle the handler freed is refused and the window
+  stays closed).
+- `SEG_INFO`, `SEG_MAP`: every segment is an object of its own pages,
+  placed at load (or the `EXEC` fails with `KOS_ENOSPC` when the pages
+  or the 32 object entries run out), holding the segment from its first
+  byte. `SEG_INFO` writes the record of section 8.2. `SEG_MAP` returns a
+  far-code segment's mapping handle, which opens the window onto it at
+  `8000h`, where it was linked; a mappable data segment is opened with
+  `XMEM_MAP`. `FREE` refuses a segment's handle; exit releases it.
+- `EXEC` refuses a program built for the other board (the EXE header's
+  `board`, `docs/exe-format.md`) with `KOS_EBOARD`.
+- Handles are owner-tagged and generation-counted; a child inherits no
+  object, and exit releases every object and page the process owns.
+
+### 8.4 `PERSONALITY` (Zephyr-80 Mk2)
+
+`PERSONALITY` (`0Fh`, `abi/kos/xmem.h`) hands the machine to another
+personality, a whole 64 KiB space the program built in its own
+extended-memory pages, and never returns: leaving it takes a reset. It is
+how ColecoGo starts a ColecoVision. On Mk1 the number is unassigned
+(`KOS_ENOSYS`).
+
+```text
+block   {list:u16, count:u8, reserved:u8, entry:u16}
+list    count records {handle:u16, page:u8, reserved:u8}, in 0100h-DFFFh
+```
+
+Record `n` names the object page (object offset `page * 2000h`) that
+becomes logical page `n` (`n * 2000h`) of the personality's space, so `count` is
+`KOS_PERSONALITY_PAGES` (8) and the space is any eight pages of any of
+the caller's objects (a 56 KiB object holds seven, so a full space takes
+two objects). No physical page number crosses the ABI.
+
+- **Checked first.** A block outside the window, a count other than 8, a
+  reserved byte that is not 0, a list outside the buffer window, a
+  handle that is not one of the caller's live objects (freed, stale,
+  foreign), a page past its object's end, or an entry whose two bytes
+  below it hold the nucleus's switch code is `KOS_EINVAL`, and nothing
+  has changed.
+- **Teardown**, with interrupts masked from its first step, through each
+  owner's stop path: the real-time vector back to its idle `RETN` and
+  the IO controller's RT clock stopped (the release of `/dev/rtclock`'s
+  exclusive hold), so no NMI follows; the sound card reset (`KSOUND_OP_RESET`),
+  which also ends any stream; every CTC channel stopped
+  (`platform_ctc_quiesce_all`, the timer tick and the event timer). The
+  serial lanes and the IO controller's HID doorbell raise no Z80
+  interrupt in any KonaOS image (WR1 = 00h), and the V9958 interrupts
+  only while a program holds the display, so nothing else is running.
+- **The switch** runs from the fixed region, which the system bank keeps
+  mapped throughout: the copy windows get the program's own pages, the
+  eight pages become the working DAT entries 8-15, mirror first (the
+  common page leaves the working bank), `IM 1` is set, and the two bytes
+  below `entry` in the system mapping become `OUT (C),A`; the jump there
+  selects the working bank, and the next fetch is `entry` in the
+  personality's space. The image starts with interrupts masked and `IM 1`, the RT
+  clock and the CTC stopped.
+- **Abandoned:** every process, object, handle, driver state, the
+  console and the nucleus itself stay in their pages, unreachable; no
+  page is freed. The video chip is the program's: it leaves the display
+  as the personality needs it before the call (ColecoGo's TMS-era
+  V9958 state, the VDP interrupt routed to the NMI), and nothing may
+  draw on the console afterwards.
+
+The SDK wrapper is `personality` (`docs/sdk.md`).
+
 ## 9. Diagnostics
 
 For the monitor and the diagnostic tools; ordinary programs use drivers.
@@ -511,6 +646,12 @@ Every failure changes nothing, and every call restores the exact latch.
   | 6 | 1 | `kernel_bank` | 7 |
   | 7 | 1 | `romfs_first_page` | 2 |
 
+On the Mk2 board there are no banks: bank 0 is the caller's own memory,
+read and written through its current mapping, far window included, and
+every other bank is `KOS_EINVAL`; `BANK_INFO` returns `H = 01h`,
+`L = 0`; `SYSTEM_INFO`'s `app_mode`, `os_mode`, `kernel_bank` and
+`romfs_first_page` are 0.
+
 The SDK wrappers are in `kos/diag.h`, which `kos.h` does not include.
 
 ## 10. Errors
@@ -539,6 +680,7 @@ One numbering for the whole system (`abi/kos/errno.h`):
 | `15h` | `KOS_ESTALE` | stale object identity |
 | `16h` | `KOS_EXDEV` | across providers |
 | `17h` | `KOS_EMFILE` | handle table or open-file limit reached |
+| `18h` | `KOS_EBOARD` | `EXEC` of a program built for another CPU board |
 
 Syscalls return the code in `A` with carry set; `CALL` statuses and SDK
 wrappers return it negated.

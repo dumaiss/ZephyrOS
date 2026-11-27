@@ -8,7 +8,9 @@
  *
  *   * the child starts in mode 10 with page 0 (exec starts every child
  *     with P = 0, architecture 7.2) - it reads the banking latch itself,
- *     and the simulator and the hardware are the authority;
+ *     and the simulator and the hardware are the authority.  Zephyr-80
+ *     Mk2 has no latch to read: there the far window must be closed,
+ *     its own memory (handle 0), which opening handle 0 reports;
  *   * `8000h-BFFFh` is its own bank, not the parent's aperture: it writes
  *     markers there, and the parent checks afterwards that its mapped
  *     objects still hold their own bytes;
@@ -37,9 +39,20 @@
 #define APERTURE_BASE 0x8000u
 #define APERTURE_END  0xC000u
 
+#if defined(KOS_BOARD_MK2)
+/* The far-window handle in force: opening handle 0 (the program's own
+ * memory) returns it, and leaves the window as it was when it was 0. */
+#define WINDOW_STATE() aperture_open(0u)
+#define WINDOW_LINE    "xmem-child: window %02x\r\n"
+#define WINDOW_CLOSED(v) ((v) == 0u)
+#else
 /* The banking latch (port 00h): mode in D4-D3, bank in D2-D0, page in
  * D7-D5.  Read directly - no SDK call should touch it. */
 __sfr __at 0x00 latch_port;
+#define WINDOW_STATE() latch_port
+#define WINDOW_LINE    "xmem-child: latch %02x\r\n"
+#define WINDOW_CLOSED(v) (((v) & 0xE0u) == 0u)
+#endif
 
 static unsigned char pattern[128];
 static unsigned char buf[128];
@@ -102,7 +115,7 @@ static int tail_numbers(unsigned int *handle, unsigned int *segment)
 
 int main(int argc, char **argv)
 {
-	unsigned char latch = latch_port;
+	unsigned char latch = WINDOW_STATE();
 	struct kos_seg_info info;
 	unsigned int foreign = 0u;
 	unsigned int foreign_seg = 0u;
@@ -117,10 +130,10 @@ int main(int argc, char **argv)
 	(void)argv;
 
 	console_puts("xmem-child: begin\r\n");
-	printf("xmem-child: latch %02x\r\n", (unsigned int)latch);
+	printf(WINDOW_LINE, (unsigned int)latch);
 	/* The page field must be zero: a child that inherited the parent's
 	 * aperture would sabotage everything it writes above 8000h. */
-	if ((latch & 0xE0u) != 0u) {
+	if (!WINDOW_CLOSED(latch)) {
 		console_puts("xmem-child: FAIL latch-page\r\n");
 		ok = 0;
 	}
