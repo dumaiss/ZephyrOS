@@ -23,7 +23,8 @@
  *
  * The diagnostic set (SYS_DIAG_*) is implemented in
  * kernel/syscall/diag.c, the object and namespace family in
- * kernel/syscall/object.c and extended memory in kernel/syscall/xmem.c;
+ * kernel/syscall/object.c, extended memory in kernel/syscall/xmem.c and
+ * the Mk2 personality handoff in kernel/syscall/personality.c;
  * this file owns the dispatch switch and the shared result/window
  * helpers.
  *
@@ -477,6 +478,11 @@ void kernel_syscall_dispatch(void)
 	case KOS_SYSCALL_RT_INFO:
 		kos_rt_info(kos_syscall_args);
 		break;
+#if defined(KOS_BOARD_MK2)
+	case KOS_SYSCALL_PERSONALITY:
+		kos_personality_enter(kos_syscall_args);
+		break;
+#endif
 	default:
 		break;
 	}

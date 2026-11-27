@@ -433,17 +433,24 @@
  *                            driver's init runs the bounded LINK_SYNC
  *                            bring-up once; the HID driver reports this
  *                            through KHID_OP_READY.
- *   KIOC_OP_COMMAND_READ (6) a COMMAND (arg0, arg1 = 0..22, payload) and,
+ *   KIOC_OP_COMMAND_READ (6) a COMMAND (arg0, arg1 = 0..20, payload) and,
  *                            when its reply admitted an MCU-to-Z80 bulk
  *                            phase, that phase's receive in the same
- *                            call, straight into the hot-tier buffer
- *                            payload[22..23] names (the direct form);
- *                            an FS2_READ_RUN run is received as its
- *                            512-byte packets, back to back (all of them,
- *                            or the error).  The reply is published as
- *                            for COMMAND.  Returns the bulk length, 0
- *                            when no bulk phase was admitted, or a
- *                            negative KIOC_E*.
+ *                            call, straight into the buffer
+ *                            payload[22..23] names (the direct form, or
+ *                            the live borrow's range) with the capacity
+ *                            payload[20..21] gives; an FS2_READ_RUN run
+ *                            is received as its 512-byte packets, back to
+ *                            back (all of them, or the error).  Before the
+ *                            first byte is stored the READY must admit at
+ *                            most the capacity, into that buffer, and echo
+ *                            the request's DATA 2-5 (the FS2 offset) at
+ *                            its DATA 4-7; a READY that does not is
+ *                            refused (-KOS_EINVAL) and the link recovers
+ *                            before the next command.  The reply is
+ *                            published as for COMMAND.  Returns the bulk
+ *                            length, 0 when no bulk phase was admitted, or
+ *                            a negative KIOC_E*.
  *
  *   KIOC_OP_RT_CLOCK    (7)  arg1 = rate in Hz (KOS_RT_RATE_MIN..
  *                            KOS_RT_RATE_MAX, abi/kos/rt.h), or 0 to
@@ -466,7 +473,9 @@
  * every resident driver is mapped together in bank 6's hot tier
  * (6000h-DFFFh), so a driver client names a buffer of its own and the
  * bulk loop moves the payload to or from it with no intermediate copy.
- * A buffer outside the hot tier is refused with KOS_EINVAL.
+ * A buffer outside the hot tier is refused with KOS_EINVAL, except that
+ * KIOC_OP_COMMAND_READ also takes one inside the live lend of a caller
+ * buffer (the driver API's borrow).
  */
 #define KIOC_OP_COMMAND    0u
 #define KIOC_OP_REPLY      1u
@@ -483,9 +492,10 @@
  * before it, microseconds. */
 #define KIOC_RT_GAP_US     16u
 #define KIOC_RT_GUARD_US   10u
-/* KIOC_OP_COMMAND_READ: the buffer word's payload offset, below it the
- * request DATA. */
-#define KIOC_COMMAND_READ_BUFFER 22u
+/* KIOC_OP_COMMAND_READ: the capacity word's and the buffer word's
+ * payload offsets; below them the request DATA. */
+#define KIOC_COMMAND_READ_CAPACITY 20u
+#define KIOC_COMMAND_READ_BUFFER   22u
 
 /* The native frame geometry the IOC protocol moves (drivers/include/
  * ioc.h): TYPE, STATUS, LENGTH, DATA[26]. */

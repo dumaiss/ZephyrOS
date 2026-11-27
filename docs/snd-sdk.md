@@ -117,7 +117,7 @@ int  sound_reset(int handle);
 void sound_out(unsigned char port, unsigned char value);
 ```
 
-`sound_info` reports the physical PSG/DAC ports, PSG clock, and capabilities. `struct ksound_write` consists of `{target, value}` pairs, with targets 0–3 for PSGs and 4 for the DAC; use the official `KSOUND_TARGET_*` constants. The driver batches a write sequence in one protocol call. A null IPC call measures 5,837 T-states on Mk1 and 9,275 on Mk2 (architecture 2.7.7); the payload-bearing SOUND call has not been measured. `sound_out` emits a chosen port value **without a per-byte syscall**; it is legal only under an exclusive card hold, with the ports returned by `sound_info`.
+`sound_info` reports the physical PSG/DAC ports, PSG clock, and capabilities. `struct ksound_write` consists of `{target, value}` pairs, with targets 0–3 for PSGs and 4 for the DAC; use the official `KSOUND_TARGET_*` constants. The driver batches a write sequence in one protocol call. On the simulator a 16-pair `sound_write` costs 20,111 T-states on Mk2 (Mk1 21,200) and a null IPC call 7,359 (Mk1 4,651) (architecture 2.7.7). `sound_out` emits a chosen port value **without a per-byte syscall**; it is legal only under an exclusive card hold, with the ports returned by `sound_info`.
 
 `libsnd` calls `sound_open(1)` for exclusive operation and does not assume the console or another application has already initialized the card. `sound_close` and process teardown reset/release it. Never hard-code hardware ports into the public SDK or make application authors issue PSG latch bytes.
 

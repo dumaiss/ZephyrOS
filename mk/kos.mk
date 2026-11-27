@@ -72,7 +72,13 @@
 #                       by the placer; the library members the SDK
 #                       declares below are resident in every placed
 #                       program that links the library.  A pin of such a
-#                       module to `home` or `farN` is refused.
+#                       module to `home` or `farN` is refused.  The
+#                       placer fills the resident zone with the
+#                       most-called code, counting the veneers each unit
+#                       creates, and stops 64 bytes short of the end;
+#                       pins that alone overflow the zone are an error
+#                       naming them.
+#   HEADROOM=N          resident bytes the placer's fill leaves unused (64)
 #   DATA1..DATA4=SRC:SRC  far-data sources (relative to DIR) compiled into
 #                       the areas `_DATA<n>` (their `const` objects) and
 #                       `_DATA<n>B` (their zeroed objects), the pair linked
@@ -220,6 +226,7 @@ $(1)_HEADERS:= $$(EXE_HEADERS) $$(wildcard $(2)/*.h)
 $(1)_OPTS   := $(4) $(5) $(6) $(7) $(8) $(9)
 $(1)_RESIDENT := $$(foreach s,$$(subst :, ,$$(patsubst RESIDENT=%,%,$$(filter RESIDENT=%,$$($(1)_OPTS)))),$$($(1)_OBJDIR)/$$(patsubst %.c,%.rel,$$(patsubst %.asm,%.rel,$$(notdir $$(s)))))
 $(1)_PINS   := $$(foreach p,$$(subst :, ,$$(patsubst PLACE=%,%,$$(filter PLACE=%,$$($(1)_OPTS)))),$$(if $$(findstring .lib,$$(p)),$$(p),$$($(1)_OBJDIR)/$$(basename $$(word 1,$$(subst =, ,$$(p)))).rel=$$(word 2,$$(subst =, ,$$(p)))))
+$(1)_HEADROOM := $$(if $$(filter HEADROOM=%,$$($(1)_OPTS)),--headroom=$$(patsubst HEADROOM=%,%,$$(filter HEADROOM=%,$$($(1)_OPTS))),)
 $(1)_STACK  := $$(if $$(filter STACK=%,$$($(1)_OPTS)),$$(patsubst STACK=%,%,$$(filter STACK=%,$$($(1)_OPTS))),256)
 $(1)_SCRATCH:= $$(if $$(filter SCRATCH=%,$$($(1)_OPTS)),$$(patsubst SCRATCH=%,%,$$(filter SCRATCH=%,$$($(1)_OPTS))),kos_scratch:16)
 $(1)_SCRATCHARG := $$(if $$($(1)_SCRATCH), --scratch $$($(1)_SCRATCH),)
@@ -430,7 +437,7 @@ $$($(1)_OBJDIR)/$(1).lk: $$($(1)_LINKOBJS) $$($(1)_LIBFILES) $$(EXE_LIBKOS) \
 $$($(1)_OBJDIR)/$(1).link: $$($(1)_OBJDIR)/$(1).lk $$(KOS_TOOLS)/exeplace.py
 	$(KOS_PYTHON) $$(KOS_TOOLS)/exeplace.py link $$< $$($(1)_OBJDIR)/place \
 	    $$($(1)_STACK) $$($(1)_RESIDENT) $$(foreach p,$$($(1)_PINS),'$$(p)') \
-	    $$(foreach d,$$($(1)_DECLARED),'$$(d)')
+	    $$(foreach d,$$($(1)_DECLARED),'$$(d)') $$($(1)_HEADROOM)
 	$(SDLDZ80) -f $$($(1)_OBJDIR)/place/placed.lk
 	touch $$@
 

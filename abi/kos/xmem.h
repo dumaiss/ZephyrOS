@@ -177,7 +177,44 @@ struct kos_xmem_map_args {
 	uint16_t address; /* out */
 };
 
+/* SYS_PERSONALITY 0Fh {list:u16, count:u8, reserved:u8, entry:u16} - the
+ * Mk2 board's one-way handoff to another machine personality (docs/abi.md
+ * section 8.4); it does not return.  `list` addresses `count` page
+ * records in the caller buffer window; record n names the object page
+ * that becomes logical page n (n * 2000h) of the personality's 64 KiB space, so
+ * `count` is KOS_PERSONALITY_PAGES.  Every record is checked before
+ * anything changes: a bad block, a wrong count, a nonzero reserved byte,
+ * a handle that is not one of the caller's live objects (freed, stale,
+ * foreign), a page past the object's end, or an entry whose two bytes
+ * below it hold the nucleus's switch code is KOS_EINVAL and KonaOS stays
+ * intact.  Then the nucleus stops its interrupt and NMI sources, maps
+ * the eight pages as the whole working mapping and jumps to `entry` with
+ * interrupts masked and IM 1; leaving takes a reset.  No physical page
+ * number crosses the ABI.  On the Mk1 board the number is unassigned
+ * (KOS_ENOSYS). */
+#define KOS_SYSCALL_PERSONALITY 0x0Fu
+#define KOS_PERSONALITY_PAGES   8u
+
+struct kos_personality_page {
+	uint16_t handle;   /* the caller's object                  */
+	uint8_t  page;     /* its 8 KiB page: object offset >> 13  */
+	uint8_t  reserved; /* 0                                    */
+};
+
+struct kos_personality_args {
+	uint16_t list;     /* count kos_personality_page records */
+	uint8_t  count;    /* KOS_PERSONALITY_PAGES              */
+	uint8_t  reserved; /* 0                                  */
+	uint16_t entry;    /* the first instruction              */
+};
+
 #if defined(__SDCC)
+_Static_assert(sizeof(struct kos_personality_page) == 4,
+	       "personality page record must be 4 packed bytes");
+_Static_assert(sizeof(struct kos_personality_args) == 6,
+	       "personality block must be 6 packed bytes");
+_Static_assert(__builtin_offsetof(struct kos_personality_args, entry) == 4,
+	       "personality entry is the last word");
 _Static_assert(sizeof(struct kos_xmem_alloc_args) == 4,
 	       "xmem alloc block must be 4 packed bytes");
 _Static_assert(sizeof(struct kos_xmem_free_args) == 2,

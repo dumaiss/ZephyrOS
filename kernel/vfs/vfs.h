@@ -371,12 +371,20 @@ int vfs_ns_dir_check(const char *norm, uint8_t *ok);
 
 /* One nucleus-side FILE call on a bound FILE handle (the cold loader):
  * `frame` carries the operation, `object` the instance the handle
- * resolved to.  A nonzero `length` moves `length` bytes through the common
- * staging block in direction `dir` (FILE data); length 0 is the
- * descriptor-less form (metadata, seek, sync).  Returns the call status. */
+ * resolved to.  A nonzero `length` moves `length` bytes of FILE data:
+ * on Mk2 a read straight to `addr` through the page list `map`
+ * (ipc_nucleus_call_pages), on Mk1 through the common staging block in
+ * direction `dir`; length 0 is the descriptor-less form (metadata, seek,
+ * sync).  Returns the call status. */
+#if defined(KOS_BOARD_MK2)
+int16_t vfs_ns_file_call(uint8_t handle, uint8_t object,
+			 struct kos_ipc_frame *frame, const uint8_t *map,
+			 uint16_t addr, uint16_t length);
+#else
 int16_t vfs_ns_file_call(uint8_t handle, uint8_t object,
 			 struct kos_ipc_frame *frame, uint16_t length,
 			 uint8_t dir);
+#endif
 
 /* --- the ROMFS FILE provider (kernel/vfs/system.c) ------------------- */
 

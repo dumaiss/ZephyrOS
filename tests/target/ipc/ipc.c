@@ -28,6 +28,7 @@
 static struct kos_ipc_request req;
 static struct kos_ipc_call_args raw_block;
 static struct kos_ipc_call_req raw_req;
+extern struct kos_ipc_call_args kos_ipc_call_block;
 
 static uint8_t source[IPC_BLOCK_BYTES];
 static uint8_t target[IPC_BLOCK_BYTES];
@@ -91,6 +92,24 @@ static int raw_ipc(unsigned char number, void *block)
 	raw_req.number = number;
 	raw_req.block = block;
 	return kos_ipc_raw_call(&raw_req);
+}
+
+/* One SYS_CALL through the SDK's gate-visible block with no descriptor:
+ * the syscall result, `raw_req.error` telling carry set from clear. */
+static int raw_call_block(uint8_t handle, uint8_t op)
+{
+	frame_prepare(op, 0u);
+	kos_ipc_call_block.handle = handle;
+	kos_ipc_call_block.op = op;
+	kos_ipc_call_block.flags = 0u;
+	kos_ipc_call_block.frame_length = KOS_IPC_FRAME_SIZE;
+	kos_ipc_call_block.buffer = 0u;
+	kos_ipc_call_block.length = 0u;
+	kos_ipc_call_block.direction = KOS_IPC_DESC_IN;
+	kos_ipc_call_block.reserved = 0u;
+	kos_ipc_call_block.frame = req.frame;
+	kos_ipc_call_block.status = 0;
+	return raw_ipc(KOS_SYSCALL_CALL, &kos_ipc_call_block);
 }
 
 /* --- pattern helpers ---------------------------------------------------- */
@@ -235,6 +254,45 @@ static int op_fs_read(void)
 	return read((unsigned int)fd, target, IPC_BLOCK_BYTES);
 }
 
+/* One FAT_BULK: bulk_copy_out of `length` bytes at `from` into the
+ * call's descriptor (`direction`, 80 bytes of `target`) at `at`;
+ * `forge` names descriptor id `id` instead. */
+static int bulk_copy(unsigned char direction, unsigned int at,
+		     unsigned int from, unsigned int length, uint8_t forge,
+		     uint8_t id, uint8_t span)
+{
+	frame_prepare(IPC_OP_FAT_BULK, 0u);
+	req.frame.payload[IPC_BULK_ARG_AT] = IPC_WORD_LO(at);
+	req.frame.payload[IPC_BULK_ARG_AT + 1u] = IPC_WORD_HI(at);
+	req.frame.payload[IPC_BULK_ARG_FROM] = IPC_WORD_LO(from);
+	req.frame.payload[IPC_BULK_ARG_FROM + 1u] = IPC_WORD_HI(from);
+	req.frame.payload[IPC_BULK_ARG_LEN] = IPC_WORD_LO(length);
+	req.frame.payload[IPC_BULK_ARG_LEN + 1u] = IPC_WORD_HI(length);
+	req.frame.payload[IPC_BULK_ARG_FORGE] = forge;
+	req.frame.payload[IPC_BULK_ARG_ID] = id;
+	req.frame.payload[IPC_BULK_ARG_SPAN] = span;
+	if (direction <= KOS_IPC_DESC_OUT) {
+		req.buffer = target;
+		req.length = 80u;
+		req.direction = direction;
+	}
+	return dispatch(fat_handle);
+}
+
+static int bulk_pattern_ok(const uint8_t *buffer, unsigned int start,
+			   unsigned int length)
+{
+	unsigned int index;
+
+	for (index = 0u; index < length; ++index) {
+		if (buffer[index] != (uint8_t)(IPC_BULK_PATTERN + start +
+					       index)) {
+			return 0;
+		}
+	}
+	return 1;
+}
+
 static int irq_op(uint8_t op, unsigned int iterations)
 {
 	frame_prepare(op, 0u);
@@ -356,6 +414,18 @@ int main(int argc, char **argv)
 	memset(&raw_block.frame, 0, KOS_IPC_FRAME_SIZE);
 	check("frame-len-refused",
 	      raw_ipc(KOS_SYSCALL_CALL, &raw_block) == -KOS_EINVAL);
+
+	/* The block is the SDK's own, inside the window the gate reads, so
+	 * the only fault is the handle: a handle the caller does not hold
+	 * fails the syscall (carry set, A = KOS_EINVAL); a refusal by the
+	 * IPC layer is a normal reply (carry clear) with the negative
+	 * status. */
+	check("handle-unknown-carry",
+	      raw_call_block(0u, IPC_OP_ECHO_NULL) == -KOS_EINVAL &&
+	      raw_req.error != 0u);
+	check("status-negative-carry-clear",
+	      raw_call_block(echo_handle, 0x7Fu) == -KOS_EINVAL &&
+	      raw_req.error == 0u);
 	check("block-refused",
 	      raw_ipc(KOS_SYSCALL_CALL, (void *)0x8000u) == -KOS_EINVAL);
 	check("bind-block-refused",
@@ -476,6 +546,35 @@ int main(int argc, char **argv)
 	 * call's latch and stack were restored: prove it by using the
 	 * substrate again after the deliveries. */
 	check("post-irq-call", op_echo_null() == KOS_IPC_FRAME_SIZE);
+
+	/* bulk_copy_out (architecture 4.9): the fat driver's bulk pattern
+	 * straight into an OUT descriptor, and every refusal - the extent,
+	 * a wrapping offset, the descriptor's range, a zero length, an IN
+	 * descriptor, a forged and a stale id, an open span. */
+	memset(target, 0, 80u);
+	check("bulk-copy", bulk_copy(KOS_IPC_DESC_OUT, 8u, 0u, IPC_BULK_BYTES,
+				     0u, 0u, 0u) == IPC_BULK_BYTES);
+	check("bulk-pattern", bulk_pattern_ok(target + 8, 0u, IPC_BULK_BYTES) &&
+	      target[7] == 0u && target[8u + IPC_BULK_BYTES] == 0u);
+	check("bulk-offset", bulk_copy(KOS_IPC_DESC_OUT, 76u, 60u, 4u, 0u, 0u,
+				       0u) == 4 &&
+	      bulk_pattern_ok(target + 76, 60u, 4u));
+	check("bulk-extent-refused", bulk_copy(KOS_IPC_DESC_OUT, 0u, 60u, 8u,
+					       0u, 0u, 0u) == -KOS_EINVAL);
+	check("bulk-wrap-refused", bulk_copy(KOS_IPC_DESC_OUT, 0u, 0xFFFCu, 8u,
+					     0u, 0u, 0u) == -KOS_EINVAL);
+	check("bulk-desc-refused", bulk_copy(KOS_IPC_DESC_OUT, 76u, 0u, 8u, 0u,
+					     0u, 0u) == -KOS_EINVAL);
+	check("bulk-zero-refused", bulk_copy(KOS_IPC_DESC_OUT, 0u, 0u, 0u, 0u,
+					     0u, 0u) == -KOS_EINVAL);
+	check("bulk-dir-refused", bulk_copy(KOS_IPC_DESC_IN, 0u, 0u, 8u, 0u,
+					    0u, 0u) == -KOS_EINVAL);
+	check("bulk-forged-refused", bulk_copy(KOS_IPC_DESC_OUT, 0u, 0u, 8u,
+					       1u, 2u, 0u) == -KOS_EINVAL);
+	check("bulk-stale-refused", bulk_copy(0xFFu, 0u, 0u, 8u, 1u, 0u,
+					      0u) == -KOS_EINVAL);
+	check("bulk-span-refused", bulk_copy(KOS_IPC_DESC_OUT, 0u, 0u, 8u, 0u,
+					     0u, 1u) == -KOS_EBUSY);
 
 	report_u16("ipc: ", checks - failures);
 	report_u16("/", checks);

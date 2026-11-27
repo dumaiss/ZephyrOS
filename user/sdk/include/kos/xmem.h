@@ -50,6 +50,18 @@ int xinfo(unsigned int handle, struct kos_xmem_info *out);
  * `*address` receives the object's address in the aperture. */
 int xmap(unsigned int handle, unsigned int *address);
 
+/* Hand the machine to another personality (Zephyr-80 Mk2): the 64 KiB
+ * space becomes `count` (KOS_PERSONALITY_PAGES) object pages, record n
+ * at n * 2000h, and the CPU continues at `entry` there with interrupts
+ * masked and IM 1, KonaOS's interrupt and NMI sources stopped.  It does
+ * not return; leaving takes a reset.  A refused list returns -KOS_EINVAL
+ * with KonaOS intact (a wrong count, a freed or foreign handle, a page
+ * past its object); Mk1 returns -KOS_ENOSYS.  Video is the program's: it
+ * leaves the display as the personality needs it before the call,
+ * and nothing may draw on the console after that. */
+int personality(const struct kos_personality_page *pages, unsigned char count,
+		unsigned int entry);
+
 /* Open the aperture onto a mapped object: returns the token in force
  * before.  Close restores that mapping exactly.  Both keep DE and HL. */
 unsigned char aperture_open(unsigned char token);

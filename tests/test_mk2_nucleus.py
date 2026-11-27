@@ -40,6 +40,7 @@ IMAGE = os.path.join(BUILD, "konaos-mk2.bin")
 MAP = os.path.join(BUILD, "konaos-mk2.map")
 RESIDENCY = os.path.join(ROOT, "config", "residency-mk2.json")
 MK1_RESIDENCY = os.path.join(ROOT, "config", "residency.json")
+PLAN = os.path.join(BUILD, "sys", "modules", "drivers.plan.json")
 LIMIT = 4000000
 BOOT_LIMIT = 40000000
 
@@ -274,14 +275,151 @@ class TestRomfs(Mk2NucleusCase):
                                   page * PAGE + offset + length])
 
 
+class TestPageCopy(Mk2NucleusCase):
+    """The real linked kos_page_copy, called from the halted machine at the
+    driver load (system bank selected), with the request in common memory."""
+
+    LENGTHS = (1, 15, 16, 17, 511, 512, 513, 8192)
+    SRC_PAGE, DST_PAGE, ROM_PAGE = 0x50, 0x52, ROMFS_FIRST_PAGE
+    DIRECT = 0x6000              # nucleus entries 3-4: 16 KiB of RAM
+    ZEROES, DIRECT_KIND = 0x80, 0xFF
+    CANARY = 0xA5
+
+    def machine_at_driver_load(self):
+        return self.to_driver_load(self.machine())
+
+    def request(self, z, src_page, dst_page, src, dst, length):
+        req = self.syms["kos_gate_stack"] + 0x100
+        z.phys[common(req):common(req) + 8] = bytes(
+            [src_page, dst_page, src & 0xFF, src >> 8, dst & 0xFF,
+             dst >> 8, length & 0xFF, length >> 8])
+        return req
+
+    def place(self, z, page, offset, data):
+        base = page * PAGE + offset
+        z.phys[base:base + len(data)] = data
+
+    def fetch(self, z, page, offset, length):
+        base = page * PAGE + offset
+        return bytes(z.phys[base:base + length])
+
+    def run_copy(self, z, src_page, dst_page, src, dst, length):
+        fixed = fixed_entries(z)
+        self.call(z, "_kos_page_copy",
+                  hl=self.request(z, src_page, dst_page, src, dst, length))
+        self.assertEqual(fixed_entries(z), fixed)
+        self.assertEqual(mirror(z), hardware(z))
+
+    def test_page_to_page_lengths_with_canaries(self):
+        z = self.machine_at_driver_load()
+        for length in self.LENGTHS:
+            data = bytes((i * 7 + length) & 0xFF for i in range(length))
+            src_off = 0 if length == 8192 else 0x0123 % (0x2000 - length)
+            dst_off = 0 if length == 8192 else 0x0FFF % (0x2000 - length)
+            with self.subTest(length=length):
+                self.place(z, self.SRC_PAGE, 0, bytes([0x11]) * 0x2000)
+                self.place(z, self.SRC_PAGE, src_off, data)
+                self.place(z, self.DST_PAGE, 0,
+                           bytes([self.CANARY]) * 0x2000)
+                self.run_copy(z, self.SRC_PAGE, self.DST_PAGE, src_off,
+                              dst_off, length)
+                want = bytearray([self.CANARY]) * 0x2000
+                want[dst_off:dst_off + length] = data
+                self.assertEqual(self.fetch(z, self.DST_PAGE, 0, 0x2000),
+                                 bytes(want))
+
+    def test_zero_fill_lengths_with_canaries(self):
+        z = self.machine_at_driver_load()
+        base = nucleus(self.DIRECT)
+        for length in self.LENGTHS:
+            off = 0 if length == 8192 else 0x00F1 % (0x2000 - length)
+            want = bytearray([0xFF]) * 0x2000
+            want[off:off + length] = bytes(length)
+            with self.subTest(length=length, target="page"):
+                self.place(z, self.DST_PAGE, 0, bytes([0xFF]) * 0x2000)
+                self.run_copy(z, self.ZEROES, self.DST_PAGE, 0, off, length)
+                self.assertEqual(self.fetch(z, self.DST_PAGE, 0, 0x2000),
+                                 bytes(want))
+            with self.subTest(length=length, target="direct"):
+                z.phys[base:base + 0x2000] = bytes([0xFF]) * 0x2000
+                self.run_copy(z, self.ZEROES, self.DIRECT_KIND, 0,
+                              self.DIRECT + off, length)
+                self.assertEqual(bytes(z.phys[base:base + 0x2000]),
+                                 bytes(want))
+
+    def test_direct_and_page_combinations(self):
+        z = self.machine_at_driver_load()
+        base = nucleus(self.DIRECT)
+        for length in self.LENGTHS:
+            data = bytes((i * 5 + 3 * length) & 0xFF for i in range(length))
+            at = 0 if length == 8192 else 0x10
+            with self.subTest(length=length, kind="direct to page"):
+                z.phys[base:base + length] = data
+                self.place(z, self.DST_PAGE, 0,
+                           bytes([self.CANARY]) * 0x2000)
+                self.run_copy(z, self.DIRECT_KIND, self.DST_PAGE,
+                              self.DIRECT, at, length)
+                want = bytearray([self.CANARY]) * 0x2000
+                want[at:at + length] = data
+                self.assertEqual(self.fetch(z, self.DST_PAGE, 0, 0x2000),
+                                 bytes(want))
+            with self.subTest(length=length, kind="page to direct"):
+                self.place(z, self.SRC_PAGE, 0, data)
+                z.phys[base:base + 0x2000 + 1] = \
+                    bytes([self.CANARY]) * 0x2001
+                self.run_copy(z, self.SRC_PAGE, self.DIRECT_KIND, 0,
+                              self.DIRECT + at, length)
+                want = bytearray([self.CANARY]) * 0x2000
+                want[at:at + length] = data
+                self.assertEqual(bytes(z.phys[base:base + 0x2000]),
+                                 bytes(want))
+            with self.subTest(length=length, kind="direct to direct"):
+                z.phys[base:base + length] = data
+                top = base + 0x2000
+                z.phys[top:top + length + 1] = \
+                    bytes([self.CANARY]) * (length + 1)
+                self.run_copy(z, self.DIRECT_KIND, self.DIRECT_KIND,
+                              self.DIRECT, self.DIRECT + 0x2000, length)
+                self.assertEqual(bytes(z.phys[top:top + length]), data)
+                self.assertEqual(z.phys[top + length], self.CANARY)
+
+    def test_rom_source_reaches_page_and_direct(self):
+        z = self.machine_at_driver_load()
+        for length in (1, 17, 513, 8192):
+            want = self.rom[self.ROM_PAGE * PAGE:
+                            self.ROM_PAGE * PAGE + length]
+            with self.subTest(length=length, kind="page"):
+                self.place(z, self.DST_PAGE, 0,
+                           bytes([self.CANARY]) * 0x2000)
+                self.run_copy(z, self.ROM_PAGE, self.DST_PAGE, 0, 0, length)
+                self.assertEqual(self.fetch(z, self.DST_PAGE, 0, length),
+                                 want)
+                self.assertEqual(
+                    self.fetch(z, self.DST_PAGE, length, 0x2000 - length),
+                    bytes([self.CANARY]) * (0x2000 - length))
+            with self.subTest(length=length, kind="direct"):
+                self.run_copy(z, self.ROM_PAGE, self.DIRECT_KIND, 0,
+                              self.DIRECT, length)
+                base = nucleus(self.DIRECT)
+                self.assertEqual(bytes(z.phys[base:base + length]), want)
+
+    def test_interrupt_flags_survive(self):
+        z = self.machine_at_driver_load()
+        self.place(z, self.SRC_PAGE, 0, bytes(range(256)) * 2)
+        for flag in (False, True):
+            z.iff1 = z.iff2 = flag
+            self.run_copy(z, self.SRC_PAGE, self.DST_PAGE, 0, 0, 512)
+            self.assertEqual((z.iff1, z.iff2), (flag, flag))
+
+
 class TestMapcheck(Mk2NucleusCase):
     def residency(self):
         return mapcheck.load_mk2_residency(RESIDENCY)
 
-    def check(self, map_text, residency=None, objdir=BUILD):
+    def check(self, map_text, residency=None, objdir=BUILD, plan=None):
         tiers, _cold, _test = mapcheck.load_residency(MK1_RESIDENCY)
         return mapcheck.check_mk2(map_text, residency or self.residency(),
-                                  ROOT, objdir, tiers)
+                                  ROOT, objdir, tiers, plan_path=plan)
 
     def link(self, residency):
         with tempfile.TemporaryDirectory() as out:
@@ -294,6 +432,38 @@ class TestMapcheck(Mk2NucleusCase):
         for room in ledger["set_room"]:
             self.assertGreaterEqual(room, 0)
         self.assertLessEqual(ledger["common_used"], ledger["common_ceiling"])
+
+    @unittest.skipUnless(os.path.isfile(PLAN), "make BOARD=mk2 plans the "
+                         "driver set")
+    def test_no_stack_lies_under_a_remap(self):
+        """The driver copies run on the nucleus's own stack, so the V9958
+        driver's private stack may lie in the copy windows; a copy on the
+        caller's stack, or on a stack the map does not define, fails."""
+        ledger = self.check(self.map_text, plan=PLAN)
+        self.assertGreaterEqual(ledger["driver_stacks"], 1)
+        residency = self.residency()
+        for row in residency.remaps:
+            if row["entries"] == [5, 6]:
+                row["stack"] = "caller"
+        with self.assertRaisesRegex(
+                mapcheck.MapError,
+                "v9958.mod private stack _v9958_alt_stack .* system entry "
+                "5, which .* remaps on the caller's stack"):
+            self.check(self.map_text, residency, plan=PLAN)
+        text = re.sub(r".*\bkos_driver_copy_stack(_top)?\b.*\n", "",
+                      self.map_text)
+        self.assertNotEqual(text, self.map_text)
+        with self.assertRaisesRegex(mapcheck.MapError,
+                                    "kos_driver_copy_stack, which the map "
+                                    "does not define"):
+            self.check(text, plan=PLAN)
+
+    def test_a_nucleus_stack_in_a_remapped_entry_fails(self):
+        text = self.map_text + ("     00007000  stray_stack    stray\n"
+                                "     00007010  stray_stack_top    stray\n")
+        with self.assertRaisesRegex(mapcheck.MapError,
+                                    "nucleus stack stray_stack .* entry 3"):
+            self.check(text)
 
     def test_an_object_in_a_copy_window_fails(self):
         text = self.map_text + \

@@ -198,15 +198,22 @@ domain while driver code executes.
 System entries 5 and 6 are the source and destination windows at `A000h`
 and `C000h`. `kernel/memory/mk2/page_copy.asm` maps them to physical pages,
 updates the software mirror before each mapper write, and copies a bounded
-chunk with `LDIR` or zero-fills it. Copies split at page boundaries. No
-interrupt path depends on these entries, so a copy preserves the caller's
-interrupt state.
+chunk with an unrolled `LDI` run (`kernel/runtime/fastcopy.inc`) or
+zero-fills it. Copies split at page boundaries. No interrupt path depends
+on these entries, so a copy preserves the caller's interrupt state. On the
+simulator a 4,096-byte `XMEM_READ` between a high buffer and an unmapped
+object costs 74,059 T-states, `RST 30h` through return (about 16
+T-states a byte in the copy itself, `tests/perf_os_sdk.py`).
 
 IPC `copy_in` and `copy_out` resolve a program buffer through the
 caller's current working DAT image, including far mappings, then copy
-directly between caller and driver pages. Nucleus buffers are addressed
-directly. There is no Mk1 bank-path selection or common-memory staging
-for these copies.
+directly between caller and driver pages. `bulk_copy_out` does the same
+from a driver's bulk extent, so a block-cache hit reaches the caller in
+one pass. Nucleus buffers are addressed directly. There is no Mk1
+bank-path selection or common-memory staging for these copies. A
+page-0 buffer at `0105h-1FFFh` is instead lent to the driver through
+system entry 0 (`borrow`, architecture 4.9), which already shows it, so a
+device receive lands in it with no copy.
 
 ### 5.2 Far window and extended-memory objects
 
@@ -236,6 +243,10 @@ validates the linked image and its residency map. It checks:
 - every object is placed once and every cold set is declared;
 - no code or data occupies system entries 5–6 as fixed nucleus content;
 - driver-reachable objects do not reference cold sets;
+- every nucleus stack lies in system entries that are never remapped,
+  and no driver's private stack lies in an entry a driver API service
+  remaps on the caller's stack (`driver_call_remaps`, with `--drivers`
+  and the driver plan);
 - external references into cold-set data are rejected;
 - DAT image rows, gate state and far-table sizing match process/object
   limits; and

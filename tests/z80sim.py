@@ -54,7 +54,16 @@ class IocCommandPeer:
         (RSP_UNKNOWN_COMMAND, a diagnostic-profile or older controller)
         and "transport" (a reply whose CRC fails).  It does not model USB,
         the boot-protocol decode, the accumulation between reads (each
-        scripted report is what one read returns) or report timing.
+        scripted report is what one read returns) or report timing;
+      - malformed FS2_READ READYs the host must refuse before its first
+        payload store (drivers/ioc/ioc_io.asm ioc_driver_command_read
+        against the READY Zephyr-80 Code/MCU/IOController
+        src/bulk_channel.c arms): `fs2_read_fault` "offset" echoes the
+        offset one block on, "over" admits 16 bytes more than asked (up
+        to a packet), each with its payload armed as the READY says.  The
+        firmware's bounded RTS wait (wait_for_host_ready, 500 ms) that
+        fails a READY the host never takes is not timed; LINK_SYNC does
+        not clear the armed send (the next READY replaces it).
 
     Observability for the host tests: channel_resets, rts_asserts/
     rts_releases, hunt_writes, frame_start/preload_present, drain reads,
@@ -1043,14 +1052,20 @@ class IocCommandPeer:
             return self._fs2_reply(self.CMD_FS2_READ, seq, self.ST_FS2_OK, out)
         content = self.fs2_files.get(entry[0], bytearray())
         got = max(0, min(length, len(content) - offset))
+        echo = offset
+        if got and self.fs2_read_fault == "offset":
+            echo = offset + 512
+        elif got and self.fs2_read_fault == "over":
+            got = min(512, got + 16)
         if got:
             ident = self._next_xfer_id()
             out[0] = ident
             out[1] = self.DIR_MCU_TO_Z80
             out[2:4] = got.to_bytes(2, "little")
-            out[4:8] = offset.to_bytes(4, "little")
+            out[4:8] = echo.to_bytes(4, "little")
             self.armed_send = (ident, self.RSP_FS2_READ, seq,
-                               bytes(content[offset:offset + got]))
+                               bytes(content[offset:offset + got]).ljust(
+                                   got, b"\xEE"))
         return self._fs2_reply(self.CMD_FS2_READ, seq, self.ST_FS2_OK, out)
 
     def _fs2_read_run(self, seq, data):

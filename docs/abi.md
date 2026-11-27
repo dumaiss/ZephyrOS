@@ -108,6 +108,7 @@ part of the ABI:
 | `0Ch` | `REBOOT` | none | does not return; `KOS_EBUSY` while a program holds the real-time interrupt |
 | `0Dh` | `NOTIFY` | `{handle:u8, reserved:u8, handler:u16, trampoline:u16}` | `HL` = 0 |
 | `0Eh` | `EVENT_RETURN` | none | does not return |
+| `0Fh` | `PERSONALITY` | `{list:u16, count:u8, reserved:u8, entry:u16}` | Mk2 only (section 8.4): does not return; `KOS_ENOSYS` on Mk1 |
 | `10h` | `RT_REGISTER` | `{handler:u16}` | `HL` = 0; the handler must lie in the RT region (`KOS_EINVAL`), `KOS_EBUSY` while another program holds it |
 | `11h` | `RT_RELEASE` | none | `HL` = 0 |
 | `12h` | `RT_INFO` | `{buffer:u16}` | 8-byte record at `buffer`: region base, size, held (0 free, 1 the caller, 2 another program) |
@@ -266,7 +267,8 @@ the handle's protocol (`abi/kos/protocol.h`).
 
 - **Carry set, `A` = `KOS_EINVAL`:** the request never reached the IPC
   layer: the block was outside the window, `frame_length` was 0 or above
-  32, or a reserved byte was not zero.
+  32, a reserved byte was not zero, or `handle` is not one of the caller's
+  bound handles (unknown, released, stale or another process's).
 - **Carry clear, `HL` = the status** (also written to `status`, and the
   reply frame written back into the block): 0 or positive is the driver's
   result. Negative is `-KOS_E*`, either a driver's protocol error or a
@@ -274,7 +276,6 @@ the handle's protocol (`abi/kos/protocol.h`).
 
   | refusal | error |
   |---|---|
-  | unknown, stale or foreign handle | `KOS_EINVAL` |
   | forged or released descriptor id | `KOS_EINVAL` |
   | `offset + length` past the descriptor | `KOS_EINVAL` |
   | re-entry into a non-re-entrant endpoint | `KOS_EBUSY` |
@@ -282,6 +283,12 @@ the handle's protocol (`abi/kos/protocol.h`).
 
 A negative status with carry clear is a normal reply, not a syscall
 failure.
+
+**A failed read.** When a call that names an OUT buffer fails - a FILE
+`read` (`KFILE_OP_READ`) with a negative status - the bytes of the
+requested range are unspecified (a device may have received a packet into
+the buffer before its header or check failed); bytes outside the range are
+unchanged, and the file position is not advanced.
 
 **The descriptor.** One optional caller buffer per call, named by `buffer`,
 `length` and `direction` (`KOS_IPC_DESC_IN` = 0, the caller supplies data;
@@ -292,8 +299,10 @@ and the frame's `desc` is `KOS_IPC_DESC_NONE` (`FFh`). Otherwise:
   memory, and be at most `KOS_IPC_DESC_MAX` (4,096) bytes;
 - the nucleus captures it at entry from the caller's saved latch and hands
   the driver a small id; the driver never sees the address;
-- drivers reach it only through `copy_in`/`copy_out`, which check
-  `offset + length` on every use;
+- drivers reach it only through the nucleus: `copy_in`/`copy_out`, which
+  check `offset + length` on every use, or a borrow of part of it as plain
+  memory (Mk2: a page-0 buffer at `0105h-1FFFh`, clear of the call block),
+  which the nucleus bounds the same way and ends with the call;
 - an id is valid only below the level that captured it, so ids flow down a
   call chain and a driver can never forge one;
 - with a non-zero saved page, a buffer wholly inside `8000h-BFFFh` names the
@@ -551,6 +560,57 @@ nothing about them is visible.
   `board`, `docs/exe-format.md`) with `KOS_EBOARD`.
 - Handles are owner-tagged and generation-counted; a child inherits no
   object, and exit releases every object and page the process owns.
+
+### 8.4 `PERSONALITY` (Zephyr-80 Mk2)
+
+`PERSONALITY` (`0Fh`, `abi/kos/xmem.h`) hands the machine to another
+personality, a whole 64 KiB space the program built in its own
+extended-memory pages, and never returns: leaving it takes a reset. It is
+how ColecoGo starts a ColecoVision. On Mk1 the number is unassigned
+(`KOS_ENOSYS`).
+
+```text
+block   {list:u16, count:u8, reserved:u8, entry:u16}
+list    count records {handle:u16, page:u8, reserved:u8}, in 0100h-DFFFh
+```
+
+Record `n` names the object page (object offset `page * 2000h`) that
+becomes logical page `n` (`n * 2000h`) of the personality's space, so `count` is
+`KOS_PERSONALITY_PAGES` (8) and the space is any eight pages of any of
+the caller's objects (a 56 KiB object holds seven, so a full space takes
+two objects). No physical page number crosses the ABI.
+
+- **Checked first.** A block outside the window, a count other than 8, a
+  reserved byte that is not 0, a list outside the buffer window, a
+  handle that is not one of the caller's live objects (freed, stale,
+  foreign), a page past its object's end, or an entry whose two bytes
+  below it hold the nucleus's switch code is `KOS_EINVAL`, and nothing
+  has changed.
+- **Teardown**, with interrupts masked from its first step, through each
+  owner's stop path: the real-time vector back to its idle `RETN` and
+  the IO controller's RT clock stopped (the release of `/dev/rtclock`'s
+  exclusive hold), so no NMI follows; the sound card reset (`KSOUND_OP_RESET`),
+  which also ends any stream; every CTC channel stopped
+  (`platform_ctc_quiesce_all`, the timer tick and the event timer). The
+  serial lanes and the IO controller's HID doorbell raise no Z80
+  interrupt in any KonaOS image (WR1 = 00h), and the V9958 interrupts
+  only while a program holds the display, so nothing else is running.
+- **The switch** runs from the fixed region, which the system bank keeps
+  mapped throughout: the copy windows get the program's own pages, the
+  eight pages become the working DAT entries 8-15, mirror first (the
+  common page leaves the working bank), `IM 1` is set, and the two bytes
+  below `entry` in the system mapping become `OUT (C),A`; the jump there
+  selects the working bank, and the next fetch is `entry` in the
+  personality's space. The image starts with interrupts masked and `IM 1`, the RT
+  clock and the CTC stopped.
+- **Abandoned:** every process, object, handle, driver state, the
+  console and the nucleus itself stay in their pages, unreachable; no
+  page is freed. The video chip is the program's: it leaves the display
+  as the personality needs it before the call (ColecoGo's TMS-era
+  V9958 state, the VDP interrupt routed to the NMI), and nothing may
+  draw on the console afterwards.
+
+The SDK wrapper is `personality` (`docs/sdk.md`).
 
 ## 9. Diagnostics
 

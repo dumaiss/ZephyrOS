@@ -4,6 +4,7 @@
   "objects": [
     "ipc_fat.rel",
     "ipc_fat_boot.rel",
+    "ipc_fat_bulk.rel",
     "sdcc_indirect_calls.rel"
   ],
   "init": "ipc_fat_init",
@@ -28,6 +29,12 @@
       "role": "io",
       "bss_areas": [
         "_DRIVER_IO"
+      ]
+    },
+    {
+      "role": "bulk",
+      "image_areas": [
+        "_FAT_BULK"
       ]
     }
   ],

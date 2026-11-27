@@ -433,7 +433,9 @@ class TestSdkBoundary(unittest.TestCase):
         # (`tests/test_exeplace.py`); `gfx_mouse` is the graphics
         # pointer example (`tests/test_gfx.py`); `joy` is the
         # game-controller outcome program (`tests/test_joy.py`); `serial`
-        # is the serial-hold card program (`tests/test_serial.py`).
+        # is the serial-hold card program (`tests/test_serial.py`);
+        # `persona` is the Mk2 personality probe
+        # (`tests/test_mk2_personality.py`).
         self.assertEqual(sorted(name for name, _d, _s, _o in programs),
                          ["banks", "beat", "devtest", "events",
                           "exe2big", "exe2probe", "exe2seg", "exetest",
@@ -444,7 +446,7 @@ class TestSdkBoundary(unittest.TestCase):
                           "hwtest", "iobench", "iomix", "iomix_child",
                           "iostream", "ipc", "ipccopy", "joy",
                           "kresread", "krestest", "monitor", "mouse", "ns",
-                          "nschild", "placetest", "readermap", "readertest",
+                          "nschild", "perf_printf", "perf_probe", "persona", "placetest", "readermap", "readertest",
                           "readphase", "rt", "serial",
                           "shell", "sndpcm", "sndprobe", "sndtest", "sound",
                           "textbench", "timer",

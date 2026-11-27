@@ -35,11 +35,13 @@
  * On Mk2 (KOS_BOARD_MK2) the same container path builds the child on
  * pages (architecture 2.7.6): the slot, the CWD and seven pages, page
  * zero with the startup block, then the image, straight from the store's
- * ROM pages for a `/system` EXE or through the staging block for any
- * other FILE, and its BSS, then each segment: an extended-memory object
- * of its own pages (kos_xmem_segment_alloc), its payload copied the same
- * way and its BSS zeroed.  The header, the segment table, their checks
- * and the FILE calls are shared; the bank and slot placement below is
+ * ROM pages for a `/system` EXE or, for any other FILE, read straight
+ * into the child's pages (a descriptor through the page list, up to
+ * KOS_IPC_DESC_MAX bytes a read, with a seek only where the reads are not
+ * consecutive), and its BSS, then each segment: an extended-memory object
+ * of its own pages (kos_xmem_segment_alloc), its payload read the same
+ * way and its BSS zeroed.  The header, the segment table and their checks
+ * are shared; the bank and slot placement below is
  * the Mk1 board's.
  */
 
@@ -58,11 +60,19 @@
 #if defined(KOS_BOARD_MK2)
 #include "kernel/memory/mk2/pages.h"
 #define EXEC_BOARD EXE_BOARD_MK2
+/* A descriptor-less FILE call (metadata, seek); reads go through
+ * exec_payload. */
+#define exec_ns_call(file, frame, length, dir) \
+	((void)(dir), vfs_ns_file_call((file)->number, (file)->object, \
+				       (frame), (const uint8_t *)0, 0u, \
+				       (length)))
 #else
 #define EXEC_BOARD EXE_BOARD_MK1
-#endif
-
+#define exec_ns_call(file, frame, length, dir) \
+	vfs_ns_file_call((file)->number, (file)->object, (frame), (length), \
+			 (dir))
 #define EXE_LOAD_CHUNK KOS_SYSCALL_STAGE_SIZE
+#endif
 
 /* The header of the container being loaded.  It lives in the loader's
  * own data, not on the caller's stack: process_prepare() runs on the gate
@@ -176,9 +186,9 @@ int exe_validate_header(const struct exe_header *header, uint32_t file_size,
 	return EXE_EXEC_OK;
 }
 
-/* One FILE call on the bound executable.  `length` nonzero reads that many
- * bytes into the common staging block and returns the count (the caller
- * copies them where they belong); zero is the descriptor-less form
+/* One FILE call on the bound executable.  `length` nonzero (Mk1) reads
+ * that many bytes into the common staging block and returns the count (the
+ * caller copies them where they belong); zero is the descriptor-less form
  * (metadata, seek, sync).  Returns the call status. */
 static int exec_file_call(const struct vfs_handle_entry *file, uint8_t op,
 			  uint8_t arg0, uint16_t arg1, uint16_t length,
@@ -193,8 +203,7 @@ static int exec_file_call(const struct vfs_handle_entry *file, uint8_t op,
 	frame.arg0 = arg0;
 	frame.arg1 = arg1;
 	frame.payload[0] = file->object;
-	result = vfs_ns_file_call(file->number, file->object, &frame, length,
-				  dir);
+	result = exec_ns_call(file, &frame, length, dir);
 	if (reply != (struct kos_ipc_frame *)0) {
 		*reply = frame;
 	}
@@ -235,11 +244,32 @@ static int exec_seek(const struct vfs_handle_entry *file, uint32_t offset)
 	frame.payload[2] = (uint8_t)(offset >> 8);
 	frame.payload[3] = (uint8_t)(offset >> 16);
 	frame.payload[4] = (uint8_t)(offset >> 24);
-	result = vfs_ns_file_call(file->number, file->object, &frame, 0u,
-				  KOS_IPC_DESC_NONE);
+	result = exec_ns_call(file, &frame, 0u, KOS_IPC_DESC_NONE);
 	return result;
 }
 
+#if defined(KOS_BOARD_MK2)
+/* The bound executable's FILE position after the last read: a read that
+ * continues there takes no seek.  Unknown until the header is read. */
+#define EXEC_POS_UNKNOWN 0xFFFFFFFFul
+static uint32_t exec_pos;
+
+static int exec_payload(const struct vfs_handle_entry *file,
+			uint32_t offset, const uint8_t *map, uint16_t addr,
+			uint16_t length);
+
+/* Read the EXE header into the loader's own storage; a short file is
+ * EXE_EXEC_ERR_FILESIZE. */
+static int exec_read_header(const struct vfs_handle_entry *file)
+{
+	int result;
+
+	exec_pos = EXEC_POS_UNKNOWN;
+	result = exec_payload(file, 0u, (const uint8_t *)0,
+			      (uint16_t)&exe_pending_header, EXE_HEADER_SIZE);
+	return (result == EXE_EXEC_ERR_READ) ? EXE_EXEC_ERR_FILESIZE : result;
+}
+#else
 /* Read the EXE header into the loader's bank-7 storage through the common
  * staging block. */
 static int exec_read_header(const struct vfs_handle_entry *file)
@@ -265,6 +295,7 @@ static int exec_read_header(const struct vfs_handle_entry *file)
 	}
 	return EXE_EXEC_OK;
 }
+#endif
 
 /* The loader reads forward from a fixed offset and never needs the reply
  * position, so no KFILE_OP_SEEK/CUR/END use exists. */
@@ -318,10 +349,6 @@ int exe_validate_segment(const struct exe_segment *segment,
 }
 
 #if defined(KOS_BOARD_MK2)
-static int exec_payload(const struct vfs_handle_entry *file,
-			uint32_t offset, const uint8_t *map, uint16_t addr,
-			uint16_t length);
-
 /* `length` bytes at `offset` into the loader's own `dst`. */
 #define exec_stream(file, offset, dst, length) \
 	exec_payload((file), (offset), (const uint8_t *)0, (uint16_t)(dst), \
@@ -525,16 +552,26 @@ int process_prepare_program(const struct process_program *program,
 	return 0;
 }
 
+/* The loader's own mapping, by page: a driver's call remaps the cold
+ * set, so a read into the loader's data names its pages. */
+struct exec_dat {
+	uint8_t page[KOS_DAT_ENTRIES];
+};
+
 /* `length` payload bytes at file offset `offset` to `addr` through the page
  * list `map` (the child's image, a segment's pages; null: `addr` is the
- * loader's own memory): a `/system` EXE
- * straight from the store's ROM pages, any other FILE through the common
- * staging block, a chunk per FILE read. */
+ * loader's own memory): a `/system` EXE straight from the store's ROM
+ * pages, any other FILE straight from its provider, KOS_IPC_DESC_MAX bytes
+ * a FILE read into the pages with no staging copy, and a seek only where
+ * a read does not continue the last.  Returns a native provider error
+ * (negative) or a EXE_EXEC_ERR_* code. */
 static int exec_payload(const struct vfs_handle_entry *file,
 			uint32_t offset, const uint8_t *map, uint16_t addr,
 			uint16_t length)
 {
-	uint16_t done = 0u;
+	struct kos_ipc_frame frame;
+	struct exec_dat here;
+	int result;
 
 	if (file->endpoint == VFS_NS_FILE_ENDPOINT) {
 		if (romfs_read_pages(&file->u.ns.romfs, offset, map, addr,
@@ -543,30 +580,39 @@ static int exec_payload(const struct vfs_handle_entry *file,
 		}
 		return EXE_EXEC_OK;
 	}
-	while (done < length) {
-		uint16_t chunk = (uint16_t)(length - done);
-		int result;
+	if (map == (const uint8_t *)0) {
+		here = *(volatile const struct exec_dat *)KOS_DAT_SYSTEM;
+		map = here.page;
+	}
+	while (length != 0u) {
+		uint16_t chunk = (length > KOS_IPC_DESC_MAX)
+			? (uint16_t)KOS_IPC_DESC_MAX : length;
 
-		if (chunk > EXE_LOAD_CHUNK) {
-			chunk = EXE_LOAD_CHUNK;
+		if (offset != exec_pos) {
+			result = exec_seek(file, offset);
+			if (result != 0) {
+				return result;
+			}
 		}
-		result = exec_seek(file, offset + done);
-		if (result != 0) {
-			return result;
-		}
-		result = exec_file_call(file, KFILE_OP_READ, 0u, chunk, chunk,
-					KOS_IPC_DESC_OUT,
-					(struct kos_ipc_frame *)0);
+		/* A failed read ends the load; the next one seeks. */
+		exec_pos = offset + chunk;
+		frame.op = KFILE_OP_READ;
+		frame.flags = 0u;
+		frame.desc = KOS_IPC_DESC_NONE;
+		frame.arg0 = 0u;
+		frame.arg1 = chunk;
+		frame.payload[0] = file->object;
+		result = vfs_ns_file_call(file->number, file->object, &frame,
+					  map, addr, chunk);
 		if (result < 0) {
 			return result;
 		}
 		if (result != (int)chunk) {
 			return EXE_EXEC_ERR_READ;
 		}
-		kos_pages_copy((const uint8_t *)0,
-			       (uint16_t)kos_user_copy_staging, map,
-			       (uint16_t)(addr + done), chunk);
-		done = (uint16_t)(done + chunk);
+		offset = exec_pos;
+		addr = (uint16_t)(addr + chunk);
+		length = (uint16_t)(length - chunk);
 	}
 	return EXE_EXEC_OK;
 }

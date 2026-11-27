@@ -1,4 +1,5 @@
-"""Focused KonaCommander TUI/navigation smoke on the accepted KonaOS image."""
+"""Focused KonaCommander TUI/navigation smoke on the production image of
+BOARD (mk2 by default, mk1)."""
 
 import importlib.util
 import json
@@ -15,17 +16,17 @@ OS_ROOT = ROOT.parents[1]
 sys.path.insert(0, str(OS_ROOT / "tests"))
 sys.path.insert(0, str(OS_ROOT / "tools"))
 
-import pack_image  # noqa: E402
-import romfspack  # noqa: E402
-from replay import ConsoleReplay, v9958_screen  # noqa: E402
+from replay import (BOARDS, app_board, board_replay, in_driver,  # noqa: E402
+                    process_here, shell_process, v9958_screen)
 from z80sim import Ctc, SerialLink, read_symbols  # noqa: E402
 
 
-BUILD = OS_ROOT / "build"
-IMAGE = BUILD / "konaos.bin"
-MAP = BUILD / "konaos.map"
-STORE = BUILD / "store.json"
-MODULES = BUILD / "modules"
+BOARD = app_board()
+BUILD = OS_ROOT / BOARDS[BOARD]["subdir"]
+IMAGE = BUILD / BOARDS[BOARD]["image"]
+MAP = BUILD / BOARDS[BOARD]["map"]
+STORE = BUILD / BOARDS[BOARD]["store"]
+MODULES = BUILD / BOARDS[BOARD]["modules"]
 PROGRAM = ROOT / "build/user/kc.exe"
 PROGRAM_MAP = ROOT / "build/user/kc/kc.map"
 
@@ -106,34 +107,6 @@ class HostBridge:
             self.link.send(host.cobs_encode(answer) + b"\0", z.tstates)
 
 
-def splice_store(image, stream):
-    data = bytearray(image)
-    window = pack_image.ROMFS_WINDOW_SIZE
-    for page in range(pack_image.ROMFS_FIRST_PAGE,
-                      pack_image.ROMFS_FIRST_PAGE +
-                      pack_image.ROMFS_PAGE_COUNT):
-        base = page * pack_image.PAGE_SIZE
-        data[base:base + window] = bytes([pack_image.FILL]) * window
-    logical = 0
-    while logical < len(stream):
-        page = pack_image.ROMFS_FIRST_PAGE + logical // window
-        offset = logical % window
-        chunk = min(window - offset, len(stream) - logical)
-        base = page * pack_image.PAGE_SIZE + offset
-        data[base:base + chunk] = stream[logical:logical + chunk]
-        logical += chunk
-    return bytes(data)
-
-
-class CommanderReplay(ConsoleReplay):
-    def __init__(self, image):
-        self.root = str(OS_ROOT)
-        self.subdir = "build"
-        self.image_name = "konaos.bin"
-        self.image = image
-        self.syms = read_symbols(str(MAP))
-
-
 class CommanderTuiSmoke(unittest.TestCase):
     def setUp(self):
         for path in (IMAGE, MAP, STORE, PROGRAM, PROGRAM_MAP):
@@ -145,20 +118,7 @@ class CommanderTuiSmoke(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def make_replay(self, clock=False):
-        manifest = json.loads(STORE.read_text())
-        manifest["files"] = [
-            item for item in manifest["files"]
-            if item["name"].lower() != "kc.exe"
-        ]
-        manifest["files"].append({
-            "name": "kc.exe", "type": "EXE", "path": str(PROGRAM)
-        })
-        manifest_path = self.tmp / "store.json"
-        manifest_path.write_text(json.dumps(manifest))
-        stream, _report = romfspack.pack(
-            str(manifest_path), str(self.tmp / "store.romfs"),
-            objdir=str(MODULES))
-        replay = CommanderReplay(splice_store(IMAGE.read_bytes(), stream))
+        replay = board_replay(BOARD, {"kc.exe": str(PROGRAM)}, str(self.tmp))
         z = replay.make_cpu()
         if clock:
             Ctc().attach(z)
@@ -166,13 +126,14 @@ class CommanderTuiSmoke(unittest.TestCase):
         z.hid.fs2_add("BETA.TXT", b"beta\n")
         replay.boot_to_shell(z)
         # The program's addresses are fixed, so a stop on one also checks
-        # the bank: the nucleus (7), the drivers (6), bank 0 and the
-        # shell's bank run other code at the same addresses.
-        self.shell_bank = z.bank_of(0x0100)
+        # the process: the OS (the nucleus, the drivers) and the shell run
+        # other code at the same addresses.
+        self.shell = shell_process(replay, z)
         return replay, z
 
-    def in_program(self, z):
-        return z.bank_of(z.pc) not in (0, 6, 7, self.shell_bank)
+    def in_program(self, replay, z):
+        here = process_here(replay, z)
+        return here is not None and here != self.shell
 
     @staticmethod
     def console_dispatch():
@@ -183,14 +144,14 @@ class CommanderTuiSmoke(unittest.TestCase):
         raise AssertionError("production plan carries no console driver")
 
     @staticmethod
-    def write_length(z, dispatch):
-        if z.pc != dispatch or z.bank_of(z.pc) != 6 or z.rd(z.hl) != 0:
+    def write_length(replay, z, dispatch):
+        if z.pc != dispatch or not in_driver(replay, z) or z.rd(z.hl) != 0:
             return None
         return z.rd16((z.hl + 4) & 0xFFFF)
 
     @staticmethod
-    def render_length(z, dispatch):
-        if z.pc != dispatch or z.bank_of(z.pc) != 6 or z.rd(z.hl) != 6:
+    def render_length(replay, z, dispatch):
+        if z.pc != dispatch or not in_driver(replay, z) or z.rd(z.hl) != 6:
             return None
         return z.rd16((z.hl + 4) & 0xFFFF)
 
@@ -208,13 +169,13 @@ class CommanderTuiSmoke(unittest.TestCase):
         hits = {"n": 0}
 
         def hook(step):
-            length = self.write_length(z, dispatch)
+            length = self.write_length(replay, z, dispatch)
             if length is not None:
                 writes.append(length)
-            length = self.render_length(z, dispatch)
+            length = self.render_length(replay, z, dispatch)
             if length is not None:
                 renders.append(length)
-            if z.pc == getkey and step >= 1 and self.in_program(z):
+            if z.pc == getkey and step >= 1 and self.in_program(replay, z):
                 if step - 1 > hits["n"]:
                     return True
                 hits["n"] += 1
@@ -263,7 +224,7 @@ class CommanderTuiSmoke(unittest.TestCase):
         entered = {"yes": False}
 
         def hook(_step):
-            if not self.in_program(z):
+            if not self.in_program(replay, z):
                 return None
             if z.pc == ui_run:
                 entered["yes"] = True

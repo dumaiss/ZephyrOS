@@ -144,6 +144,14 @@ void kos_rt_release_process(uint8_t pid)
 	}
 }
 
+#if defined(KOS_BOARD_MK2)
+void kos_rt_quiesce(void)
+{
+	rt_route(KOS_RT_IDLE);
+	rt_owner = 0u;
+}
+#endif
+
 void kos_rt_register(uint16_t block)
 {
 	const struct kos_rt_register_args *args =

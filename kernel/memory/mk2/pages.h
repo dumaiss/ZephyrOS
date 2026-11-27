@@ -50,7 +50,7 @@ uint8_t kos_pages_release(uint8_t pid);
 
 uint8_t kos_pages_free_count(void);
 
-/* --- moving bytes (pages.c over page_copy.asm) --------------------------- */
+/* --- moving bytes (page_copy.asm) ---------------------------------------- */
 
 #define KOS_PAGE_ZEROES 0x80u /* page_copy.asm: zero-fill the chunk     */
 #define KOS_PAGE_DIRECT 0xFFu /* page_copy.asm: a nucleus address       */
@@ -79,13 +79,39 @@ void kos_pages_copy(const uint8_t *src_map, uint16_t src,
 /* Zero `length` bytes at `dst` through `dst_map`. */
 void kos_pages_zero(const uint8_t *dst_map, uint16_t dst, uint16_t length);
 
+/* kos_pages_copy for a driver's call: it runs on its own stack in the
+ * fixed region, because the caller's stack may lie in the copy windows (a
+ * driver's private stack in its io block), and it leaves the windows as
+ * it found them (the domain). */
+void kos_driver_copy(const uint8_t *src_map, uint16_t src,
+		     const uint8_t *dst_map, uint16_t dst, uint16_t length);
+
 /* --- system entries (dat_map.asm, cold_call.asm; fixed) ----------------- */
 
-/* Remap `count` system entries from `first` on to `pages`, mirror first
- * (kos_dat_map's span argument: KOS_DAT_SPAN(first, count)). */
+/* A span: `count` (1-8) system entries from `first` on.  A save area
+ * records a span and the pages its mirrors named; every remap writes an
+ * entry's mirror before its OUT (dat_map.asm). */
 #define KOS_DAT_SPAN(first, count) \
 	((uint16_t)((uint16_t)(first) | ((uint16_t)(count) << 8)))
-void kos_dat_map(const uint8_t *pages, uint16_t span);
+#define KOS_DAT_SAVE_SIZE(count) (2u + (count))
+
+/* Record the span in `save`, then remap it to `want` (one page per entry)
+ * unless it shows `want` already; 1 when it remapped.  The force form
+ * always remaps (an interrupt may find an entry between its mirror write
+ * and its OUT) and returns 1. */
+uint8_t kos_dat_span_enter(const uint8_t *want, uint16_t span, uint8_t *save);
+uint8_t kos_dat_span_force(const uint8_t *want, uint16_t span, uint8_t *save);
+
+/* Write every recorded page of `save` back. */
+void kos_dat_span_restore(const uint8_t *save);
+
+/* SYS_PERSONALITY's last step (dat_map.asm): the working mapping becomes
+ * `pages` (logical page n at n) and the CPU continues at `entry` in it,
+ * interrupts masked, IM 1; never returns.  The two bytes below `entry`
+ * in the system mapping are overwritten, so they must not lie in
+ * kos_personality_switch..kos_personality_switch_end. */
+void kos_personality_switch(const uint8_t *pages, uint16_t entry);
+extern uint8_t kos_personality_switch_end[];
 
 /* Empty the cold-set veneer stack (the syscall dispatcher's entry, where
  * no cross-set call is live). */

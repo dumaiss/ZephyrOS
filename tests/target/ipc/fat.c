@@ -5,7 +5,8 @@
  * block from the IOC buffer into its own staging buffer through the
  * nucleus same-domain move primitive, then rewrites the reply's block
  * address so the block travels up the chain by descriptor, never by raw
- * cross-domain pointer.
+ * cross-domain pointer.  Its bulk segment (fat_bulk.c) stands in for a
+ * block cache, which FAT_BULK delivers straight to a caller descriptor.
  */
 
 #include "kos/errno.h"
@@ -44,10 +45,36 @@ static int16_t fat_read(struct kos_ipc_frame *frame)
 	return result;
 }
 
+/* The bulk_copy_out probe (IPC_OP_FAT_BULK, ipc_test.h).  The frame is
+ * read before a span opens: inside one it is out of reach. */
+static int16_t fat_bulk_copy(struct kos_ipc_frame *frame)
+{
+	const uint8_t *p = frame->payload;
+	uint8_t desc = (p[IPC_BULK_ARG_FORGE] != 0u) ? p[IPC_BULK_ARG_ID]
+						    : frame->desc;
+	uint16_t at = IPC_FRAME_WORD(p, IPC_BULK_ARG_AT);
+	uint16_t from = IPC_FRAME_WORD(p, IPC_BULK_ARG_FROM);
+	uint16_t length = IPC_FRAME_WORD(p, IPC_BULK_ARG_LEN);
+	uint8_t span = p[IPC_BULK_ARG_SPAN];
+	int16_t result;
+
+	if (span != 0u && api->bulk_map() != 0) {
+		return -KOS_EIO;
+	}
+	result = api->bulk_copy_out(desc, at, from, length);
+	if (span != 0u) {
+		api->bulk_unmap();
+	}
+	return result;
+}
+
 /* The endpoint dispatch entry the manifest names: a module-global
  * symbol so the packer can resolve its hot-image offset. */
 int16_t fat_dispatch(struct kos_ipc_frame *frame)
 {
+	if (frame->op == IPC_OP_FAT_BULK) {
+		return fat_bulk_copy(frame);
+	}
 	if (frame->op != IPC_OP_FAT_READ) {
 		return -KOS_EINVAL;
 	}

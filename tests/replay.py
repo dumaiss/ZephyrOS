@@ -27,11 +27,13 @@ if HERE not in sys.path:
 if os.path.join(ROOT, "tools") not in sys.path:
     sys.path.insert(0, os.path.join(ROOT, "tools"))
 
+import exepack  # noqa: E402
 import fontpack  # noqa: E402
+import pack_image  # noqa: E402
 import romfspack  # noqa: E402
 from z80sim import (Ctc, IocCommandPeer, V9958Peer,  # noqa: E402
-                    SERIAL_CONNECT_DELAY_LATCH, StopSet, Z80, read_symbols,
-                    skip_serial_connect_delay)
+                    SERIAL_CONNECT_DELAY_LATCH, SoundPeer, StopSet, Z80,
+                    read_symbols, skip_serial_connect_delay)
 
 RET = 0x1234
 STACK = 0xFFFE          # the common boot stack
@@ -479,13 +481,18 @@ class ConsoleReplay(Replay):
             z.ioc_peer = z.hid
         z.vdp = V9958Peer()
         z.vdp_peer = z.vdp
+        self.reset_glyphs(z)
+        return z
+
+    @staticmethod
+    def reset_glyphs(z):
+        """The positioned-glyph model's state on a fresh machine."""
         z.glyphs = []
         z.glyph_pos = 0
         z.glyph_last = None
         z.glyph_cells = {}
         z.glyph_next = None
         z.glyph_burst = False
-        return z
 
     def pump(self, z):
         """Decode newly drawn glyphs into a positioned text model.
@@ -599,6 +606,202 @@ class ConsoleReplay(Replay):
         self.start_kernel(z)
         self.run_to(z, prompt, limit)
         return self.trace(z)
+
+
+# --- the boards ------------------------------------------------------------
+#
+# The applications' replays run on either production image.  `BOARD`
+# (mk2 by default, as in the applications' Makefiles) selects it.
+
+BOARDS = {
+    "mk1": {"subdir": "build", "image": "konaos.bin", "map": "konaos.map",
+            "store": "store.json", "modules": "modules",
+            "sdk": "kos-sdk-0.2.0"},
+    "mk2": {"subdir": "build-mk2", "image": "konaos-mk2.bin",
+            "map": "konaos-mk2.map", "store": "sys/store.json",
+            "modules": "sys/modules", "sdk": "kos-sdk-0.2.0-mk2"},
+}
+MK2_MEMORY_INC = os.path.join(ROOT, "platform", "zephyr80mk2", "private",
+                              "memory.inc")
+
+
+def app_board(board=None):
+    """The board to replay: `board`, else $BOARD, else mk2."""
+    board = board or os.environ.get("BOARD") or "mk2"
+    if board not in BOARDS:
+        raise ValueError("BOARD must be mk1 or mk2, not %r" % board)
+    return board
+
+
+class Mk2Board:
+    """The Mk2 production image on the simulator's Mk2 board, as a mixin
+    for a `ConsoleReplay`: booted from reset (the ROM bootstrap runs, so
+    the serial-connect delay runs too and `start_kernel` has nothing to
+    call), with the V9958 console, the IOC (keyboard, the card behind
+    IOC-FAT, the reset command) and the CTC."""
+
+    def make_cpu(self, card=True, files=None):
+        z = Z80(self.image, b"", board="mk2")
+        z.vdp = z.vdp_peer = V9958Peer()
+        z.hid = z.ioc_peer = IocCommandPeer(fs2_media=card, fs2_files=files)
+        Ctc().attach(z)
+        self.reset_glyphs(z)
+        return z
+
+    def start_kernel(self, z, host_sync=b""):
+        return z
+
+    def drive(self, z, limit, watch=None, hook=None, every=0x1FFF,
+              tick=None, delay=True):
+        return super().drive(z, limit, watch, hook, every, tick,
+                             delay=False)
+
+
+class Mk2ConsoleReplay(Mk2Board, ConsoleReplay):
+    """The Mk2 image with the console lane, `ConsoleReplay`'s interface."""
+
+
+def splice_store(image, stream, board=None):
+    """`image` with the recovery store `stream` in its store pages."""
+    board = app_board(board)
+    data = bytearray(image)
+    if board == "mk1":
+        window = pack_image.ROMFS_WINDOW_SIZE
+        first = pack_image.ROMFS_FIRST_PAGE
+        count = pack_image.ROMFS_PAGE_COUNT
+        page_size = pack_image.PAGE_SIZE
+    else:
+        lay = pack_image.mk2_layout(MK2_MEMORY_INC)
+        window = lay["KOS_ROMFS_WINDOW_SIZE"]
+        first = lay["KOS_ROMFS_FIRST_PAGE"]
+        count = lay["KOS_ROMFS_PAGE_COUNT"]
+        page_size = pack_image.MK2_PAGE
+    if len(stream) > window * count:
+        raise AssertionError("the store is %d bytes, over its %d"
+                             % (len(stream), window * count))
+    for page in range(first, first + count):
+        base = page * page_size
+        data[base:base + window] = bytes([pack_image.FILL]) * window
+    logical = 0
+    while logical < len(stream):
+        page = first + logical // window
+        offset = logical % window
+        chunk = min(window - offset, len(stream) - logical)
+        base = page * page_size + offset
+        data[base:base + chunk] = stream[logical:logical + chunk]
+        logical += chunk
+    return bytes(data)
+
+
+def board_replay(board=None, programs=None, tmp=None):
+    """The production replay of `board` (see `app_board`).  `programs`
+    ({store name: EXE path}) are put in its recovery store, so the shell
+    runs them as /system/<name>; `tmp` is a scratch directory for that.
+    The replay carries `board`, `modules` (the drivers' build directory)
+    and `sdk` (the SDK directory name an application builds against)."""
+    board = app_board(board)
+    spec = BOARDS[board]
+    cls = ConsoleReplay if board == "mk1" else Mk2ConsoleReplay
+    replay = cls.open(spec["subdir"], spec["image"], spec["map"])
+    replay.board = board
+    replay.modules = os.path.join(ROOT, spec["subdir"], spec["modules"])
+    replay.sdk = spec["sdk"]
+    if programs:
+        manifest_path = os.path.join(ROOT, spec["subdir"], spec["store"])
+        with open(manifest_path) as handle:
+            manifest = json.load(handle)
+        names = {name.lower() for name in programs}
+        manifest["files"] = [item for item in manifest["files"]
+                             if item["name"].lower() not in names]
+        for name, path in programs.items():
+            manifest["files"].append({"name": name, "type": "EXE",
+                                      "path": os.path.abspath(path)})
+        new_manifest = os.path.join(tmp, "store.json")
+        with open(new_manifest, "w") as handle:
+            json.dump(manifest, handle)
+        stream, _report = romfspack.pack(
+            new_manifest, os.path.join(tmp, "store.romfs"),
+            objdir=replay.modules)
+        replay.image = splice_store(replay.image, stream, board)
+    return replay
+
+
+
+def exe_board(path):
+    """The board ("mk1", "mk2") the EXE at `path` was built for, or None
+    when there is no such file."""
+    if not os.path.isfile(path):
+        return None
+    with open(path, "rb") as handle:
+        return exepack.BOARD_NAMES[exepack.parse_header(handle.read())
+                                   ["board"]]
+
+
+def not_built_for(path, board, make):
+    """Why the EXE at `path` cannot run on `board`'s image, or None: the
+    application tree (`make` builds it) is not built, or is built for the
+    other board."""
+    built = exe_board(path)
+    if built == board:
+        return None
+    if built is None:
+        return "%s is not built: %s" % (path, make)
+    return "%s is built for %s, this test boots %s" % (path, built, board)
+
+
+def skip_unless_built_for(path, board, make):
+    """A unittest decorator: skip, with `not_built_for`'s reason."""
+    reason = not_built_for(path, board, make)
+    return unittest.skipIf(reason is not None, reason or "")
+
+
+# --- where the CPU is --------------------------------------------------------
+#
+# An application's EXE has fixed addresses, so a stop on one of its symbols
+# also checks that the code running is the program's: other code runs at
+# the same addresses (the shell, the nucleus, the drivers).  These helpers
+# answer the question for the board of `board_replay`.  Mk1 tells code
+# apart by the SRAM bank behind the program counter (banks 0, 6, 7 are the
+# OS, bank_of(0100h) the shell's bank).  Mk2 has one bank per process: the
+# working DAT bank is selected while a process runs, the system bank while
+# the nucleus or a driver runs, and the nucleus's running pid names the
+# process.
+
+
+def _nucleus_bytes(replay, z, name, count):
+    """`count` bytes of a nucleus symbol in the fixed region (system
+    entries 1-2 never remap, so the system entry is the page)."""
+    at = replay.syms[name]
+    base = (z.mapper.entries[at >> 13] << 13) | (at & 0x1FFF)
+    return bytes(z.phys[base:base + count])
+
+
+def shell_process(replay, z):
+    """The process at the shell's prompt (its Mk1 bank, its Mk2 pid)."""
+    if replay.board == "mk1":
+        return z.bank_of(0x0100)
+    return _nucleus_bytes(replay, z, "_process_running_pid", 1)[0]
+
+
+def process_here(replay, z):
+    """The process whose own mapping holds the program counter (its Mk1
+    bank, its Mk2 pid), or None while the PC is in the OS."""
+    if replay.board == "mk1":
+        bank = z.bank_of(z.pc)
+        return None if bank in (0, 6, 7) else bank
+    if z.mapper.dat_bank != 1:
+        return None
+    return _nucleus_bytes(replay, z, "_process_running_pid", 1)[0]
+
+
+def in_driver(replay, z):
+    """True when the PC is in the driver domain (Mk1 bank 6, Mk2 the
+    system bank with the domain's entries 3-6 installed)."""
+    if replay.board == "mk1":
+        return z.bank_of(z.pc) == 6
+    domain = _nucleus_bytes(replay, z, "_kos_driver_domain", 8)
+    return (z.mapper.dat_bank == 0 and
+            tuple(z.mapper.entries[3:7]) == tuple(domain[3:7]))
 
 
 if __name__ == "__main__":  # pragma: no cover - manual smoke check

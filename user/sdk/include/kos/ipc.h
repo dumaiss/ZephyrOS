@@ -59,8 +59,9 @@ struct kos_ipc_request {
 
 /* Synchronous call/reply.  Returns the IPC status: the driver's result
  * (zero or positive success, negative -KOS_E* failure) or a nucleus
- * refusal (-KOS_EINVAL bad handle/descriptor, -KOS_EBUSY re-entrant,
- * -KOS_ENOSPC too deep). */
+ * refusal (-KOS_EINVAL bad descriptor, -KOS_EBUSY re-entrant,
+ * -KOS_ENOSPC too deep).  A handle the caller does not hold fails the
+ * syscall itself and `call` returns -KOS_EINVAL as well. */
 int call(unsigned char handle, struct kos_ipc_request *req);
 
 /* --- object and namespace wrappers -------------------------------------

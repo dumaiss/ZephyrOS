@@ -109,22 +109,11 @@ int16_t ipc_call_object(uint8_t endpoint, uint8_t object, uint8_t handle,
  * in the caller window (visible while the gate dispatches with P = 0);
  * the reply frame, status and descriptor capture land back in it, and the
  * caller's bound handle resolved to `endpoint`/`object` by the syscall
- * body first (kernel/vfs/router.c).  The return value is the IPC status
- * (the
- * syscall publishes it in HL with carry clear). */
+ * body first (its handle entry, kernel/vfs/handles.c).  The return
+ * value is the IPC status (the syscall publishes it in HL with carry
+ * clear). */
 int16_t ipc_syscall_call_object(struct kos_ipc_call_args *args,
 				uint8_t endpoint, uint8_t object);
-
-/* Descriptor capture and release for a nucleus caller that has a caller
- * buffer of its own to hand a driver (the FS provider's enumeration
- * forward, the cold loader's image stream).  `latch` is the buffer's
- * execution latch: the syscall gate's saved latch for a caller buffer,
- * or 0 when the address is in the common window, which every mapping
- * shows.  A returned id is valid for the call the nucleus makes next and
- * must be released afterwards. */
-int8_t ipc_desc_capture(uint8_t latch, uint16_t addr, uint16_t length,
-			uint8_t dir);
-void ipc_desc_release(void);
 
 /* --- nucleus-side calls -------------------------------------------------- */
 
@@ -142,6 +131,20 @@ int16_t ipc_nucleus_call(uint8_t handle, struct kos_ipc_frame *frame);
 int16_t ipc_nucleus_call_gate(uint8_t handle, struct kos_ipc_frame *frame,
 			      uint16_t addr, uint16_t length, uint8_t dir);
 
+#if defined(KOS_BOARD_MK2)
+/* Nucleus call on endpoint `endpoint` for a bound instance (the
+ * object/handle pair is set for an in-process provider that reads its
+ * instance from it; 0/0 for a driver): with a nonzero `length`, one OUT
+ * descriptor of `length` bytes (at most KOS_IPC_DESC_MAX) at `addr`
+ * through the page list `map` (in the fixed region or common, which the
+ * driver's call keeps mapped), so the provider's bytes land straight in
+ * those pages (the cold loader's FILE reads into a child's pages or its
+ * own data); length 0 is the descriptor-less form. */
+int16_t ipc_nucleus_call_pages(uint8_t endpoint, uint8_t object,
+			       uint8_t handle, struct kos_ipc_frame *frame,
+			       const uint8_t *map, uint16_t addr,
+			       uint16_t length);
+#else
 /* Nucleus call whose buffer is the common staging block, `length` bytes
  * (the cold loader's FILE reads, `length` at most
  * KOS_SYSCALL_STAGE_SIZE): path A in every mapping, so no bank-7 scratch
@@ -158,6 +161,7 @@ int16_t ipc_nucleus_call_object_common(uint8_t endpoint, uint8_t object,
 				       uint8_t handle,
 				       struct kos_ipc_frame *frame,
 				       uint16_t length, uint8_t dir);
+#endif
 
 /* Descriptor copy for an in-process provider: `length` requested bytes
  * move between the caller buffer of descriptor `desc` (at `offset`) and

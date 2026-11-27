@@ -266,8 +266,10 @@ table order: an object of its own pages (`EXE_EXEC_ERR_NOSPACE` when the
 pages or the object table run out), its payload from the object's first
 byte - where a far-code or mappable data segment's `8000h` link address
 lies when the far window shows it - and its zeroed BSS.  A `/system`
-program's payloads are copied straight from the store's ROM pages, any
-other FILE's through the staging block.
+program's payloads are copied straight from the store's ROM pages; any
+other FILE's are read straight into the pages, one descriptor through the
+page list per read of up to 4 KiB, with a seek only where a read does not
+continue the last.
 
 **Memory initialization:** the loader zeroes only
 the primary BSS, each segment's BSS, the startup block and the page-zero

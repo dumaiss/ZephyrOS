@@ -1,19 +1,40 @@
 /* ColecoGo for KonaOS.
  *
- * All file handling, validation, BIOS/cartridge adaptation and target-bank
- * construction are performed through the public KonaOS SDK.  The final
- * handoff is necessarily a small assembly routine: it disables the hardware
- * owned by KonaOS, changes the memory latch, completes the flat 64 KiB image
- * and jumps to the ColecoVision BIOS.  It never returns.
+ * All file handling, validation, BIOS/cartridge adaptation and the
+ * construction of the ColecoVision memory are performed through the public
+ * KonaOS SDK, and the program leaves the V9958 as the ColecoVision needs it
+ * (video.asm).  The handoff never returns:
+ *
+ *   - Zephyr-80 Mk2: the eight 8 KiB pages of the ColecoVision space are
+ *     extended-memory pages, and SYS_PERSONALITY stops KonaOS's interrupt
+ *     sources, maps them as the whole working mapping and jumps to the
+ *     BIOS;
+ *   - Zephyr-80: the diagnostic API builds bank 5, and a small assembly
+ *     routine (handoff.asm) disables the hardware owned by KonaOS, changes
+ *     the memory latch, completes the flat 64 KiB image and jumps to the
+ *     BIOS.
  */
 
 #include "kos.h"
+#if !defined(KOS_BOARD_MK2)
 #include "diag.h" /* SDK diagnostic wrappers (not part of kos.h) */
+#endif
 
-#define TARGET_BANK             5u
 #define BIOS_BYTES              0x2000u
 #define CART_BYTES              0x8000u
 #define CART_BASE               0x8000u
+#if defined(KOS_BOARD_MK2)
+/* The ColecoVision space by 8 KiB page: 0 the BIOS, 1-2 the open
+ * expansion area (FFh), 3 the RAM (cleared), 4-7 the cartridge.  An
+ * object holds at most seven pages, so pages 0-6 are one object and page
+ * 7 another. */
+#define TARGET_PAGE_BYTES       0x2000u
+#define TARGET_RAM_PAGE         3u
+#define TARGET_CART_PAGE        4u
+#define TARGET_LOW_PAGES        7u
+#define TARGET_ENTRY            0x0000u
+#else
+#define TARGET_BANK             5u
 #define CART_HALF_BYTES         0x4000u
 #define TARGET_UPPER_STAGE      0x2000u
 #define TARGET_STAGE_B          0x5F00u
@@ -25,6 +46,7 @@
 #define TARGET_CART_LOWER       0x8000u
 #define PAGE_BYTES              0x0100u
 #define TARGET_UPPER_PREFIX     0x3F00u
+#endif
 
 #define SCAN_BITMAP_BYTES       0x1000u
 #define SCAN_WORK_ITEMS         1024u
@@ -67,11 +89,16 @@ static uint8_t cart[CART_BYTES];
 static union work_area work_area;
 static uint16_t scan_work_count;
 
+extern void coleco_video(void);
+#if defined(KOS_BOARD_MK2)
+static struct kos_personality_page target_pages[KOS_PERSONALITY_PAGES];
+#else
 extern uint8_t handoff_begin[];
 extern uint8_t handoff_end[];
 extern uint8_t stage_b_begin[];
 extern uint8_t stage_b_end[];
 extern void handoff(void);
+#endif
 
 /* Standard ColecoVision BIOS (CRC32 3AA93EF3).  Offsets name operand bytes. */
 static const struct bios_patch bios_patches[] = {
@@ -458,6 +485,56 @@ static int adapt_bios(void)
 	return 0;
 }
 
+#if defined(KOS_BOARD_MK2)
+/* Logical page `n` of the ColecoVision space: 8 KiB from `source`. */
+static int target_page(uint8_t n, const uint8_t *source)
+{
+	const struct kos_personality_page *page = &target_pages[n];
+	int result = xwrite(page->handle,
+			    (uint16_t)((uint16_t)page->page << 13), source,
+			    TARGET_PAGE_BYTES);
+
+	return result < 0 ? result : 0;
+}
+
+/* The ColecoVision space in two objects (pages 0-6 and page 7), filled in
+ * place.  The objects go with the process if anything fails. */
+static int build_target(void)
+{
+	int low = xalloc((uint16_t)(TARGET_LOW_PAGES * TARGET_PAGE_BYTES),
+			 KOS_XMEM_FLAG_NONE);
+	int high = xalloc(TARGET_PAGE_BYTES, KOS_XMEM_FLAG_NONE);
+	uint8_t n;
+	int result;
+
+	if (low < 0) {
+		return low;
+	}
+	if (high < 0) {
+		return high;
+	}
+	for (n = 0u; n < KOS_PERSONALITY_PAGES; ++n) {
+		target_pages[n].handle =
+			(uint16_t)(n < TARGET_LOW_PAGES ? low : high);
+		target_pages[n].page = (uint8_t)(n < TARGET_LOW_PAGES ? n : 0u);
+	}
+	result = target_page(0u, work_area.bios);
+	memset(work_area.bios, 0xFF, BIOS_BYTES);
+	for (n = 1u; result == 0 && n < TARGET_RAM_PAGE; ++n) {
+		result = target_page(n, work_area.bios);
+	}
+	memset(work_area.bios, 0x00, BIOS_BYTES);
+	if (result == 0) {
+		result = target_page(TARGET_RAM_PAGE, work_area.bios);
+	}
+	for (n = TARGET_CART_PAGE; result == 0 && n < KOS_PERSONALITY_PAGES;
+	     ++n) {
+		result = target_page(n, cart + (uint16_t)((uint16_t)
+			(n - TARGET_CART_PAGE) * TARGET_PAGE_BYTES));
+	}
+	return result;
+}
+#else
 static void commit_failure(void)
 {
 	/* Returning to an OS whose target bank has been partly replaced is not
@@ -561,13 +638,16 @@ static void build_target_and_go(void)
 	handoff();
 	commit_failure();
 }
+#endif
 
 int main(int argc, char **argv)
 {
 	const char *cart_path;
 	struct scan_report report;
+#if !defined(KOS_BOARD_MK2)
 	struct kos_bank_info bank_info;
 	struct kos_diag_system_info system_info;
+#endif
 	uint32_t size32;
 	uint16_t cart_size;
 	uint16_t rounded_size;
@@ -617,6 +697,12 @@ int main(int argc, char **argv)
 		return fail("COLECO.ROM is not the supported standard BIOS", 0);
 	}
 
+#if defined(KOS_BOARD_MK2)
+	result = build_target();
+	if (result < 0) {
+		return fail("cannot build the ColecoVision memory", result);
+	}
+#else
 	result = diag_bank_info(&bank_info);
 	if (result < 0) {
 		return fail("bank diagnostics are unavailable", result);
@@ -635,6 +721,7 @@ int main(int argc, char **argv)
 	if (validate_handoff_layout() < 0) {
 		return fail("linked handoff layout is unsafe", 0);
 	}
+#endif
 
 	if (!report.scanned) {
 		console_puts("Cartridge has no AA55h header; I/O scan skipped.\r\n");
@@ -649,8 +736,16 @@ int main(int argc, char **argv)
 	if (manifest_count != 0u) {
 		printf("Patch manifest: %u entry(s) applied.\r\n", manifest_count);
 	}
+#if defined(KOS_BOARD_MK2)
+	console_puts("Images validated; starting ColecoVision (no return).\r\n");
+	coleco_video();
+	(void)personality(target_pages, KOS_PERSONALITY_PAGES, TARGET_ENTRY);
+	/* Refused: the V9958 is set up for the ColecoVision, so restart. */
+	reboot();
+#else
 	console_puts("Images validated; starting ColecoVision from bank 5 (no return).\r\n");
 
 	build_target_and_go();
+#endif
 	return 1;
 }

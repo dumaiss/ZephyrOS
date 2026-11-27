@@ -36,10 +36,11 @@ class ProjectTests(unittest.TestCase):
     def test_ui_uses_the_tui_sdk_without_terminal_sequences(self):
         source = (ROOT / "src/kc_ui.c").read_text()
         makefile = (ROOT / "Makefile").read_text()
+        sdk_mk = (ROOT.parent / "sdk.mk").read_text()
         self.assertIn('#include "tui.h"', source)
         self.assertIn('#include "tui_widgets.h"', source)
         self.assertIn("LIBS=tui_widgets:tui", makefile)
-        self.assertIn("kos-sdk-0.2.0.tar.gz", makefile)
+        self.assertIn("kos-sdk-0.2.0", sdk_mk)
         self.assertNotIn("\\033", source)
         self.assertNotIn("console_write", source)
         self.assertNotIn("getchar()", source)

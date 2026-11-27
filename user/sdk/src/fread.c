@@ -12,12 +12,13 @@
 
 #include "stdio_internal.h"
 
-/* Read one item of `size` bytes into `dst`; returns the bytes read, which
- * fall short of `size` at end of file or after an error (that sets the
- * stream's flag).  One item at a time keeps the loop free of a multiply
- * (docs/sdk.md section 5) and lets fread count whole items only. */
-static int fread_item(struct kos_stream *s, unsigned char *dst,
-		      unsigned int size)
+/* Read `size` bytes into `dst`; returns the bytes read, which fall short
+ * of `size` at end of file or after an error (that sets the stream's
+ * flag).  The buffered bytes go first, in runs; a request of a buffer or
+ * more then reads straight into `dst`, and a smaller tail goes through
+ * the buffer. */
+static unsigned int fread_span(struct kos_stream *s, unsigned char *dst,
+			       unsigned int size)
 {
 	unsigned int got = 0u;
 
@@ -57,14 +58,19 @@ static int fread_item(struct kos_stream *s, unsigned char *dst,
 			break;
 		}
 	}
-	return (int)got;
+	return got;
 }
 
+/* `ptr` must name `size * nmemb` bytes inside the 64 KiB address space
+ * (the product is not checked against a wrap of it).  The items go in
+ * groups of whole items of at most 65535 bytes, so no 16-bit total
+ * wraps; the count is the whole items read, and the bytes of a partial
+ * final item are consumed from the stream. */
 size_t fread(void *ptr, size_t size, size_t nmemb, FILE *stream)
 {
 	struct kos_stream *s = KOS_STREAM_SLOT(stream);
 	unsigned char *at = (unsigned char *)ptr;
-	unsigned int items;
+	unsigned int limit, group, bytes, got, items = 0u;
 
 	if (size == 0u || nmemb == 0u) {
 		return 0u;
@@ -76,11 +82,29 @@ size_t fread(void *ptr, size_t size, size_t nmemb, FILE *stream)
 		}
 		return 0u;
 	}
-	for (items = 0u; items < nmemb; ++items) {
-		if (fread_item(s, at, size) != (int)size) {
+	if (size == 1u) {
+		return (size_t)fread_span(s, at, nmemb);
+	}
+	if (nmemb == 1u) {
+		return fread_span(s, at, size) == size ? 1u : 0u;
+	}
+	if ((size | nmemb) <= 0xFFu) {
+		bytes = nmemb * size;
+		got = fread_span(s, at, bytes);
+		return (size_t)(got == bytes ? nmemb : got / size);
+	}
+	limit = 0xFFFFu / size;
+	while (nmemb != 0u) {
+		group = nmemb < limit ? nmemb : limit;
+		bytes = group * size;
+		got = fread_span(s, at, bytes);
+		if (got != bytes) {
+			items += got / size;
 			break;
 		}
-		at += size;
+		items += group;
+		at += bytes;
+		nmemb -= group;
 	}
 	return (size_t)items;
 }

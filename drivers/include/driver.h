@@ -40,6 +40,21 @@
  *   bulk_write      the mirror: a window buffer -> the calling driver's
  *                   own bulk extent, same binding and bounds (run-time
  *                   data kept there, such as the IOC-FAT block cache).
+ *   bulk_copy_out   the calling driver's own bulk data -> a caller
+ *                   descriptor, in one nucleus copy: the extent binding of
+ *                   bulk_read on the source, the checks of copy_out on
+ *                   the destination.  A driver that keeps a cache in its
+ *                   bulk extent delivers a hit with it, without staging
+ *                   the bytes in its own window first.
+ *   borrow          lend the calling driver part of a caller descriptor
+ *   borrow_release  as plain memory, so a device receive lands in the
+ *                   caller's buffer itself; the driver still names only
+ *                   the descriptor id, and the nucleus answers with an
+ *                   address it maps already, or refuses (the driver then
+ *                   stages as before).  One borrow at a time.
+ *   borrowed        the borrow as the lending driver's callee sees it: a
+ *                   transport handed a borrowed address checks the range
+ *                   against the live borrow before it writes there.
  *   console_putc    the nucleus-owned early console, polled SIO0/B, which
  *   console_poll    is usable before the console driver exists and stays
  *   console_getc    for driver diagnostics and panic-time output (3.2).
@@ -167,12 +182,46 @@ struct driver_api {
 	 * caller window.  bulk_map returns 0, or -KOS_EBUSY when a span is
 	 * already open or from an interrupt handler.  Inside a span the caller window is not the
 	 * caller's: the request frame and every caller buffer are out of
-	 * reach, and call, copy_in, copy_out, bulk_read and bulk_write
-	 * refuse (-KOS_EBUSY) and event_post ignores the post.  A span
-	 * never outlives the operation that opened it. */
+	 * reach, and call, copy_in, copy_out, bulk_read, bulk_write and
+	 * bulk_copy_out refuse (-KOS_EBUSY) and event_post ignores the
+	 * post.  A span never outlives the operation that opened it. */
 	int16_t (*bulk_map)(void);
 	void (*bulk_unmap)(void);
+
+	/* `length` bytes of the calling driver's own bulk data at `bulk`
+	 * into caller descriptor `desc` (direction OUT) at `offset`; returns
+	 * the length.  -KOS_EINVAL for a bulk range outside the registered
+	 * extent, a descriptor that is not live for this call or not OUT,
+	 * or a range past its captured length; -KOS_EBUSY while an
+	 * interrupt is delivered or inside a bulk-map span. */
+	int16_t (*bulk_copy_out)(uint8_t desc, uint16_t offset, uint16_t bulk,
+				 uint16_t length);
+
+	/* Lend `length` bytes of caller descriptor `desc` at `offset`, in
+	 * direction `dir`, as plain memory: the address the calling driver
+	 * reads or writes them at, with the length lent in `*len` (it stops
+	 * at the request, the descriptor and the caller page), or 0 for a
+	 * refusal.  Only a program caller's page-0 buffer at
+	 * KOS_IPC_BORROW_BASE-1FFFh is lent, through system entry 0, which
+	 * aliases that page for the call; anything else - another page, a
+	 * page-0 mapping that is not the caller's, a range over the call's
+	 * argument block, a second borrow, an interrupt handler or a bulk-map
+	 * span - is refused.  While a borrow is held, bulk_map refuses
+	 * (-KOS_EBUSY).  borrow_release ends it; the dispatch that took it
+	 * ends it on return in any case.  Mk1 lends nothing. */
+	uint8_t *(*borrow)(uint8_t desc, uint16_t offset, uint16_t length,
+			   uint8_t dir, uint16_t *len);
+	void (*borrow_release)(void);
+	/* `addr` when `addr`..`addr + length` lies inside the live borrow
+	 * and `dir` is its direction, else 0. */
+	uint8_t *(*borrowed)(uint16_t addr, uint16_t length, uint8_t dir);
 };
+
+/* The lowest address a borrow lends: the device receive keeps a packet
+ * header in the five bytes below its buffer for the packet's duration
+ * (drivers/ioc/ioc_io.asm), and those must be the caller's bytes, never
+ * its page-0 entry stubs (0000h-00FFh). */
+#define KOS_IPC_BORROW_BASE 0x0105u
 
 /* The boot bundle the loader hands a driver's init: the nucleus table and
  * the resolved dependency numbers, one byte per declared dependency in

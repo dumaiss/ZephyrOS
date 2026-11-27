@@ -652,5 +652,18 @@ class TestMappingRules(Mk2ProcCase):
         self.assertEqual(self.kword(z, "t_rt_count"), z.nmi_count)
 
 
+    def test_a_large_copy_is_exact_under_dense_rt_ticks(self):
+        z = self.boot()
+        z.rt_hz = 40000
+        before = z.nmi_count
+        a = self.alloc(z, 0x4000)
+        data = pattern(9, 0x2000)
+        self.write(z, a, 0x1000, 0x2000, data)
+        self.assertEqual(self.read(z, a, 0x1000, 0x4000, 0x2000), data)
+        self.assertGreater(z.nmi_count - before, 50)
+        self.assertEqual(mirror(z), hardware(z))
+        self.assertEqual(self.kword(z, "t_rt_count"), z.nmi_count)
+
+
 if __name__ == "__main__":
     unittest.main()

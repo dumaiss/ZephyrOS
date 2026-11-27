@@ -1,8 +1,9 @@
 /* KonaOS page ownership on the Zephyr-80 Mk2 board (architecture 2.7.6).
  *
- * The allocator and the chunked copy over the page-copy primitive; see
- * kernel/memory/mk2/pages.h.  Single-tasking: the nucleus calls these from
- * syscall bodies and the process lifecycle, never from an interrupt.
+ * The allocator; see kernel/memory/mk2/pages.h (the chunked copies are
+ * kernel/memory/mk2/page_copy.asm).  Single-tasking: the nucleus calls
+ * these from syscall bodies and the process lifecycle, never from an
+ * interrupt.
  */
 
 #include "kos/errno.h"
@@ -84,58 +85,4 @@ uint8_t kos_pages_release(uint8_t pid)
 uint8_t kos_pages_free_count(void)
 {
 	return page_free;
-}
-
-/* One side of a chunk: a page and the offset in it, or a nucleus address
- * (no page boundary).  Returns the room left in that page. */
-static uint16_t page_side(const uint8_t *map, uint16_t addr, uint8_t *page,
-			  uint16_t *at)
-{
-	if (map == (const uint8_t *)0) {
-		*page = KOS_PAGE_DIRECT;
-		*at = addr;
-		return 0xFFFFu;
-	}
-	*page = map[addr >> KOS_DAT_PAGE_SHIFT];
-	*at = (uint16_t)(addr & (KOS_DAT_PAGE_SIZE - 1u));
-	return (uint16_t)(KOS_DAT_PAGE_SIZE - *at);
-}
-
-/* The copy, or with `zero` set a zero fill (no source). */
-static void pages_move(uint8_t zero, const uint8_t *src_map, uint16_t src,
-		       const uint8_t *dst_map, uint16_t dst, uint16_t length)
-{
-	struct kos_page_copy_req req;
-	uint16_t room;
-
-	while (length != 0u) {
-		req.length = length;
-		if (zero != 0u) {
-			req.src_page = KOS_PAGE_ZEROES;
-		} else {
-			room = page_side(src_map, src, &req.src_page, &req.src);
-			if (req.length > room) {
-				req.length = room;
-			}
-		}
-		room = page_side(dst_map, dst, &req.dst_page, &req.dst);
-		if (req.length > room) {
-			req.length = room;
-		}
-		kos_page_copy(&req);
-		src = (uint16_t)(src + req.length);
-		dst = (uint16_t)(dst + req.length);
-		length = (uint16_t)(length - req.length);
-	}
-}
-
-void kos_pages_copy(const uint8_t *src_map, uint16_t src,
-		    const uint8_t *dst_map, uint16_t dst, uint16_t length)
-{
-	pages_move(0u, src_map, src, dst_map, dst, length);
-}
-
-void kos_pages_zero(const uint8_t *dst_map, uint16_t dst, uint16_t length)
-{
-	pages_move(1u, (const uint8_t *)0, 0u, dst_map, dst, length);
 }

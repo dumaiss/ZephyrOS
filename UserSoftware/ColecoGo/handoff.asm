@@ -1,4 +1,5 @@
-; ColecoGo KonaOS no-return handoff.
+; ColecoGo KonaOS no-return handoff (Zephyr-80; the Mk2 board enters the
+; image through SYS_PERSONALITY instead).
 ;
 ; _handoff runs at its linked address in the KonaOS process bank.  The C
 ; loader has copied these same bytes to the same address in target bank 5, so
@@ -12,6 +13,7 @@
 	.globl _handoff_end
 	.globl _stage_b_begin
 	.globl _stage_b_end
+	.globl _coleco_video
 
 MEMCTL_PORT             = 0x00
 MODE_FLAT               = 0x08
@@ -33,16 +35,6 @@ CTC1_CTRL               = 0x42
 CTC2_CTRL               = 0x41
 CTC3_CTRL               = 0x43
 CTC_RESET_DISABLE       = 0x03
-
-V9958_COMMAND_PORT      = 0xa1
-V9958_PALETTE_PORT      = 0xa2
-V9958_CONFIG_PORT       = 0xa4
-V9958_CONFIG_NMI        = 0x01
-V9958_CONFIG_PORCH_OFF  = 0x02
-V9958_R8_64K_DRAM       = 0x08
-V9958_R25_WAIT_OFF      = 0x00
-V9958_R25_WAIT_ON       = 0x04
-V9958_DELAY_COUNT       = 16
 
 	.area _CODE
 
@@ -82,48 +74,8 @@ _handoff::
 	xor     a
 	out     (SIO1B_CTRL),a
 
-	; Establish the V9958 state that a TMS9918-era BIOS cannot select.
-	ld      a,#V9958_CONFIG_PORCH_OFF
-	out     (V9958_CONFIG_PORT),a
-	ld      hl,#handoff_tms_baseline
-	ld      c,#((handoff_tms_baseline_end-handoff_tms_baseline)/2)
-handoff_tms_loop:
-	ld      a,(hl)
-	inc     hl
-	ld      b,(hl)
-	inc     hl
-	call    handoff_vdp_write
-	dec     c
-	jr      nz,handoff_tms_loop
-
-	ld      a,#V9958_R25_WAIT_ON
-	ld      b,#25
-	call    handoff_vdp_write
-	xor     a
-	out     (V9958_CONFIG_PORT),a
-	in      a,(V9958_COMMAND_PORT)
-
-	ld      hl,#handoff_palette
-	ld      c,#0
-	ld      d,#16
-handoff_palette_loop:
-	ld      a,c
-	ld      b,#16
-	call    handoff_vdp_write
-	ld      a,(hl)
-	inc     hl
-	out     (V9958_PALETTE_PORT),a
-	call    handoff_vdp_delay
-	ld      a,(hl)
-	inc     hl
-	out     (V9958_PALETTE_PORT),a
-	call    handoff_vdp_delay
-	inc     c
-	dec     d
-	jr      nz,handoff_palette_loop
-
-	ld      a,#V9958_CONFIG_NMI
-	out     (V9958_CONFIG_PORT),a
+	; The V9958 state a TMS9918-era BIOS cannot select (video.asm).
+	call    _coleco_video
 
 	; The instruction after this OUT is fetched from bank 5.  It is valid
 	; because the C loader installed this complete same-address stub there.
@@ -131,36 +83,6 @@ handoff_palette_loop:
 	out     (MEMCTL_PORT),a
 	jp      TARGET_STAGE_B
 
-handoff_vdp_write:
-	out     (V9958_COMMAND_PORT),a
-	call    handoff_vdp_delay
-	ld      a,b
-	or      #0x80
-	out     (V9958_COMMAND_PORT),a
-	jp      handoff_vdp_delay
-
-handoff_vdp_delay:
-	push    bc
-	ld      b,#V9958_DELAY_COUNT
-handoff_delay_loop:
-	djnz    handoff_delay_loop
-	pop     bc
-	ret
-
-handoff_tms_baseline:
-	.db V9958_R25_WAIT_OFF,25
-	.db 0x00,46, 0x00,1, 0x00,0, 0x00,9
-	.db 0x00,10, 0x00,11, 0x00,12, 0x00,13
-	.db 0x00,14, 0x00,15, 0x00,16, 0x00,17
-	.db 0x00,18, 0x00,19, 0x00,23, 0x00,26
-	.db 0x00,27, 0x00,45, V9958_R8_64K_DRAM,8
-handoff_tms_baseline_end:
-
-handoff_palette:
-	.db 0x00,0x00, 0x00,0x00, 0x12,0x05, 0x33,0x06
-	.db 0x27,0x02, 0x37,0x03, 0x62,0x02, 0x27,0x06
-	.db 0x72,0x02, 0x73,0x03, 0x62,0x05, 0x64,0x06
-	.db 0x12,0x05, 0x65,0x02, 0x66,0x06, 0x77,0x07
 _handoff_end::
 
 ; Copied to 5F00h.  There are no internal address references, so this byte

@@ -4,7 +4,7 @@ SC2Kos is a native C spreadsheet for KonaOS, based on the supplied
 SORCIM SuperCalc2 CP/M 2.2 binaries (`sc2.com` and `sc2.ovl`). It preserves
 the original application's text-grid workflow, sparse A1-style worksheet,
 immediate recalculation and slash-command vocabulary while using only the
-public KonaOS 0.1.0 application SDK.
+public KonaOS application SDK.
 
 The interactive renderer is incremental: ordinary cursor movement updates
 the old and new cells plus the changing status fields instead of repainting
@@ -18,9 +18,9 @@ From this directory:
 make
 ```
 
-The first build unpacks
-`../../../../ZephyrOS/build/kos-sdk-0.1.0.tar.gz` into the ignored local
-`build/` directory. The packed application is:
+The first build unpacks the SDK of the selected board (`BOARD=mk2`, the
+default, or `BOARD=mk1`; `../sdk.mk`) into the ignored local `build/`
+directory; `make clean` before changing board. The packed application is:
 
 ```text
 build/user/sc2kos.exe

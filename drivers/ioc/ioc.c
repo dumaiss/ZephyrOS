@@ -136,6 +136,10 @@ _Static_assert(__builtin_offsetof(struct ioc_state, admit_rx_type) == 10,
 	       "ioc_io.asm IOC_ST_RX_TYPE");
 _Static_assert(__builtin_offsetof(struct ioc_state, admit_seq) == 11,
 	       "ioc_io.asm IOC_ST_ADMIT_SEQ");
+_Static_assert(__builtin_offsetof(struct ioc_state, phase) == 4 &&
+	       __builtin_offsetof(struct ioc_state, recover) == 12 &&
+	       IOC_PHASE_IDLE == 0u,
+	       "ioc_io.asm IOC_ST_PHASE/IOC_ST_RECOVER");
 _Static_assert(__builtin_offsetof(struct ioc_state, bulk) == 13,
 	       "ioc_io.asm IOC_ST_BULK");
 _Static_assert(__builtin_offsetof(struct ioc_bulk_block, len) == 2 &&

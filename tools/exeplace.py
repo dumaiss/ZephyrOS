@@ -25,9 +25,9 @@ addresses):
 Usage:
     exeplace.py analyze LINKSCRIPT
     exeplace.py plan LINKSCRIPT [RESIDENT.rel ...] [MODULE=ZONE ...]
-                [--declared=MODULE ...]
+                [--declared=MODULE ...] [--headroom=BYTES]
     exeplace.py link LINKSCRIPT OUTDIR STACK [RESIDENT.rel ...] [MODULE=ZONE ...]
-                [--declared=MODULE ...]
+                [--declared=MODULE ...] [--headroom=BYTES]
 
 Code whose address is stored in data (a function pointer in a data or
 constant area) is resident with its closure: a pointer may be called from
@@ -318,7 +318,12 @@ HIGH_BASE = 0xC000
 STACK_TOP = 0xE000
 ZONE_SIZE = 0x4000
 FAR_MAX = 4
-
+VENEER_BYTES = 6       # CALL kos_vcall, the zone byte, the target word
+# The resident room the fill leaves unused (--headroom=N): the last bytes
+# of the zone are not filled with optional code, so a change of a few
+# bytes in the SDK or the program does not push the link over.
+HEADROOM = 64
+SDK_LOW = 0x005D       # _KOS_SDK_DATA before _CODE
 
 
 class Plan(object):
@@ -400,12 +405,103 @@ def pointed_refusal(unit, why, zone):
             "is resident (%s)" % (unit[0], zone, by))
 
 
-def place(modules, stack, resident_sources, pins, declared=()):
+def data_split(plan, stack):
+    """The resident data units: (high, low).  The largest units fill C000h
+    up to the stack (high); the rest follows the resident code below 8000h
+    (low)."""
+    high_room = STACK_TOP - stack - HIGH_BASE
+    high, low = [], []
+    resident_data = sorted((u for u in plan.size if u[1] == "data" and
+                            plan.zone.get(u) == "resident" and plan.size[u]),
+                           key=lambda u: (-plan.size[u], u[0]))
+    for unit in resident_data:
+        if plan.size[unit] <= high_room:
+            high.append(unit)
+            high_room -= plan.size[unit]
+        else:
+            low.append(unit)
+    return high, low
+
+
+def resident_ends(plan, stack, nveneers):
+    """(end of the resident code, end of its constants, end of the resident
+    data below 8000h) for a plan whose cross-zone calls need `nveneers`
+    veneers."""
+    _high, low = data_split(plan, stack)
+    code_end = (LOW_BASE + SDK_LOW + plan.used("resident", "code") +
+                VENEER_BYTES * nveneers)
+    const_end = code_end + plan.used("resident", "const")
+    return code_end, const_end, const_end + sum(plan.size[u] for u in low)
+
+
+def resident_veneers(plan, edges):
+    """The veneers the resident code needs whatever the rest of the
+    placement does: one per distinct symbol that a resident unit calls or
+    jumps to in code not (yet) resident."""
+    symbols = set()
+    for source, targets in edges.items():
+        if plan.zone.get(source) != "resident" or not plan.size.get(source):
+            continue
+        for target, refs in targets.items():
+            if target[1] != "code" or plan.zone.get(target) == "resident":
+                continue
+            symbols.update(s for s, kind in refs if kind in ("call", "jump"))
+    return len(symbols)
+
+
+def place(modules, stack, resident_sources, pins, declared=(),
+          headroom=HEADROOM):
     """Assign every unit a zone: "resident", "home" or "farN".
 
     resident_sources: program object paths that are resident roots;
     pins: {module origin: zone}; declared: library members the SDK declares
-    reached through function pointers."""
+    reached through function pointers; headroom: the resident bytes the
+    optional fill leaves unused.
+
+    The fill counts the veneers each unit it takes creates.  The calls
+    between the other zones are known only once the zones are chosen, so a
+    result that then misses the headroom is redone with that many bytes
+    held back; a resident zone over its size is an error that names the
+    pins."""
+    reserve = 0
+    for _attempt in range(8):
+        plan, edges = place_once(modules, stack, resident_sources, pins,
+                                 declared, headroom, reserve)
+        need, _bad = veneers(plan, edges)
+        end = resident_ends(plan, stack, len(need))[2]
+        room = APERTURE - end
+        filled = [u for u, why in plan.why.items() if why == "room"]
+        if room >= headroom or not filled:
+            break
+        # Hold back the bytes of the veneers the fill could not see.
+        unseen = VENEER_BYTES * (len(need) - resident_veneers(plan, edges))
+        reserve = max(unseen, reserve + 1)
+    if room < 0:
+        raise PlaceError(overflow(plan, edges, stack, resident_sources, pins))
+    return plan, edges
+
+
+def overflow(plan, edges, stack, resident_sources, pins):
+    need, _bad = veneers(plan, edges)
+    code_end, const_end, end = resident_ends(plan, stack, len(need))
+    _high, low = data_split(plan, stack)
+    kept = [u for u in plan.size if u[1] == "code" and plan.size[u] and
+            plan.zone.get(u) == "resident" and
+            (pins.get(u[0]) == "resident" or u[0] in resident_sources)]
+    lines = ["the resident zone is %d bytes over: code %d, veneers %d (%d), "
+             "constants %d, data below 8000h %d" %
+             (end - APERTURE, plan.used("resident", "code"), len(need),
+              VENEER_BYTES * len(need), plan.used("resident", "const"),
+              sum(plan.size[u] for u in low))]
+    if kept:
+        lines.append("pinned or handler code, all resident: " + ", ".join(
+            "%s (%d)" % (u[0], plan.size[u]) for u in kept))
+    lines.append(report(plan, edges, stack))
+    return "\n".join(lines)
+
+
+def place_once(modules, stack, resident_sources, pins, declared, headroom,
+               reserve):
     plan = Plan()
     edges = unit_edges(modules)
     pointed = pointed_units(modules, edges, declared)
@@ -469,24 +565,25 @@ def place(modules, stack, resident_sources, pins, declared=()):
         if unit[1] == "code" and unit not in plan.zone and unit[0] in pins:
             plan.zone[unit] = pins[unit[0]]
             plan.why[unit] = "pin"
-    # Free code: resident while it fits, most-called first; then home
-    # and far segments by call affinity.
+    # Free code: resident while it fits with its veneers and the headroom,
+    # most-called first; then home and far segments by call affinity.
     callers = {}
     for source, targets in edges.items():
         for target, refs in targets.items():
             callers[target] = callers.get(target, 0) + len(refs)
     free = [u for u in plan.size if u[1] == "code" and u not in plan.zone
             and plan.size[u] > 0]
-    high_room = STACK_TOP - stack - HIGH_BASE
     def resident_room():
-        data = plan.used("resident", "data")
-        low_data = max(0, data - high_room)
-        return ((APERTURE - LOW_BASE - SDK_LOW) - plan.used("resident", "code")
-                - plan.used("resident", "const") - low_data)
+        """The room left below 8000h, the veneers of the resident code
+        counted."""
+        nveneers = resident_veneers(plan, edges)
+        return APERTURE - resident_ends(plan, stack, nveneers)[2]
     for unit in sorted(free, key=lambda u: (-callers.get(u, 0), u[0])):
-        if plan.size[unit] <= resident_room():
-            plan.zone[unit] = "resident"
+        plan.zone[unit] = "resident"
+        if resident_room() >= headroom + reserve:
             plan.why[unit] = "room"
+        else:
+            del plan.zone[unit]
     rest = [u for u in free if u not in plan.zone]
     # Group the rest along the call graph: merge the two groups with the
     # most call sites between them while the pair fits one zone.
@@ -563,7 +660,10 @@ def place(modules, stack, resident_sources, pins, declared=()):
     # Data only one non-resident zone touches may live there (a far
     # segment's BSS, or the home zone), largest first while the resident
     # zone is over.
-    if resident_room() < 0:
+    def final_room():
+        need, _bad = veneers(plan, edges)
+        return APERTURE - resident_ends(plan, stack, len(need))[2]
+    if final_room() < 0:
         users = {}
         for source, targets in edges.items():
             for target in targets:
@@ -575,15 +675,12 @@ def place(modules, stack, resident_sources, pins, declared=()):
                    plan.size[u] and len(users.get(u, ())) == 1 and
                    "resident" not in users[u]]
         for unit in sorted(movable, key=lambda u: (-plan.size[u], u[0])):
-            if resident_room() >= 0:
+            if final_room() >= 0:
                 break
             zone = next(iter(users[unit]))
             if plan.used(zone) + plan.size[unit] <= ZONE_SIZE:
                 plan.zone[unit] = zone
                 plan.why[unit] = "data of %s only" % zone
-    if resident_room() < 0:
-        raise PlaceError("the resident zone is %d bytes over\n%s" %
-                         (-resident_room(), report(plan, edges, stack)))
     return plan, edges
 
 
@@ -618,6 +715,8 @@ def report(plan, edges, stack):
             out.append("  %-6d %-4s %-34s %s" % (plan.size[u], u[1], u[0],
                                                 plan.why[u]))
     need, bad = veneers(plan, edges)
+    end = resident_ends(plan, stack, len(need))[2]
+    out.append("resident ends at %05Xh, room %d" % (end, APERTURE - end))
     out.append("veneers: %d" % len(need))
     for symbol, zone in need.items():
         out.append("  %s -> %s" % (symbol, zone))
@@ -630,7 +729,6 @@ def report(plan, edges, stack):
 
 CODE_AREA = {"resident": "_CODE", "home": "_ZHOME"}
 DATA_AREA = {"home": "_ZHOMEB"}
-VENEER_BYTES = 6       # CALL kos_vcall, the zone byte, the target word
 # libkos members placed like library code rather than kept resident with
 # the runtime: the keyboard key decoder (kos/key.h) and its waiting read,
 # the sound and real-time wrappers (kos/sound.h, kos/rt.h) and the
@@ -640,8 +738,6 @@ PLACEABLE_RUNTIME = ("libkos.lib(key.rel)", "libkos.lib(key_get.rel)",
                      "libkos.lib(sound.rel)", "libkos.lib(rt.rel)",
                      "libkos.lib(printf.rel)", "libkos.lib(ltoa.rel)",
                      "libkos.lib(ultoa.rel)", "libkos.lib(itoa.rel)")
-
-SDK_LOW = 0x005D       # _KOS_SDK_DATA before _CODE
 
 
 def zone_code_area(zone):
@@ -699,7 +795,8 @@ def assemble(source, workdir):
         os.path.basename(source))[0] + ".rel")
 
 
-def placed_link(script, outdir, stack, resident_sources, pins, pointers=()):
+def placed_link(script, outdir, stack, resident_sources, pins, pointers=(),
+                headroom=HEADROOM):
     objects, libraries, bases = parse_link_script(script)
     modules, _undefined = resolve(objects, libraries)
     os.makedirs(outdir, exist_ok=True)
@@ -715,34 +812,30 @@ def placed_link(script, outdir, stack, resident_sources, pins, pointers=()):
         with open(os.path.join(outdir, "placement.json"), "w") as handle:
             handle.write("null\n")
         return None
-    plan, edges = place(modules, stack, resident_sources, pins, pointers)
+    # The veneers call the trampoline: its libkos members join the link
+    # (resident, as all of libkos), so the placement counts them.  A
+    # placement that needs no veneer links without them.
+    with_vcall, _undefined = resolve(objects, libraries, ("kos_vcall",))
+    plan, edges = place(with_vcall, stack, resident_sources, pins, pointers,
+                        headroom)
     need, bad = veneers(plan, edges)
-    if need:
-        # The veneers call the trampoline: its libkos members join the
-        # link (resident, as all of libkos) and the placement is redone.
-        modules, _undefined = resolve(objects, libraries, ("kos_vcall",))
-        plan, edges = place(modules, stack, resident_sources, pins, pointers)
-        need, bad = veneers(plan, edges)
+    modules = with_vcall
+    if not need:
+        alone, _undefined = resolve(objects, libraries)
+        plan_alone, edges_alone = place(alone, stack, resident_sources, pins,
+                                        pointers, headroom)
+        need_alone, bad_alone = veneers(plan_alone, edges_alone)
+        if not need_alone:
+            modules, plan, edges, need, bad = (alone, plan_alone,
+                                               edges_alone, need_alone,
+                                               bad_alone)
     if bad:
         raise PlaceError("\n".join("%s: %s (%s) from %s into %s" % b
                                    for b in bad))
     # Resident data: the largest units fill C000h up to the stack, the
     # rest follows the resident code below 8000h.
-    high_room = STACK_TOP - stack - HIGH_BASE
-    high, low = [], []
-    resident_data = sorted((u for u in plan.size if u[1] == "data" and
-                            plan.zone[u] == "resident" and plan.size[u]),
-                           key=lambda u: (-plan.size[u], u[0]))
-    for unit in resident_data:
-        if plan.size[unit] <= high_room:
-            high.append(unit)
-            high_room -= plan.size[unit]
-        else:
-            low.append(unit)
-    code_end = (LOW_BASE + SDK_LOW + plan.used("resident", "code") +
-                VENEER_BYTES * len(need))
-    const_end = code_end + plan.used("resident", "const")
-    low_end = const_end + sum(plan.size[u] for u in low)
+    high, low = data_split(plan, stack)
+    code_end, const_end, low_end = resident_ends(plan, stack, len(need))
     if low_end > APERTURE:
         raise PlaceError("the resident zone below 8000h ends at %05Xh"
                          % low_end)
@@ -882,13 +975,18 @@ def verify(paths):
 
 
 def split_args(args):
-    """(resident sources, pins, declared members) from the trailing
-    arguments: PATH, MODULE=ZONE and --declared=MODULE."""
+    """(resident sources, pins, declared members, headroom) from the
+    trailing arguments: PATH, MODULE=ZONE, --declared=MODULE and
+    --headroom=BYTES."""
     declared = set(a[len("--declared="):] for a in args
                    if a.startswith("--declared="))
-    rest = [a for a in args if not a.startswith("--declared=")]
+    heads = [a for a in args if a.startswith("--headroom=")]
+    headroom = int(heads[-1][len("--headroom="):], 0) if heads else HEADROOM
+    rest = [a for a in args if not a.startswith(("--declared=",
+                                                 "--headroom="))]
     return (set(a for a in rest if "=" not in a),
-            dict(a.split("=", 1) for a in rest if "=" in a), declared)
+            dict(a.split("=", 1) for a in rest if "=" in a), declared,
+            headroom)
 
 
 def main(argv):
@@ -896,10 +994,10 @@ def main(argv):
         analyze(argv[2])
         return 0
     if len(argv) >= 5 and argv[1] == "link":
-        resident, pins, pointers = split_args(argv[5:])
+        resident, pins, pointers, headroom = split_args(argv[5:])
         try:
             placed_link(argv[2], argv[3], int(argv[4], 0), resident, pins,
-                        pointers)
+                        pointers, headroom)
         except PlaceError as exc:
             sys.stderr.write("exeplace: %s\n" % exc)
             return 1
@@ -907,9 +1005,10 @@ def main(argv):
     if len(argv) >= 3 and argv[1] == "plan":
         objects, libraries, _bases = parse_link_script(argv[2])
         modules, _undefined = resolve(objects, libraries)
-        resident, pins, declared = split_args(argv[3:])
+        resident, pins, declared, headroom = split_args(argv[3:])
         try:
-            plan, edges = place(modules, 1024, resident, pins, declared)
+            plan, edges = place(modules, 1024, resident, pins, declared,
+                                headroom)
         except PlaceError as exc:
             sys.stderr.write("exeplace: %s\n" % exc)
             return 1

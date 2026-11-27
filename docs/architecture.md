@@ -531,8 +531,23 @@ are the fixed region; the bodies are cold sets. Nothing an interrupt
 path uses lives in entries 0 or 3-6, which a call may have remapped; a
 driver's handler gets the driver domain from the fixed trampoline, which
 puts entries 3-6 back exactly. `tools/mapcheck.py mk2` enforces the
-regions, the sets, the empty copy windows, the common ceiling and the
-assembly-sized tables.
+regions, the sets, the empty copy windows, the common ceiling, the
+assembly-sized tables and the stacks (below).
+
+**No remap under the stack.** No nucleus path remaps a system entry
+while SP lies in it: the stack would change under the CPU, and an
+interrupt's push would land in the page mapped there. The nucleus's
+stacks (the driver, ISR, IRQ transition, gate and driver copy stacks)
+lie in entries 1-2 and 7, which are never remapped. A driver may run on
+a private stack in its io block (the V9958 driver's renderer does), and
+every io block lies in the copy windows; so the driver API services that
+remap the windows during a driver's call (the descriptor and bulk
+copies) run on the driver copy stack, and the one that remaps an entry
+on the caller's stack (a bulk-map span, entry 0) touches no io block.
+`config/residency-mk2.json` `driver_call_remaps` lists each service, its
+entries and its stack; `tools/mapcheck.py mk2 --drivers` checks it
+against every driver's private stacks (a symbol pair `X_stack`,
+`X_stack_top`) in the driver plan.
 
 **Cold sets.** The nucleus's logical space is 32 KiB (Mk1's bank 7 shows
 48 KiB), so cold code is split into **cold sets**: 16 KiB page pairs, all
@@ -554,8 +569,8 @@ every set and every driver needs (the dispatcher and its helpers, the
 process table and lifecycle, the boot path, the IPC substrate, the page
 allocator and the ROMFS reader); set 0 holds the namespace, the object
 calls and the EXE loader, set 1 the diagnostics, extended memory, the
-real-time calls, the event calls and the driver loader. An
-in-process endpoint runs with the set that installed it. The dispatcher
+personality handoff, the real-time calls, the event calls and the driver
+loader. An in-process endpoint runs with the set that installed it. The dispatcher
 empties the veneer stack at every syscall, where no cross-set call is
 live (a body that leaves without returning leaves a frame behind).
 
@@ -578,19 +593,50 @@ calls back into is the fixed region or common (`config/residency-mk2.json`
 set). The outermost call runs on the driver stack. A bulk-map span maps
 the domain's page 0 at entry 0.
 
+**System-entry spans** (`kernel/memory/mk2/dat_map.asm`): every nucleus
+remap of a run of system entries from C goes through one fixed-region
+primitive over (first entry, count). `kos_dat_span_enter` records the
+span and the pages its mirrors name in a save area and remaps it to the
+wanted pages unless every mirror names them already (a driver-to-driver
+call into the mapped domain writes nothing); `kos_dat_span_restore`
+writes the saved pages back, every entry, whatever they show by then.
+The force form always remaps, because the code it interrupted may have
+written a mirror and not yet its `OUT`. The IRQ trampoline
+(`kernel/ipc/ipc_asm.asm`) writes the domain the same way, in one
+straight-line assembly routine: a driver's tick handler runs with the
+domain mapped and unmapped within about 2,100 T-states, so a byte stream on
+the SIO's three-byte receive FIFO at 115,200 baud (868 T-states a byte)
+survives it.
+The driver domain (3-6), an in-process endpoint's cold set (3-4) and a
+bulk-map span's or a boot entry's page 0 (0) are all mapped and put back
+through it, mirror first, entry by entry.
+
 **IPC on Mk2** (4.9) has one copy path: `copy_in` and `copy_out` map the
 caller's buffer page and the driver's buffer page into the copy windows
-and move the bytes directly (`kos_pages_copy`), wherever either lies;
-the windows then show the domain again. A descriptor resolves a program
+and move the bytes directly (`kos_driver_copy`), wherever either lies;
+the windows then show the domain again. The copy runs on the driver copy
+stack (18 bytes of fixed data), since the caller may be on a private
+stack in the windows. A descriptor resolves a program
 caller's address through `kos_caller_map()`, the gate's image of its
 current mapping; a nucleus caller's buffer (the staging block, the VFS
-workspace, a stack) is addressed directly. `bulk_read` and `bulk_write`
+workspace, a stack) is addressed directly, or through a page list the
+nucleus names (`ipc_nucleus_call_pages`: the EXE loader's reads into a
+child's pages and into its own data). `bulk_read` and `bulk_write`
 copy between the domain's bulk tier and the driver's buffer the same
-way. Mk1's paths A/B/C, the `DRIVER_IO` placement rule and the far-bank
+way, and `bulk_copy_out` maps the domain's bulk page and the caller's
+buffer page together, so a cache hit reaches the caller in one pass. A
+page-0 buffer can also be lent (`borrow`, 4.9): system entry 0 already
+shows it, so a card read is received straight into it.
+Mk1's paths A/B/C, the `DRIVER_IO` placement rule and the far-bank
 case do not apply. A null application call (`/dev/input/joy/0`) costs
-9,275 T-states (Mk1 5,837); a cached 512-byte read costs 32,889
-(Mk1 25,279), on the same harness (`tests/test_mk2_shell.py`). The paired
-measurements in 2.7.7 record syscall, XMEM, far-call and exec costs too.
+7,359 T-states (Mk1 4,651); a 512-byte read the driver's ring holds costs
+28,147 (Mk1 24,696 to a page-0 buffer, 53,382 to a high one), and one its
+block cache holds 28,495 (Mk1 44,185 page 0, 51,585 high). On Mk2 the
+buffer's place (page 0, high, unaligned, the far window) changes a cost
+by under 1 % except across a page edge (about 1,200 T-states per
+crossing). These are simulator T-states from
+`tests/perf_os_sdk.py` on the production image, `RST 30h` through return
+with interrupts masked; 2.7.7 has the paired table.
 
 The gate and IRQ code must save and restore **the exact working DAT
 state**, relevant page modifications, stack, registers and interrupt
@@ -696,11 +742,17 @@ real-time interrupt.
 **Copy windows:** system entries 5 and 6 (`A000h`, `C000h`;
 `KOS_DAT_COPY_*` in `memory.inc`) belong to `kernel/memory/mk2/
 page_copy.asm`, which remaps them, mirror first, and moves one chunk with
-one `LDIR` between two pages, a page and nucleus memory, or zero-fills
-it. No interrupt path uses them, so a copy runs under the caller's
-interrupt state. Copies are chunked at the page boundaries of both
-sides; an 8 KiB `XMEM_READ` runs at about 22 T-states a byte, the `LDIR`
-rate.
+one `KOS_FASTCOPY` (`kernel/runtime/fastcopy.inc`, unrolled `LDI`) between
+two pages, a page and nucleus memory, or zero-fills it. No interrupt path
+uses them, so a copy runs under the caller's interrupt state. Copies are
+chunked at the page boundaries of both sides, never empty; an 8 KiB
+`XMEM_READ` moves its bytes at about 17 T-states a byte. The page-list
+forms (`kos_pages_copy`, `kos_pages_zero`, the same file) resolve each
+side of each chunk through its page list (a DAT image or an object's
+pages, or none for a nucleus address) and split the copy at every page
+edge. Their caller's stack lies outside the windows; a driver's call
+uses `kos_driver_copy`, the same copy on the driver copy stack, which
+puts the windows back as it found them, mirror first.
 
 **Page-zero NMI shadow store:** an NMI fetches `0066h` only through the
 current mapping's logical page 0. Pages of an extended-memory object are
@@ -751,6 +803,25 @@ one-far-segment-per-bank rule, no aperture slice; a container is bounded
 by the free pages and the object table, beside the format's own limits
 (16 KiB far and mappable rows, 32 KiB data rows, eight rows).
 
+**Machine personalities** (`SYS_PERSONALITY`, `docs/abi.md` section
+8.4): a program that brings its own machine - ColecoGo's ColecoVision -
+builds the whole 64 KiB space in eight of its object pages and hands the
+CPU over; KonaOS does not come back without a reset. The body
+(`kernel/syscall/personality.c`, cold set 1, beside the object table)
+resolves and checks every record
+before anything changes, then, masked, stops the interrupt and NMI
+sources through their owners' stop paths: the RT vector and the IO
+controller's RT clock (the NMI the ColecoVision gives to its video chip),
+the sound card, the CTC. The switch (`kos_personality_switch`,
+`kernel/memory/mk2/dat_map.asm`) is fixed-region code, which the system
+bank keeps mapped until the last instruction: it loads the eight pages
+as the working entries 8-15, mirror first (so entry 15 stops being the
+common page), sets `IM 1`, writes `OUT (C),A` into the two bytes below
+the entry in the system mapping and jumps there, so the instruction that
+selects the working bank is followed by the entry itself. Everything
+else - processes, objects, drivers, the console, the nucleus - is
+abandoned in its pages.
+
 No hardware-enforced page permissions, user/kernel isolation or
 preemptive scheduling are added by this mapper.
 
@@ -791,19 +862,42 @@ properties to the simulator tests that prove it. The production image
 also boots, runs placed far-code and PCM programs, and reboots on MAME's
 `zephyr80mk2`; this does not settle the open hardware details above.
 
-**Measured costs** (simulator, same harness, T-states; Mk1 / Mk2):
+**Measured costs** (simulator T-states on the production images, Mk1 /
+Mk2; CPU cost with the simulator's IOC, sound and V9958 peers, not card or
+link timing, and not a board measurement). The IPC, file and XMEM rows are
+`tests/perf_os_sdk.py` spans, `RST 30h` through return, interrupts masked,
+the buffer in page 0 (`0200h`) unless named high (`A000h`); the cache
+state of each row is observed, not assumed. The far-call and `exec` rows
+are the placed-program and ROMFS-`exec` replays.
 
 | operation | Mk1 | Mk2 | measurement |
 |---|---:|---:|---|
-| syscall round trip | 1,389 | 1,851 | ENOSYS dispatch, RST-to-return |
-| null IPC call | 5,837 | 9,275 | `KJOY_OP_READ` on `/dev/input/joy/0` |
-| IPC read, 512 bytes | 25,279 | 32,889 | cached IOC-FAT read from `/fs/S.EXE` |
-| XMEM copy, 512 bytes | 52,298 write / 52,230 read | 17,998 write / 18,005 read | plain mappable object |
+| syscall round trip | 1,389 | 1,851 | ENOSYS dispatch |
+| null IPC call | 4,651 | 7,359 | `KJOY_OP_READ` on `/dev/input/joy/0` |
+| descriptor IN, 32 bytes | 13,705 | 16,807 | `KSOUND_OP_WRITE`, 16 pairs |
+| file read, 512 bytes, ring hit | 24,696 | 28,111 | IOC-FAT ring holds the block |
+| file read, 512 bytes, cache hit | 44,185 | 28,459 | IOC-FAT block cache holds it, the ring does not |
+| file read, 4,096 bytes, cache hit | 286,686 | 148,377 | eight cached blocks |
+| file read, 512 bytes, uncached | 89,493 | 77,930 | one `FS2_READ`; Mk2 receives into the lent buffer |
+| file read, 512 bytes, uncached, high | 118,179 | 95,005 | received into the ring, then copied |
+| file read, 4,096 bytes, uncached, high | 816,446 | 608,303 | about 494,000 of it the IOC receive loop |
+| file read, 512 bytes, populating miss, high | 134,703 | 111,953 | received, cached and copied |
+| XMEM copy, 512 bytes, high | 54,250 write / 54,182 read | 14,468 write / 14,475 read | unmapped object |
+| XMEM copy, 4,096 bytes, high | 409,066 / 408,550 | 74,052 / 74,059 | unmapped object |
 | far call, home ↔ far | 4,106 / 1,321 / 4,464 | 6,930 / 2,333 / 7,216 | first `f1_add`, cached `f1_mix`, first `f2_twice` |
 | `exec` of small program | 6,096,169 | 507,634 | load `/system/fs_child.exe` (7,335 bytes) to entry |
 
-The `exec` figure is the simulator's T-state count; filesystem placement
-and cold disk access make it much longer than resident gate costs.
+On Mk2 every row copies each payload byte once in RAM (an uncached read
+also receives it through the IOC loop first), except a populating miss
+(ring to cache and ring to caller), a sound write longer than one
+64-byte chunk (the driver copies every chunk to validate it and all but
+the first again to write it) and a lent page-0 read (no copy at all). The
+EXE loader reads a `/fs` program straight into the child's pages, 4 KiB
+a read. On Mk1 a cache hit into
+page 0 crosses a common buffer, because no mapping shows bank 6's bulk
+tier beside a caller page (4.9). The `exec` figure is the simulator's
+T-state count; filesystem placement and cold disk access make it much
+longer than resident gate costs.
 
 #### 2.7.8 Option: an RT page at `C000h–DFFFh`
 
@@ -1278,7 +1372,47 @@ are not application ABI.
   saved P ≠ 0 names the far bank in the aperture, not the primary bank.
 - **Direct copies:** a descriptor id can be passed down a call chain, and
   the driver that holds the data copies straight to the caller. No driver
-  stages data for another.
+  stages data for another. Data a driver keeps in its own bulk extent (a
+  block cache) goes to the caller with `bulk_copy_out(id, offset, bulk,
+  length)`: the source is bound to the calling driver's extent as
+  `bulk_read`'s is, the destination checked as `copy_out`'s. On Mk2 it is
+  one pass; on Mk1, which has no mapping that shows the bulk tier beside
+  a caller buffer, it is path C (a common buffer: one mode-10 pass over
+  bank 6).
+- **Lent buffers:** `borrow(id, offset, length, dir, &len)` lends part of
+  a descriptor as plain memory, so a device receive lands in the caller's
+  buffer with no copy at all; `borrow_release()` ends the lend, and the
+  dispatch that took it ends it on return in any case. The driver still
+  names only the id: the nucleus answers with an address through a system
+  entry that already aliases the caller's page, with `len` cut at the
+  request, the descriptor and the page end, or refuses (0), and the driver
+  then stages as before. One lend at a time. On Mk2 that entry is entry
+  0, which the syscall gate maps to the caller's page 0 for the whole call
+  and nothing a driver does remaps but a bulk-map span (`bulk_map`
+  refuses while a lend is held, and a lend is refused inside a span); a
+  driver-to-driver call keeps it, and interrupts and the NMI never remap
+  it (2.7.6). So only a program caller's page-0 buffer is lent, at
+  `0105h-1FFFh` (the receive keeps each packet's header in the five bytes
+  below its buffer, which must be the caller's, never the entry stubs),
+  clear of the call block (with those five bytes), and only while system
+  entry 0 still shows the descriptor's page. A callee handed a lent
+  address checks it against the live lend with `borrowed(addr, length,
+  dir)`. Mk1 lends nothing. IOC-FAT lends the whole blocks of an uncached
+  file read at a block boundary that its ring does not hold (the IOC's
+  `KIOC_OP_COMMAND_READ`, `docs/devices.md`, judges the READY before the
+  first payload byte lands); a 512-byte read into page 0 costs 77,930 T-states against
+  95,005 for the same read into a high buffer, which goes through the
+  ring, and a 4,096-byte one 534,967 against 608,303 (simulator,
+  `tests/perf_os_sdk.py`, interrupts masked). A failed read leaves the requested range unspecified and the rest
+  of the buffer unchanged.
+- **Descriptor lifetime:** four slots, one bit each in a live mask. A call
+  that names a buffer (the syscall body, or a nucleus call with its own
+  buffer) releases every slot, captures its one buffer at the current
+  call depth, and releases every slot again when the call returns (a
+  refused capture captures nothing and the call does not run). An id is
+  valid only in calls deeper than its capture level: the outer
+  descriptor reaches every callee down the chain, a driver cannot name a
+  slot of its own level, and no id survives into a later call.
 - **Copy paths** (chosen per request; all are correct, A and B are fast):
 
   | path | when | how |
@@ -1306,8 +1440,8 @@ are not application ABI.
 - **Driver-to-driver calls** are host-wired and near-direct: both drivers
   are mapped, so the call dispatches through the endpoint table with the
   frame passed by reference and no bank switch.
-- **Cost:** a null application call costs 5,837 T-states on Mk1 and
-  9,275 on Mk2 (`/dev/input/joy/0`, measured in `tests/test_mk2_shell.py`);
+- **Cost:** a null application call costs 4,651 T-states on Mk1 and
+  7,359 on Mk2 (`/dev/input/joy/0`, simulator, `tests/perf_os_sdk.py`);
   one Mk1 window crossing costs 242. Protocols are therefore
   coarse-grained: no per-byte operations; writes are buffered, reads are
   read-N.
@@ -1499,7 +1633,9 @@ bank 6 E000h-FFFFh   unused (common is mapped over it)
 - The boot/bulk tier holds code that runs only during bring-up (font
   upload, filesystem setup) and bulk data drivers reach through nucleus
   copies: `bulk_read` and its mirror `bulk_write`, bound to the calling
-  driver's own extent (the V9958 font; the IOC-FAT block cache). The
+  driver's own extent (the V9958 font; the IOC-FAT block cache), and
+  `bulk_copy_out`, the extent straight to a caller descriptor (an IOC-FAT
+  cache hit). The
   loader runs boot code through the mode-10 gate with Q = 6. No code
   there runs after boot.
 - While a driver runs in mode 11, `0000h-1FFFh` shows the caller's bank;
@@ -1511,8 +1647,8 @@ bank 6 E000h-FFFFh   unused (common is mapped over it)
   driver touches only its own memory (hot tier, `DRIVER_IO`, its mapped
   segment) and its device ports; the request frame, which a syscall
   passes in the caller window, is out of reach too: `copy_in`, `copy_out`, `bulk_read`,
-  `bulk_write`, `call` and `event_post` refuse, and `bulk_map` does not
-  nest and is refused to interrupt handlers. A span never outlives the operation that opened it: the driver
+  `bulk_write`, `bulk_copy_out`, `borrow`, `call` and `event_post` refuse, and `bulk_map` does not
+  nest and is refused to interrupt handlers and while a lend is held. A span never outlives the operation that opened it: the driver
   closes it before it returns, and the endpoint return path closes a span
   left open and counts it as a driver fault. Spans are for the hot path's
   read-mostly data (the V9958 font); one costs two primitive calls.
@@ -1553,7 +1689,10 @@ table it may use and its resolved dependency array. The table holds:
 
 - `call(dependency_ref, op, frame)`: a near-direct call to a resolved
   dependency;
-- `copy_in`, `copy_out` and the bulk-data reader;
+- `copy_in`, `copy_out`, the bulk-data reader and writer, and
+  `bulk_copy_out` (bulk data to a caller descriptor);
+- `borrow`, `borrow_release` and `borrowed`: a descriptor lent as plain
+  memory (4.9);
 - `bulk_map`, `bulk_unmap`: the bulk-map span (5.2);
 - `irq_claim`, `irq_release`;
 - the few other primitives a driver needs, each named in
@@ -1696,11 +1835,11 @@ console it selected. Programs cannot tell which implementation answers.
   - **`KSOUND_OP_WRITE`** takes one IN descriptor holding `{target, value}`
     pairs: target 0-3 a PSG, 4 the DAC. The driver walks them in order
     through a 64-byte `DRIVER_IO` buffer and performs each `OUT`. One call
-    carries a whole music tick; a null IPC call measures 5,837 T-states
-    on Mk1 and 9,275 on Mk2 (section 2.7.7), while the cost of this
-    payload-bearing SOUND operation has not been measured. One call per
-    register write would cost more than
-    the music. The targets are logical: the IPC path names no port, so
+    carries a whole music tick: on the simulator a 16-pair write costs
+    20,111 T-states on Mk2 (Mk1 21,200) and a 128-pair one 64,973 (Mk1
+    86,154) through `sound_write`, against 7,359 (Mk1 4,651) for a null
+    IPC call (section 2.7.7). One call per register write would cost more
+    than the music. The targets are logical: the IPC path names no port, so
     another card can serve the same protocol.
   - **Direct I/O** is the exclusive holder's: it reads the ports from
     `KSOUND_OP_INFO` and writes them itself (`sound_out` in the SDK),
@@ -1764,6 +1903,7 @@ compatibility path.
 | `0Ah` | `CHDIR` | change the CWD |
 | `0Bh` | `GETCWD` | read the CWD |
 | `0Ch` | `REBOOT` | warm reboot into the reset path (3.1) |
+| `0Fh` | `PERSONALITY` | Mk2: hand the machine to a 64 KiB space of object pages, no return (2.7.6) |
 | `20h`-`25h` | `XMEM_ALLOC`, `FREE`, `READ`, `WRITE`, `INFO`, `MAP` | extended memory |
 | `26h`, `27h` | `SEG_INFO`, `SEG_MAP` | the program's own segments |
 | `28h`-`2Dh` | `DIAG_*` | recovery and diagnostics (6.9) |
@@ -1784,11 +1924,13 @@ blocks, a console writes a buffer.
 
 - **The syscall result (carry and `A`):** carry set means the request never
   reached the IPC layer: the block was outside the caller window, the frame
-  length was wrong, or a reserved byte was set. `A` is the error.
+  length was wrong, a reserved byte was set, or the handle is not one the
+  caller holds (unknown, released, stale, another process's). `A` is the
+  error.
 - **The IPC status (`HL` with carry clear, also written into the block):**
   0 or positive is the driver's result; negative is `-KOS_E*`, a refusal by
-  the IPC layer or the driver (unknown handle, forged descriptor, copy
-  bounds, nesting depth, re-entrancy, or a protocol error).
+  the IPC layer or the driver (forged descriptor, copy bounds, nesting
+  depth, re-entrancy, or a protocol error).
 
 The SDK folds both into one return value: non-negative on success, `-errno`
 on failure. Every other syscall has only the first channel.
@@ -1931,10 +2073,13 @@ frame stack. A veneer costs about a banked call.
 reached through function pointers), then the pins (`PLACE=` hints, a
 library member written `lib<name>.lib(<member>.rel)=zone`,
 `docs/sdk.md` section 3). The remaining code stays resident while
-the resident zone has room, the most-called first; the rest is grouped
-along the call graph - each library one group, merged with the groups it
-calls most while they fit one zone - and the groups go to the home zone
-and the far segments. The placement is deterministic and the build
+the resident zone has room, the most-called first, each unit counted with
+the veneers it creates and the fill stopping a headroom (64 bytes unless
+the program sets `HEADROOM=`) short of the end; pins and the resident set
+that alone overflow the zone are an error naming the pins and the bytes.
+The rest is grouped along the call graph - each library one group,
+merged with the groups it calls most while they fit one zone - and the
+groups go to the home zone and the far segments. The placement is deterministic and the build
 report lists every module's zone and every veneer.
 
 **Layout.** The loader is unchanged: it copies the primary image from
@@ -2032,8 +2177,8 @@ At 10 MHz (1 T-state = 0.1 µs):
 | access through an open aperture | none |
 | `xread`/`xwrite`, slots 3-6 | about 21 T-states per byte |
 | `xread`/`xwrite`, slots 0-2 | about 287 T-states per byte |
-| null IPC call | 5,837 Mk1 / 9,275 Mk2 T-states (measured; section 2.7.7) |
-| a 512-byte card read | about 87,000 T-states, about 170 T-states per byte |
+| null IPC call | 4,651 Mk1 / 7,359 Mk2 T-states (measured; section 2.7.7) |
+| a 512-byte card read | 89,493 Mk1 / 77,930 Mk2 T-states into page 0, about 170 / 150 T-states per byte (section 2.7.7) |
 
 The per-call part is the whole story: a 512-byte read amortises one call
 and one block over 512 bytes, about 170 T-states each, while the same
@@ -2119,7 +2264,7 @@ ledgers (`docs/memory.md` has the current values):
 |---|---|---:|---|
 | `nucleus fixed:` | bank 7 `2000h-5FFFh` (code, data, ISR and driver stacks) | 16,384 | keep ≥ 2,048 free |
 | `nucleus cold:` | bank 7 `6000h-DFFFh` | 32,768 | keep ≥ 4,096 free |
-| `driver hot:` | bank 6 `6000h-DFFFh` | 32,768 | keep ≥ 640 free |
+| `driver hot:` | bank 6 `6000h-DFFFh` | 32,768 | keep ≥ 360 free |
 | `driver boot/bulk:` | bank 6 `0000h-5FFFh` | 24,576 | — |
 | `driver mapped:` | bank 6 `0100h-1FFFh`, inside boot/bulk | 7,936 | — |
 | `common:` | packed `_COMMON` + `_COMMON_DATA` | ceiling 3,072 | never raised |

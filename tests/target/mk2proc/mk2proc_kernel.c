@@ -113,14 +113,15 @@ struct vfs_handle_entry *vfs_handle_find(uint8_t pid, uint8_t number)
 }
 
 int16_t vfs_ns_file_call(uint8_t handle, uint8_t object,
-			 struct kos_ipc_frame *frame, uint16_t length,
-			 uint8_t dir)
+			 struct kos_ipc_frame *frame, const uint8_t *map,
+			 uint16_t addr, uint16_t length)
 {
 	(void)handle;
 	(void)object;
 	(void)frame;
+	(void)map;
+	(void)addr;
 	(void)length;
-	(void)dir;
 	return -KOS_EINVAL;
 }
 

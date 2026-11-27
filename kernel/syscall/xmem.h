@@ -43,6 +43,17 @@ int kos_xmem_segment_alloc(uint8_t pid, uint8_t id, uint8_t kind,
 			   uint8_t *bank, uint8_t *slot);
 #endif
 
+#if defined(KOS_BOARD_MK2)
+/* The SRAM page behind page `page` of `pid`'s live object `handle`, or 0
+ * when the handle names none of its objects or the page is past the
+ * object's end (SYS_PERSONALITY's record check). */
+uint8_t kos_xmem_page(uint16_t handle, uint8_t page, uint8_t pid);
+
+/* SYS_PERSONALITY 0Fh (abi/kos/xmem.h, kernel/syscall/personality.c): a
+ * refused block returns its error; an accepted one never returns. */
+void kos_personality_enter(uint16_t block);
+#endif
+
 /* Release every object `pid` owns.  Called by process teardown after the
  * process's handles are unbound (architecture 4.10/4.8): exit releases
  * everything, and a suspended parent's objects stay untouched. */

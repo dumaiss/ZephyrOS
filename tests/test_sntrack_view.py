@@ -15,7 +15,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
-from replay import IocCommandPeer, SHELL_PROMPT  # noqa: E402
+from replay import (IocCommandPeer, SHELL_PROMPT,  # noqa: E402
+                    skip_unless_built_for)
 from snd_harness import SoundPeer  # noqa: E402
 from test_gfx import (FRAME_TSTATES, GfxReplay, KEEP_CONTENT, KEEP_NAME,
                       OPS_ACQUIRE, RETRACE_TSTATES, load_font4)  # noqa: E402
@@ -457,8 +458,8 @@ def wide_song():
 
 # -- the replay ----------------------------------------------------------
 
-@unittest.skipUnless(os.path.exists(SNTVIEW),
-                     "run make -C UserSoftware/SNTracker")
+@skip_unless_built_for(SNTVIEW, "mk1",
+                       "make -C UserSoftware/SNTracker BOARD=mk1")
 class TestSNTrackView(GfxReplay):
     def setUp(self):
         super().setUp()

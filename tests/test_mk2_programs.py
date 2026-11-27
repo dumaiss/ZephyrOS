@@ -25,7 +25,9 @@ docs/exe-format.md):
   byte for byte, released at the end;
 * the store's exerciser (hwtest) and the SDK's far-code example with
   their Mk2 expectations;
-* an EXE built for one board is refused on the other.
+* an EXE built for one board is refused on the other;
+* a card file too short for its header is refused with the header's
+  error code, and the refusal leaves no page or slot held.
 
 Skipped when the images or programs have not been built.
 """
@@ -49,8 +51,7 @@ import pcmconv  # noqa: E402
 from replay import STEP_LIMIT  # noqa: E402
 from test_mk2_shell import (CARD_PROMPT, MK2_DIR, MK2_IMAGE,  # noqa: E402
                             MK2_MAP, Mk1ShellReplay, Mk2ShellReplay)
-from z80sim import (Ctc, IocCommandPeer, SoundPeer, V9958Peer,  # noqa: E402
-                    Z80, read_symbols)
+from z80sim import IocCommandPeer, SoundPeer, read_symbols  # noqa: E402
 
 USER = os.path.join(ROOT, MK2_DIR, "sys", "user")
 MK1_USER = os.path.join(ROOT, "build", "user")
@@ -93,17 +94,8 @@ class Mk2ProgramReplay(Mk2ShellReplay):
     card."""
 
     def make_cpu(self, card=True, files=None):
-        z = Z80(self.image, b"", board="mk2")
-        z.vdp = z.vdp_peer = V9958Peer()
-        z.hid = z.ioc_peer = IocCommandPeer(fs2_media=card, fs2_files=files)
+        z = super().make_cpu(card, files)
         z.sound_peer = SoundPeer()
-        Ctc().attach(z)
-        z.glyphs = []
-        z.glyph_pos = 0
-        z.glyph_last = None
-        z.glyph_cells = {}
-        z.glyph_next = None
-        z.glyph_burst = False
         return z
 
     def boot(self, files):
@@ -376,6 +368,7 @@ class TestStandaloneSdk(Mk2ProgramCase):
         player = os.path.join(cls.tmp, "PCMPlay")
         os.makedirs(player)
         shutil.copy(os.path.join(PCMPLAY, "Makefile"), player)
+        shutil.copy(os.path.join(PCMPLAY, "..", "sdk.mk"), cls.tmp)
         shutil.copytree(os.path.join(PCMPLAY, "src"),
                         os.path.join(player, "src"))
         for directory, args in (
@@ -453,6 +446,43 @@ class TestStandaloneSdk(Mk2ProgramCase):
         at = common(RT_VECTOR + 1)
         self.assertEqual(z.phys[at] | (z.phys[at + 1] << 8), RT_IDLE)
         self.assertEqual(z.rt_hz, 0)
+
+
+@unittest.skipUnless(built("hello"), "make BOARD=mk2 builds the programs")
+class TestShortFile(Mk2ProgramCase):
+    """The header read of a card file shorter than the header."""
+
+    SHORT = 20
+
+    def test_the_launcher_reports_the_header_error(self):
+        self.assertEqual(self.image.count(BOOT_PATH + b"\0"), 1)
+        at = self.image.index(BOOT_PATH + b"\0")
+        path = b"/fs/ZT.EXE"
+        image = bytearray(self.image)
+        image[at:at + len(BOOT_PATH) + 1] = path.ljust(len(BOOT_PATH) + 1,
+                                                       b"\0")
+        self.image = bytes(image)
+        z = self.make_cpu(True, {"ZT.EXE": program("hello")[:self.SHORT]})
+        self.run_to_pattern(z, r"boot: /fs/ZT\.EXE failed \d+\n")
+        # EXE_EXEC_ERR_FILESIZE (formats/include/exe.h), negated.
+        self.assertIn("boot: /fs/ZT.EXE failed 57\n", self.trace(z))
+
+    def test_the_refusal_holds_nothing(self):
+        z = self.boot({"SHORT.EXE": program("hello")[:self.SHORT],
+                       "HELLO.EXE": program("hello")})
+        owner = self.nucleus(self.syms["_kos_page_owner"])
+
+        def free():
+            return sum(1 for i in range(SRAM_PAGES)
+                       if z.phys[owner + i] == 0)
+
+        before = free()
+        fresh = self.run_line(z, "/fs/short.exe")
+        self.assertIn("/fs/short.exe: invalid argument", fresh)
+        self.assertEqual(free(), before)
+        fresh = self.run_line(z, "/fs/hello.exe")
+        self.assertIn("Hello, KonaOS!", fresh)
+
 
 
 class TestBoardCheck(unittest.TestCase):

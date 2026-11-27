@@ -294,6 +294,36 @@ int vfs_fs_namespace_op(uint8_t op, const char *norm,
 	return result;
 }
 
+#if defined(KOS_BOARD_MK2)
+/* One nucleus-side FILE call on a bound handle (the cold loader): a read's
+ * bytes land at `addr` through `map`.  The `/fs` provider is a driver,
+ * called with no instance pair. */
+int16_t vfs_ns_file_call(uint8_t handle, uint8_t object,
+			 struct kos_ipc_frame *frame, const uint8_t *map,
+			 uint16_t addr, uint16_t length)
+{
+	struct vfs_handle_entry *entry;
+	uint8_t endpoint;
+
+	entry = vfs_handle_find(vfs_owner_current(), handle);
+
+	if (entry == (struct vfs_handle_entry *)0) {
+		return -KOS_EINVAL;
+	}
+	endpoint = entry->endpoint;
+	if (endpoint == VFS_NS_FS_ENDPOINT) {
+		if (vfs_ns_fs_endpoint == 0u) {
+			return -KOS_ENODEV;
+		}
+		endpoint = vfs_ns_fs_endpoint;
+		frame->payload[0] = object;
+		handle = 0u;
+		object = 0u;
+	}
+	return ipc_nucleus_call_pages(endpoint, object, handle, frame, map,
+				      addr, length);
+}
+#else
 /* One nucleus-side FILE call on a bound handle (the cold loader). */
 int16_t vfs_ns_file_call(uint8_t handle, uint8_t object,
 			 struct kos_ipc_frame *frame, uint16_t length,
@@ -324,6 +354,7 @@ int16_t vfs_ns_file_call(uint8_t handle, uint8_t object,
 	return ipc_nucleus_call_object_common(entry->endpoint, object, handle,
 					      frame, length, dir);
 }
+#endif
 
 /* `chdir` asks the owning provider whether `norm` is traversable. */
 int vfs_ns_dir_check(const char *norm, uint8_t *ok)

@@ -1007,6 +1007,12 @@ $(BUILD)/process_test.rel: tests/target/process/process_test.c \
 
 include user/sdk/exe.mk
 
+# Explicit simulator probe; omitted from production targets and stores.
+$(eval $(call exe_program,perf_probe,tests/perf,probe.c,STACK=512))
+$(eval $(call exe_program,perf_printf,tests/perf,printf.c,STACK=512))
+.PHONY: perf-probe
+perf-probe: $(EXE_USER_ROOT)/perf_probe.exe $(EXE_USER_ROOT)/perf_printf.exe
+
 # The helloworld sub-project declares its own demos (one exe_program line
 # per program) next to their sources.
 include user/helloworld/Makefile
@@ -1057,6 +1063,9 @@ $(EXE2_BIG_DIR)/exe2big.segments.json: tests/subsys/gen_exe2_segments.py
 $(eval $(call exe_program,exe2probe,tests/target/process,\
 	exe2probe.c,STACK=256,STAGE=1,\
 	INCLUDES=tests/target/include))
+
+$(eval $(call exe_program,persona,tests/target/process,\
+	persona.c,STACK=256))
 
 $(eval $(call exe_program,exe2seg,tests/target/process,\
 	exe2seg.c,STACK=256,STAGE=1,\
@@ -1509,6 +1518,13 @@ $(MODULES)/ipc_echo_map.rel $(MODULES)/ipc_irqx_map.rel: \
 		tests/target/include/ipc_test.h | $(MODULES)
 	$(SDCC) $(MOD_CFLAGS) --constseg MAPPED --dataseg MAPPED_BSS \
 		-Itests/target/include $< -o $@
+
+# The `fat` bulk segment (architecture 5.2): the pattern bulk_copy_out
+# delivers, the segment's image.
+$(MODULES)/ipc_fat_bulk.rel: tests/target/ipc/fat_bulk.c \
+		tests/target/include/ipc_test.h | $(MODULES)
+	$(SDCC) $(MOD_CFLAGS) --constseg FAT_BULK -Itests/target/include \
+		$< -o $@
 
 $(MODULES)/ipc_con_slow.rel: tests/target/ipc/con_slow.c \
 		tests/target/include/ipc_test.h drivers/include/driver.h | $(MODULES)
@@ -2083,7 +2099,7 @@ mk2proc: $(MK2PROC_DIR)/mk2proc.bin $(SIM_CORE_LIB)
 	@echo "mk2proc image: $(MK2PROC_DIR)/mk2proc.bin"
 
 define MK2PROC_ASM_RULE
-$(call MK2PROC_REL,$(1)): $(1) $(MK2TRANS_INC)
+$(call MK2PROC_REL,$(1)): $(1) $(MK2TRANS_INC) kernel/runtime/fastcopy.inc
 	@mkdir -p $(MK2PROC_DIR)
 	$(SDASZ80) -plosgff $(MK2TRANS_ASFLAGS) -o $$@ $$<
 endef
@@ -2147,7 +2163,8 @@ MK2_C_SRCS := main:kernel/main.c syscall:kernel/syscall.c \
 	driver_loader:kernel/driver/driver_loader.c \
 	vfs_router:kernel/vfs/router.c vfs_dev:kernel/vfs/dev.c \
 	vfs_fs:kernel/vfs/fs.c vfs_system:kernel/vfs/system.c \
-	object:kernel/syscall/object.c pages_mk2:kernel/memory/mk2/pages.c
+	object:kernel/syscall/object.c pages_mk2:kernel/memory/mk2/pages.c \
+	personality:kernel/syscall/personality.c
 # Compiled into the common page, as on Mk1.
 MK2_COMMON_C_SRCS := early_console:kernel/early_console.c \
 	panic:kernel/panic.c
@@ -2174,12 +2191,13 @@ MK2_LINK := -b _CODE=0x2000 -b _WINDOW=0x6000 -b _COLD1=0x16000 \
 	-b _COMMON=0xE000
 
 # The image and the Mk2 builds of the programs tests/test_mk2_programs.py
-# runs from the card (the SDK demo, the process and EXE v2 outcome
-# programs and the placement probe).  The target always builds for Mk2:
+# and tests/test_mk2_personality.py run from the card (the SDK demo, the
+# process and EXE v2 outcome programs, the placement probe and the
+# personality probe).  The target always builds for Mk2:
 # `make mk2` is `make BOARD=mk2`.
 ifeq ($(BOARD),mk2)
 MK2_PROGRAMS := $(addprefix $(EXE_USER_ROOT)/,hello.exe exetest.exe \
-	exe2probe.exe exe2seg.exe exe2big.exe placetest.exe)
+	exe2probe.exe exe2seg.exe exe2big.exe placetest.exe persona.exe)
 
 mk2: $(MK2_IMAGE) $(MK2_PROGRAMS) $(SIM_CORE_LIB)
 	@echo "mk2 image: $(MK2_IMAGE)"
@@ -2189,7 +2207,7 @@ mk2:
 endif
 
 define MK2_ASM_RULE
-$(MK2_DIR)/$(call MK2_STEM,$(1)).rel: $(call MK2_SRC,$(1)) $(MK2_INC)
+$(MK2_DIR)/$(call MK2_STEM,$(1)).rel: $(call MK2_SRC,$(1)) $(MK2_INC) kernel/runtime/fastcopy.inc
 	@mkdir -p $(MK2_DIR)
 	$(SDASZ80) -plosgff $(MK2TRANS_ASFLAGS) -o $$@ $$<
 endef
@@ -2230,11 +2248,13 @@ $(MK2_DIR)/konaos-mk2.ihx $(MK2_DIR)/konaos-mk2.map &: \
 
 $(MK2_IMAGE): $(MK2_DIR)/konaos-mk2.ihx $(MK2_DIR)/konaos-mk2.map \
 		$(BUILD)/recovery.romfs $(MK2_RESIDENCY) config/residency.json \
+		$(MODULES)/drivers.plan.json \
 		tools/mapcheck.py tools/pack_image.py \
 		platform/zephyr80mk2/private/memory.inc
 	$(PYTHON) tools/mapcheck.py mk2 $(MK2_DIR)/konaos-mk2.map \
 		$(MK2_RESIDENCY) platform/zephyr80mk2/private/memory.inc \
-		--objdir $(MK2_DIR) --mk1-residency config/residency.json
+		--objdir $(MK2_DIR) --mk1-residency config/residency.json \
+		--drivers $(MODULES)/drivers.plan.json
 	$(PYTHON) tools/pack_image.py --board mk2 $(MK2_DIR)/konaos-mk2.ihx \
 		$(MK2_DIR)/konaos-mk2.map $(BUILD)/recovery.romfs $@ \
 		platform/zephyr80mk2/private/memory.inc

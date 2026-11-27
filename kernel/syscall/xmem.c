@@ -506,6 +506,19 @@ void kos_xmem_release_process(uint8_t pid)
 	}
 }
 
+/* The SRAM page behind page `page` of `pid`'s live object `handle`, or 0
+ * (a ROM page, never an object's) for a handle that names none - freed,
+ * stale or foreign - or a page past the object's end. */
+uint8_t kos_xmem_page(uint16_t handle, uint8_t page, uint8_t pid)
+{
+	struct xmem_object *obj = xmem_lookup(handle, pid);
+
+	if (obj == (struct xmem_object *)0 || page >= obj->count) {
+		return 0u;
+	}
+	return obj->pages[page];
+}
+
 #else /* Mk1 */
 
 #include "kos/syscall.h"

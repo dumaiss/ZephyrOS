@@ -54,7 +54,7 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 from test_hwtest_sim import KEEP_CONTENT, KEEP_NAME, HwtestReplay  # noqa: E402
 from test_ioc import struct_member_order  # noqa: E402
-from replay import SHELL_PROMPT  # noqa: E402
+from replay import SHELL_PROMPT, not_built_for  # noqa: E402
 import z80sim  # noqa: E402
 from z80sim import IocCommandPeer  # noqa: E402
 
@@ -991,9 +991,10 @@ class TestPView(GfxReplay):
 
     def setUp(self):
         super().setUp()
-        if not os.path.exists(PVIEW_EXE):
-            self.skipTest("%s missing; run make -C UserSoftware/PView"
-                          % PVIEW_EXE)
+        reason = not_built_for(PVIEW_EXE, "mk1",
+                               "make -C UserSoftware/PView BOARD=mk1")
+        if reason:
+            self.skipTest(reason)
 
     def pview_keyed(self, z, ops, card_file):
         """Run pview on `card_file`; stop at the key block, where the

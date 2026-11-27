@@ -21,12 +21,12 @@
  *   RST 30h, A = KOS_SYSCALL_CALL, HL = &struct kos_ipc_call_args
  *       carry clear: the call was dispatched (or refused by the IPC
  *       layer); HL = the IPC status: 0 or positive from the driver,
- *       negative -KOS_E* for a refusal (unknown handle or descriptor,
- *       forged descriptor id, copy bounds, nesting depth, re-entrancy).
+ *       negative -KOS_E* for a refusal (forged descriptor id, copy
+ *       bounds, nesting depth, re-entrancy).
  *       The reply frame and the status are written back into the block.
  *       carry set:  A = KOS_EINVAL, the request never reached the IPC
  *       layer (block outside the caller window, bad frame length, bad
- *       reserved byte).
+ *       reserved byte, a handle the caller does not hold).
  *
  * Descriptor convention: one optional caller buffer per call, named by
  * `buffer`/`length`/`direction` in the call block.  The nucleus captures

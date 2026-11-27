@@ -15,8 +15,8 @@
 ;
 ; The write sequence validates the whole caller-supplied pair list
 ; before the first OUT (a target above KSOUND_TARGET_DAC is refused), then
-; copies and performs it through the 64-byte DRIVER_IO batch.  Both
-; passes walk the descriptor in chunks, so one call is one sequence.
+; performs it, both passes through the 64-byte DRIVER_IO batch a chunk at
+; a time, so one call is one sequence.
 ; -----------------------------------------------------------------------------
 
 	.module sound_io
@@ -69,29 +69,15 @@ sound_io_silence:
 	.db	KOS_SOUND_SILENCE_2, KOS_SOUND_SILENCE_3
 
 ; ---------------------------------------------------------------------------
-; sound_io_write (sound_io_write_sequence only): HL = pairs, B = count.
-;   The pairs are the {target, value} bytes the sequence validated; target
-;   0-3 selects PSG0-PSG3 and 4 the DAC, whose ports are consecutive on
-;   this card.
-; ---------------------------------------------------------------------------
-sound_io_write:
-sound_io_write_pair:
-	ld	a,(hl)			; target
-	inc	hl
-	ld	e,(hl)			; value
-	inc	hl
-	add	a,#KOS_SOUND_PSG0_PORT
-	ld	c,a
-	ld	a,e
-	out	(c),a
-	djnz	sound_io_write_pair
-	ret
-
-; ---------------------------------------------------------------------------
 ; int16_t sound_io_write_sequence(uint8_t desc, uint16_t length);
-;   sdcccall(1): A = desc, DE = length.  Validates every target in the
-;   descriptor's {target, value} pairs, chunk by chunk, then performs the
-;   whole sequence.  Returns length, or -KOS_EINVAL with no write made.
+;   sdcccall(1): A = desc, DE = length.  Two passes over the descriptor's
+;   {target, value} pairs, 64 bytes a chunk, each chunk copied into
+;   sound_batch.  The validate pass checks every target, last chunk
+;   first, so it ends holding the first chunk; the write pass then
+;   performs the whole sequence in order from that chunk, copying only the
+;   chunks after it: nothing is written unless all of it is valid, and a
+;   sequence of up to 32 pairs moves once.  Returns length, or
+;   -KOS_EINVAL with no write made.
 ;
 ;   The frame holds desc, length and done; -8/-7 hold the chunk size.  The
 ;   bootstrap copy_in is (*sound_driver_api).copy_in, the first table entry.
@@ -106,15 +92,12 @@ _sound_io_write_sequence::
 	ld	-2(ix),a		; desc
 	ld	-4(ix),e
 	ld	-3(ix),d		; length
-	xor	a
+	dec	de
+	ld	a,e
+	and	#0xC0
 	ld	-6(ix),a
-	ld	-5(ix),a		; done = 0
+	ld	-5(ix),d		; done = the last chunk's offset
 sound_io_validate_loop:
-	ld	a,-6(ix)
-	sub	-4(ix)
-	ld	a,-5(ix)
-	sbc	a,-3(ix)
-	jr	nc,sound_io_write_begin
 	call	sound_io_next_chunk
 	jr	nz,sound_io_invalid
 	ld	hl,#_sound_batch
@@ -127,45 +110,52 @@ sound_io_validate_pair:
 	inc	hl
 	inc	hl
 	djnz	sound_io_validate_pair
-	call	sound_io_add_chunk
-	jr	sound_io_validate_loop
-sound_io_write_begin:
+	ld	a,-6(ix)
+	sub	#0x40
+	ld	-6(ix),a
+	ld	a,-5(ix)
+	sbc	a,#0
+	ld	-5(ix),a		; done -= 64
+	jr	nc,sound_io_validate_loop
 	xor	a
 	ld	-6(ix),a
-	ld	-5(ix),a		; done = 0
-sound_io_write_loop:
-	ld	a,-6(ix)
-	sub	-4(ix)
-	ld	a,-5(ix)
-	sbc	a,-3(ix)
-	jr	nc,sound_io_sequence_write_done
-	call	sound_io_next_chunk
-	jr	nz,sound_io_invalid
+	ld	-5(ix),a		; done = 0: the first chunk, in the batch
+; The write pass.  Target 0-3 selects PSG0-PSG3 and 4 the DAC, whose
+; ports are consecutive on this card; OUTI sends the value and counts the
+; pair.
+sound_io_write_begin:
+	ld	hl,#_sound_batch
 	ld	b,-8(ix)
 	srl	b			; pair count = chunk / 2
-	ld	hl,#_sound_batch
-	call	sound_io_write
-	call	sound_io_add_chunk
-	jr	sound_io_write_loop
-sound_io_sequence_write_done:
-	ld	e,-4(ix)
-	ld	d,-3(ix)
-	jr	sound_io_sequence_exit
-sound_io_invalid:
-	ld	de,#KOS_SOUND_EINVAL
-sound_io_sequence_exit:
-	ld	sp,ix
-	pop	ix
-	ret
-
-; done += chunk.
-sound_io_add_chunk:
+sound_io_write_pair:
+	ld	a,(hl)			; target
+	add	a,#KOS_SOUND_PSG0_PORT
+	ld	c,a
+	inc	hl
+	outi				; value
+	jr	nz,sound_io_write_pair
 	ld	a,-6(ix)
 	add	a,-8(ix)
 	ld	-6(ix),a
 	ld	a,-5(ix)
 	adc	a,-7(ix)
-	ld	-5(ix),a
+	ld	-5(ix),a		; done += chunk
+	ld	a,-6(ix)
+	sub	-4(ix)
+	ld	a,-5(ix)
+	sbc	a,-3(ix)
+	jr	nc,sound_io_written
+	call	sound_io_next_chunk
+	jr	z,sound_io_write_begin
+sound_io_invalid:
+	ld	de,#KOS_SOUND_EINVAL
+	jr	sound_io_sequence_exit
+sound_io_written:
+	ld	e,-4(ix)
+	ld	d,-3(ix)
+sound_io_sequence_exit:
+	ld	sp,ix
+	pop	ix
 	ret
 
 ; chunk = min(length - done, 64), copied into sound_batch.  Z is set on

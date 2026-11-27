@@ -1,4 +1,5 @@
-"""Focused KonaEdit TUI replay on the accepted KonaOS image."""
+"""Focused KonaEdit TUI replay on the production image of BOARD (mk2 by
+default, mk1)."""
 
 import json
 import shutil
@@ -13,17 +14,17 @@ OS_ROOT = ROOT.parents[1]
 sys.path.insert(0, str(OS_ROOT / "tests"))
 sys.path.insert(0, str(OS_ROOT / "tools"))
 
-import pack_image  # noqa: E402
-import romfspack  # noqa: E402
-from replay import ConsoleReplay, v9958_screen  # noqa: E402
+from replay import (BOARDS, app_board, board_replay, in_driver,  # noqa: E402
+                    process_here, shell_process, v9958_screen)
 from z80sim import read_symbols  # noqa: E402
 
 
-BUILD = OS_ROOT / "build"
-IMAGE = BUILD / "konaos.bin"
-MAP = BUILD / "konaos.map"
-STORE = BUILD / "store.json"
-MODULES = BUILD / "modules"
+BOARD = app_board()
+BUILD = OS_ROOT / BOARDS[BOARD]["subdir"]
+IMAGE = BUILD / BOARDS[BOARD]["image"]
+MAP = BUILD / BOARDS[BOARD]["map"]
+STORE = BUILD / BOARDS[BOARD]["store"]
+MODULES = BUILD / BOARDS[BOARD]["modules"]
 PROGRAM = ROOT / "build/user/kedit.exe"
 PROGRAM_MAP = ROOT / "build/user/kedit/kedit.map"
 
@@ -72,34 +73,6 @@ class Pointer:
         return self.move(col, row) + [(3, 0, 0, 0, 0, notches)]
 
 
-def splice_store(image, stream):
-    data = bytearray(image)
-    window = pack_image.ROMFS_WINDOW_SIZE
-    for page in range(pack_image.ROMFS_FIRST_PAGE,
-                      pack_image.ROMFS_FIRST_PAGE +
-                      pack_image.ROMFS_PAGE_COUNT):
-        base = page * pack_image.PAGE_SIZE
-        data[base:base + window] = bytes([pack_image.FILL]) * window
-    logical = 0
-    while logical < len(stream):
-        page = pack_image.ROMFS_FIRST_PAGE + logical // window
-        offset = logical % window
-        chunk = min(window - offset, len(stream) - logical)
-        base = page * pack_image.PAGE_SIZE + offset
-        data[base:base + chunk] = stream[logical:logical + chunk]
-        logical += chunk
-    return bytes(data)
-
-
-class EditorReplay(ConsoleReplay):
-    def __init__(self, image):
-        self.root = str(OS_ROOT)
-        self.subdir = "build"
-        self.image_name = "konaos.bin"
-        self.image = image
-        self.syms = read_symbols(str(MAP))
-
-
 class KonaEditTuiSmoke(unittest.TestCase):
     def setUp(self):
         for path in (IMAGE, MAP, STORE, PROGRAM, PROGRAM_MAP):
@@ -111,20 +84,8 @@ class KonaEditTuiSmoke(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def make_replay(self):
-        manifest = json.loads(STORE.read_text())
-        manifest["files"] = [
-            item for item in manifest["files"]
-            if item["name"].lower() != "kedit.exe"
-        ]
-        manifest["files"].append({
-            "name": "kedit.exe", "type": "EXE", "path": str(PROGRAM)
-        })
-        manifest_path = self.tmp / "store.json"
-        manifest_path.write_text(json.dumps(manifest))
-        stream, _report = romfspack.pack(
-            str(manifest_path), str(self.tmp / "store.romfs"),
-            objdir=str(MODULES))
-        replay = EditorReplay(splice_store(IMAGE.read_bytes(), stream))
+        replay = board_replay(BOARD, {"kedit.exe": str(PROGRAM)},
+                              str(self.tmp))
         z = replay.make_cpu()
         z.hid.fs2_add("ALPHA.TXT", b"alpha\n")
         for index in range(10):
@@ -150,34 +111,34 @@ class KonaEditTuiSmoke(unittest.TestCase):
         raise AssertionError("production plan carries no console driver")
 
     @staticmethod
-    def render_length(z, dispatch):
-        if z.pc != dispatch or z.bank_of(z.pc) != 6 or z.rd(z.hl) != 6:
+    def render_length(replay, z, dispatch):
+        if z.pc != dispatch or not in_driver(replay, z) or z.rd(z.hl) != 6:
             return None
         return z.rd16((z.hl + 4) & 0xFFFF)
 
-    def wait_for_input_loop(self, replay, z, shell_bank):
+    def wait_for_input_loop(self, replay, z, shell):
         symbols = read_symbols(str(PROGRAM_MAP))
         getkey = symbols["_tui_getkey"]
         main = symbols["_main"]
         executable = PROGRAM.read_bytes()
         offset = 36 + main - 0x0100
         signature = executable[offset:offset + 24]
-        found = {"bank": None}
+        found = {"process": None}
 
         def hook(_step):
-            if (z.pc == main and z.bank_of(z.pc) not in (0, 6, 7) and
-                    z.bank_of(z.pc) != shell_bank and
+            here = process_here(replay, z)
+            if (z.pc == main and here is not None and here != shell and
                     bytes(z.rd(main + i) for i in range(len(signature))) ==
                     signature):
-                found["bank"] = z.bank_of(z.pc)
-            return (found["bank"] is not None and z.pc == getkey and
-                    z.bank_of(z.pc) == found["bank"]) or None
+                found["process"] = here
+            return (found["process"] is not None and z.pc == getkey and
+                    here == found["process"]) or None
 
         if replay.drive(z, 10_000_000, {main, getkey}, hook) is not None:
-            return found["bank"]
+            return found["process"]
         self.fail("KonaEdit did not enter its input loop")
 
-    def press_and_measure(self, replay, z, app_bank, key):
+    def press_and_measure(self, replay, z, app, key):
         dispatch = self.console_dispatch()
         getkey = read_symbols(str(PROGRAM_MAP))["_tui_getkey"]
         renders = []
@@ -187,17 +148,17 @@ class KonaEditTuiSmoke(unittest.TestCase):
         origin_start = z.vdp.regs[23]
         z.hid.hid_queue.extend(key)
         # The program is back in its input wait when, after a step, PC is
-        # tui_getkey in the program's bank again having left it: a stop
+        # tui_getkey in the program's process again having left it: a stop
         # at getkey at iteration n follows n - 1 earlier post-step
         # states, each one a departure unless it was itself such a stop.
         hits = {"n": 0}
 
         def hook(step):
-            length = self.render_length(z, dispatch)
+            length = self.render_length(replay, z, dispatch)
             if length is not None:
                 renders.append(length)
             if z.pc == getkey and step >= 1 and \
-                    z.bank_of(z.pc) == app_bank:
+                    process_here(replay, z) == app:
                 if step - 1 > hits["n"]:
                     return True
                 hits["n"] += 1
@@ -246,20 +207,20 @@ class KonaEditTuiSmoke(unittest.TestCase):
 
     def test_edit_menu_invert_save_and_return_to_shell(self):
         replay, z = self.make_replay()
-        shell_bank = z.bank_of(0x0100)
+        shell = shell_process(replay, z)
         z.hid.hid_queue.extend(b"/system/kedit.exe /fs/ALPHA.TXT\r")
-        app_bank = self.wait_for_input_loop(replay, z, shell_bank)
+        app = self.wait_for_input_loop(replay, z, shell)
         self.assertIn(
             "alpha", "\n".join(self.screen_text(z)),
             "pc=%04X sp=%04X ret=%04X glyph-tail=%r fs2=%r req=%r" %
             (z.pc, z.sp, z.rd16(z.sp), "".join(z.glyphs)[-160:],
              z.hid.fs2_counts, [item[0] for item in z.hid.requests[-20:]]))
 
-        typed = self.press_and_measure(replay, z, app_bank, b"X")
+        typed = self.press_and_measure(replay, z, app, b"X")
         self.assertIn("Xalpha", "\n".join(self.screen_text(z)))
         self.assertLessEqual(typed["cells"], 8, typed)
         self.assertLessEqual(typed["cycles"], 150_000, typed)
-        newline = self.press_and_measure(replay, z, app_bank, b"\r")
+        newline = self.press_and_measure(replay, z, app, b"\r")
         newline_screen = self.screen_text(z)
         self.assertEqual(newline_screen[1].rstrip(), "X")
         self.assertEqual(newline_screen[2].rstrip(), "alpha")
@@ -269,47 +230,47 @@ class KonaEditTuiSmoke(unittest.TestCase):
         self.assertEqual(len(newline["renders"]), 2, newline)
         self.assertEqual(newline["renders"][0], 10, newline)
         self.assertLessEqual(newline["cycles"], 150_000, newline)
-        unnewline = self.press_and_measure(replay, z, app_bank, b"\x08")
+        unnewline = self.press_and_measure(replay, z, app, b"\x08")
         self.assertIn("Xalpha", "\n".join(self.screen_text(z)))
         self.assertEqual(len(unnewline["renders"]), 2, unnewline)
         self.assertEqual(unnewline["renders"][0], 10, unnewline)
         self.assertLessEqual(unnewline["cycles"], 150_000, unnewline)
 
-        self.press_and_measure(replay, z, app_bank, b"\x1bOP")  # F1
-        self.press_and_measure(replay, z, app_bank, b"\x1b[B")  # open File
-        menu_move = self.press_and_measure(replay, z, app_bank, b"\x1b[B")
+        self.press_and_measure(replay, z, app, b"\x1bOP")  # F1
+        self.press_and_measure(replay, z, app, b"\x1b[B")  # open File
+        menu_move = self.press_and_measure(replay, z, app, b"\x1b[B")
         self.assertEqual(menu_move["cells"], 0, menu_move)
         self.assertGreaterEqual(menu_move["inversions"], 2, menu_move)
         self.assertLessEqual(menu_move["inversions"], 3, menu_move)
-        self.press_and_measure(replay, z, app_bank, b"\x1b")  # popup -> bar
-        self.press_and_measure(replay, z, app_bank, b"\x1b")  # bar -> editor
+        self.press_and_measure(replay, z, app, b"\x1b")  # popup -> bar
+        self.press_and_measure(replay, z, app, b"\x1b")  # bar -> editor
 
-        self.press_and_measure(replay, z, app_bank, b"\x1bOQ")  # F2 save
+        self.press_and_measure(replay, z, app, b"\x1bOQ")  # F2 save
         self.assertEqual(bytes(z.hid.fs2_files[("ALPHA.TXT",)]),
                          b"Xalpha\n")
 
-        self.press_and_measure(replay, z, app_bank, b"\x1bOR")  # F3 open
+        self.press_and_measure(replay, z, app, b"\x1bOR")  # F3 open
         first_page = self.screen_text(z)
         self.assertEqual(first_page[1].rstrip(), "Xalpha")
         picker_move = None
         for _index in range(7):
             picker_move = self.press_and_measure(
-                replay, z, app_bank, b"\x1b[B")
+                replay, z, app, b"\x1b[B")
         self.assertEqual(self.screen_text(z), first_page)
         self.assertLessEqual(picker_move["cycles"], 150_000, picker_move)
-        page_move = self.press_and_measure(replay, z, app_bank, b"\x1b[B")
+        page_move = self.press_and_measure(replay, z, app, b"\x1b[B")
         self.assertNotEqual(self.screen_text(z), first_page)
         self.assertEqual(self.screen_text(z)[1].rstrip(), "Xalpha")
-        self.press_and_measure(replay, z, app_bank, b"\t")
-        name_key = self.press_and_measure(replay, z, app_bank, b"Z")
+        self.press_and_measure(replay, z, app, b"\t")
+        name_key = self.press_and_measure(replay, z, app, b"Z")
         self.assertLessEqual(name_key["cycles"], 150_000, name_key)
-        self.press_and_measure(replay, z, app_bank, b"\x1b")
-        self.press_and_measure(replay, z, app_bank, b"\x1bOR")  # F3 open
-        self.press_and_measure(replay, z, app_bank, b"\t")
+        self.press_and_measure(replay, z, app, b"\x1b")
+        self.press_and_measure(replay, z, app, b"\x1bOR")  # F3 open
+        self.press_and_measure(replay, z, app, b"\t")
         for byte in b"PAGE00.TXT":
-            self.press_and_measure(replay, z, app_bank, bytes([byte]))
-        self.press_and_measure(replay, z, app_bank, b"\t")
-        opened = self.press_and_measure(replay, z, app_bank, b"\r")
+            self.press_and_measure(replay, z, app, bytes([byte]))
+        self.press_and_measure(replay, z, app, b"\t")
+        opened = self.press_and_measure(replay, z, app, b"\r")
         self.assertEqual(self.screen_text(z)[1].rstrip(), "line00")
 
         print("KonaEdit traffic: insert=%r newline=%r unnewline=%r "
@@ -323,7 +284,7 @@ class KonaEditTuiSmoke(unittest.TestCase):
 
         z.hid.hid_queue.extend(
             b"/system/kedit.exe /fs/cpm/b/dev/modula-2/list.mod\r")
-        app_bank = self.wait_for_input_loop(replay, z, shell_bank)
+        app = self.wait_for_input_loop(replay, z, shell)
         nested_screen = self.screen_text(z)
         self.assertEqual(nested_screen[1].rstrip(), "MODULE List;")
         self.assertEqual(nested_screen[2].rstrip(), "END List.")
@@ -333,17 +294,17 @@ class KonaEditTuiSmoke(unittest.TestCase):
 
     def test_viewport_scroll_uses_vram_origin(self):
         replay, z = self.make_replay()
-        shell_bank = z.bank_of(0x0100)
+        shell = shell_process(replay, z)
         z.hid.hid_queue.extend(
             b"/system/kedit.exe /fs/PAGE00.TXT\r")
-        app_bank = self.wait_for_input_loop(replay, z, shell_bank)
+        app = self.wait_for_input_loop(replay, z, shell)
         for _index in range(23):
-            self.press_and_measure(replay, z, app_bank, b"\x1b[B")
+            self.press_and_measure(replay, z, app, b"\x1b[B")
         before_scroll = self.screen_text(z)
         self.assertEqual(before_scroll[1].rstrip(), "line00")
         self.assertEqual(before_scroll[24].rstrip(), "line23")
 
-        scroll = self.press_and_measure(replay, z, app_bank, b"\x1b[B")
+        scroll = self.press_and_measure(replay, z, app, b"\x1b[B")
         after_scroll = self.screen_text(z)
         self.assertEqual(after_scroll[0], before_scroll[0], scroll)
         self.assertEqual(after_scroll[1].rstrip(), "line01", scroll)
@@ -355,9 +316,9 @@ class KonaEditTuiSmoke(unittest.TestCase):
         # Move back to the first line: the final Up scrolls the same region
         # downward and restores the preceding circular-VRAM row.
         for _index in range(23):
-            self.press_and_measure(replay, z, app_bank, b"\x1b[A")
+            self.press_and_measure(replay, z, app, b"\x1b[A")
         before_reverse = self.screen_text(z)
-        reverse = self.press_and_measure(replay, z, app_bank, b"\x1b[A")
+        reverse = self.press_and_measure(replay, z, app, b"\x1b[A")
         after_reverse = self.screen_text(z)
         self.assertEqual(after_reverse[0], before_reverse[0], reverse)
         self.assertEqual(after_reverse[1].rstrip(), "line00", reverse)
@@ -435,9 +396,9 @@ class KonaEditViewBudgets(KonaEditTuiSmoke):
     def test_keys_meet_their_budgets_anywhere_in_the_file(self):
         replay, z = self.make_replay()
         z.hid.fs2_add("SRC.MOD", SOURCE)
-        shell_bank = z.bank_of(0x0100)
+        shell = shell_process(replay, z)
         z.hid.hid_queue.extend(b"/system/kedit.exe /fs/SRC.MOD\r")
-        app = self.wait_for_input_loop(replay, z, shell_bank)
+        app = self.wait_for_input_loop(replay, z, shell)
         lines = list(LINES)
 
         def press(key):
@@ -561,9 +522,9 @@ class KonaEditViewBudgets(KonaEditTuiSmoke):
         replay, z = self.make_replay()
         for name, content in files:
             z.hid.fs2_add(name, content)
-        shell_bank = z.bank_of(0x0100)
+        shell = shell_process(replay, z)
         z.hid.hid_queue.extend(("/system/kedit.exe %s\r" % path).encode())
-        self.wait_for_input_loop(replay, z, shell_bank)
+        self.wait_for_input_loop(replay, z, shell)
         self.pointer = Pointer()
         return replay, z
 
@@ -797,9 +758,9 @@ class KonaEditViewBudgets(KonaEditTuiSmoke):
         long_line = "\tx" + "".join(chr(97 + i % 26) for i in range(130))
         replay, z = self.make_replay()
         z.hid.fs2_add("LONG.TXT", (long_line + "\nshort\n").encode())
-        shell_bank = z.bank_of(0x0100)
+        shell = shell_process(replay, z)
         z.hid.hid_queue.extend(b"/system/kedit.exe /fs/LONG.TXT\r")
-        app = self.wait_for_input_loop(replay, z, shell_bank)
+        app = self.wait_for_input_loop(replay, z, shell)
         text = shown(long_line)
         self.assertEqual(self.body(z)[0], text[:85].rstrip())
         self.press_and_measure(replay, z, app, b"\x1b[F")      # End

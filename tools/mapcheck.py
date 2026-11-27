@@ -774,6 +774,10 @@ DRIVER_API_ENTRIES = (
     "_api_irq_claim",
     "_api_irq_release",
     "_api_event_post",
+    "_api_bulk_copy_out",
+    "_api_borrow",
+    "_api_borrow_release",
+    "_api_borrowed",
 )
 
 # The nucleus has no device registry: discovery is the host-built `/dev`
@@ -1780,11 +1784,14 @@ def mk2_set_areas(index):
 class Mk2Residency:
     """One parsed residency-mk2 file."""
 
-    def __init__(self, regions, fixed, sets, driver_api):
+    def __init__(self, regions, fixed, sets, driver_api, never=(),
+                 remaps=()):
         self.regions = regions
         self.fixed = fixed
         self.sets = sets
         self.driver_api = driver_api
+        self.never = set(never)     # system entries never remapped
+        self.remaps = list(remaps)  # driver_call_remaps rows
 
     @property
     def cold(self):
@@ -1830,7 +1837,16 @@ def load_mk2_residency(path):
     entries = [row.get("entry") for row in data.get("system_dat", ())]
     if entries != list(range(8)):
         raise MapError("%s: system_dat must list entries 0-7" % path)
-    return Mk2Residency(regions, fixed, sets, driver_api)
+    never = [row["entry"] for row in data["system_dat"]
+             if row.get("remapped") == "never"]
+    remaps = list(data.get("driver_call_remaps", ()))
+    for row in remaps:
+        if not row.get("entries") or \
+                not set(row["entries"]) <= set(range(8)) or \
+                not row.get("stack") or not row.get("by"):
+            raise MapError("%s: driver_call_remaps row %r needs entries "
+                           "0-7, by and stack" % (path, row))
+    return Mk2Residency(regions, fixed, sets, driver_api, never, remaps)
 
 
 def c_constant(path, name):
@@ -1983,8 +1999,91 @@ def mk2_area_extent(areas, symbols, names):
     return min(lo for lo, _ in spans), max(hi for _, hi in spans)
 
 
+# A stack: a symbol pair X_stack (its base) and X_stack_top (its top).
+MK2_STACK_SUFFIX = "_stack"
+MK2_STACK_TOP_SUFFIX = "_stack_top"
+
+
+def mk2_stacks(symbols):
+    """{base symbol: (base, top)} of every stack pair with bytes."""
+    stacks = {}
+    for name, top in symbols.items():
+        if name.endswith(MK2_STACK_TOP_SUFFIX):
+            base = name[:-len("_top")]
+            if base in symbols and top > symbols[base]:
+                stacks[base] = (symbols[base], top)
+    return stacks
+
+
+def mk2_entries(span):
+    """The system entries (8 KiB each) a span [lo, hi) touches."""
+    lo, hi = span
+    return set(range(lo >> 13, ((hi - 1) >> 13) + 1))
+
+
+def mk2_driver_stacks(plan_path):
+    """[(driver, stack, base, top)]: each resident driver's private
+    stacks, the stack pairs of its image report (the .report.json of each
+    container the plan lists, beside the plan), at the segment's linked
+    base."""
+    with open(plan_path) as handle:
+        plan = json.load(handle)
+    stacks = []
+    for driver in plan.get("drivers", ()):
+        stem = os.path.splitext(os.path.basename(driver["container"]))[0]
+        report = os.path.join(os.path.dirname(plan_path),
+                              stem + ".report.json")
+        with open(report) as handle:
+            data = json.load(handle)
+        bases = {segment["role"]: segment["base"]
+                 for segment in data.get("segments", ())}
+        located = {}
+        for name, offset in data.get("symbols", {}).items():
+            role = data.get("symbol_segments", {}).get(name)
+            if role in bases:
+                located[name] = bases[role] + offset
+        for name, (lo, hi) in sorted(mk2_stacks(located).items()):
+            stacks.append((driver["name"], name, lo, hi))
+    return stacks
+
+
+def check_mk2_stacks(symbols, residency, plan_path=None):
+    """No stack lies in a system entry that is remapped while it is in
+    use.  Every nucleus stack lies in entries that are never remapped; a
+    driver_call_remaps row names a nucleus stack or the caller's; and
+    each driver's private stack lies outside every entry a service
+    remaps on the caller's stack.  Returns (nucleus, driver) stack
+    counts."""
+    stacks = mk2_stacks(symbols)
+    for name, span in sorted(stacks.items()):
+        bad = sorted(mk2_entries(span) - residency.never)
+        if bad:
+            raise MapError("nucleus stack %s %04Xh-%04Xh lies in system "
+                           "entry %d, which a call remaps"
+                           % (name, span[0], span[1] - 1, bad[0]))
+    caller = []
+    for row in residency.remaps:
+        if row["stack"] == "caller":
+            caller.append(row)
+        elif row["stack"] not in stacks:
+            raise MapError("driver_call_remaps: %s runs on %s, which the "
+                           "map does not define (%s, %s%s)"
+                           % (row["by"], row["stack"], row["stack"],
+                              row["stack"], "_top"))
+    driver_stacks = mk2_driver_stacks(plan_path) if plan_path else []
+    for driver, name, lo, hi in driver_stacks:
+        for row in caller:
+            hit = sorted(mk2_entries((lo, hi)) & set(row["entries"]))
+            if hit:
+                raise MapError("%s private stack %s %04Xh-%04Xh lies in "
+                               "system entry %d, which %s remaps on the "
+                               "caller's stack" % (driver, name, lo, hi - 1,
+                                                   hit[0], row["by"]))
+    return len(stacks), len(driver_stacks)
+
+
 def check_mk2(map_text, residency, root, objdir=None, mk1_tiers=None,
-              common_ceiling=0x0C00):
+              common_ceiling=0x0C00, plan_path=None):
     """The Mk2 layout rules.  Returns a ledger dict; raises MapError."""
     areas, symbols = parse_map(map_text)
     regions = residency.regions
@@ -2061,8 +2160,12 @@ def check_mk2(map_text, residency, root, objdir=None, mk1_tiers=None,
             if mk1_tiers.get(name) == "fixed-required":
                 raise MapError("cold object %s is fixed-required on Mk1"
                                % name)
+    nucleus_stacks, driver_stacks = check_mk2_stacks(symbols, residency,
+                                                     plan_path)
     cold_lo, cold_hi = regions["cold"]
     ledger = {
+        "nucleus_stacks": nucleus_stacks,
+        "driver_stacks": driver_stacks,
         "fixed_end": fixed_span[1] if fixed_span else regions["fixed"][0],
         "fixed_room": regions["fixed"][1] - (fixed_span[1] if fixed_span
                                              else regions["fixed"][0]),
@@ -2083,7 +2186,8 @@ def mk2_main(args):
     mapcheck.py mk2 --link <residency-mk2.json> <memory.inc> <objdir>
                 <outdir> <veneers.asm>
     mapcheck.py mk2 <map> <residency-mk2.json> <memory.inc>
-                [--objdir DIR] [--mk1-residency residency.json]"""
+                [--objdir DIR] [--mk1-residency residency.json]
+                [--drivers drivers.plan.json]"""
     try:
         if len(args) == 2 and args[0] == "--cold-stems":
             print("\n".join(load_mk2_residency(args[1]).cold))
@@ -2103,7 +2207,7 @@ def mk2_main(args):
         print("mapcheck: %s" % exc, file=sys.stderr)
         return 1
     options = {}
-    for flag in ("--objdir", "--mk1-residency"):
+    for flag in ("--objdir", "--mk1-residency", "--drivers"):
         if flag in args:
             at = args.index(flag)
             options[flag] = args[at + 1]
@@ -2122,7 +2226,8 @@ def mk2_main(args):
             mk1_tiers, _cold, _test = load_residency(
                 options["--mk1-residency"])
         ledger = check_mk2(open(map_path).read(), residency, root,
-                           options.get("--objdir"), mk1_tiers, ceiling)
+                           options.get("--objdir"), mk1_tiers, ceiling,
+                           options.get("--drivers"))
     except MapError as exc:
         print("mapcheck: %s" % exc, file=sys.stderr)
         return 1
@@ -2130,8 +2235,10 @@ def mk2_main(args):
                       for index, (end, room) in enumerate(
                           zip(ledger["set_end"], ledger["set_room"])))
     print("mapcheck: mk2 OK | fixed end %04Xh room %d | %s | common %d "
-          "of %d" % (ledger["fixed_end"], ledger["fixed_room"], sets,
-                     ledger["common_used"], ledger["common_ceiling"]))
+          "of %d | stacks %d nucleus, %d driver"
+          % (ledger["fixed_end"], ledger["fixed_room"], sets,
+             ledger["common_used"], ledger["common_ceiling"],
+             ledger["nucleus_stacks"], ledger["driver_stacks"]))
     return 0
 
 

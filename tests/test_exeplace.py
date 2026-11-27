@@ -243,6 +243,138 @@ class TestFunctionPointers(unittest.TestCase):
         self.assertIn("SDK declares", str(caught.exception))
 
 
+ROOM = exeplace.APERTURE - exeplace.LOW_BASE - exeplace.SDK_LOW
+
+
+def caller(name, size, targets):
+    """A module whose code calls each symbol of `targets` once."""
+    code = [0xCD, 0, 0] * len(targets)
+    words = [(0, 1 + 3 * i, t) for i, t in enumerate(targets)]
+    mod = module(name, [("_CODE", size, code)],
+                 [("_" + name, 0)] + [(t, None) for t in targets], words)
+    mod.origin = name + ".rel"
+    return mod
+
+
+def leaf(name, size):
+    mod = module(name, [("_CODE", size, [0])], [("_" + name, 0)])
+    mod.origin = name + ".rel"
+    return mod
+
+
+def end_of(plan, stack=256):
+    """The end of the resident zone below 8000h with every veneer the plan
+    needs counted, and the number of units the fill added."""
+    need, bad = exeplace.veneers(plan, plan_edges[id(plan)])
+    assert not bad, bad
+    end = exeplace.resident_ends(plan, stack, len(need))[2]
+    filled = [u[0] for u, why in plan.why.items() if why == "room"]
+    return end, sorted(filled)
+
+
+plan_edges = {}
+
+
+def fill(modules, pins, headroom=None):
+    args = (modules, 256, set(), pins)
+    plan, edges = (exeplace.place(*args) if headroom is None
+                   else exeplace.place(*args, headroom=headroom))
+    plan_edges[id(plan)] = edges
+    return plan
+
+
+class TestResidentFill(unittest.TestCase):
+    """The fill counts the veneers each unit it takes creates and stops
+    short of the end of the zone by the headroom."""
+
+    COUNT = 8
+    HOT = 100
+    COLD = 4000
+
+    def program(self):
+        """A resident main leaving 800 bytes and eight 100-byte units, each
+        calling a 4,000-byte unit of its own: a hot unit taken costs its
+        size and one veneer.  Taking all eight would fit the 800 bytes
+        and overflow with their veneers."""
+        mods = [leaf("main", ROOM - 800)]
+        for i in range(self.COUNT):
+            mods.append(caller("h%d" % i, self.HOT, ["_c%d" % i]))
+            mods.append(leaf("c%d" % i, self.COLD))
+        return mods
+
+    def filled(self, plan):
+        return sorted(u[0] for u, why in plan.why.items()
+                      if why == "room" and u[0].startswith("h"))
+
+    def test_veneers_are_counted_while_choosing(self):
+        plan = fill(self.program(), {"main.rel": "resident"}, headroom=0)
+        end, _filled = end_of(plan)
+        self.assertEqual(len(self.filled(plan)), 7)
+        self.assertLessEqual(end, exeplace.APERTURE)
+
+    def test_the_headroom_is_left_unused(self):
+        for headroom, taken in ((0, 7), (64, 6), (200, 5)):
+            plan = fill(self.program(), {"main.rel": "resident"},
+                        headroom=headroom)
+            end, _filled = end_of(plan)
+            self.assertEqual(len(self.filled(plan)), taken, headroom)
+            self.assertGreaterEqual(exeplace.APERTURE - end, headroom)
+
+    def test_the_default_headroom_is_64_bytes(self):
+        self.assertEqual(exeplace.HEADROOM, 64)
+        plan = fill(self.program(), {"main.rel": "resident"})
+        end, _filled = end_of(plan)
+        self.assertEqual(len(self.filled(plan)), 6)
+        self.assertGreaterEqual(exeplace.APERTURE - end, 64)
+
+    def test_the_headroom_option_reaches_the_placer(self):
+        _res, _pins, _declared, headroom = exeplace.split_args(
+            ["a.rel", "b.rel=far1", "--headroom=200"])
+        self.assertEqual(headroom, 200)
+        self.assertEqual(exeplace.split_args(["a.rel"])[3], 64)
+
+    def test_veneers_between_the_other_zones_are_held_back(self):
+        """Two 10,000-byte units cannot share a zone and call each other:
+        both need a veneer, which the choice cannot see.  The 190-byte
+        leaf fits the 200 bytes left, then overflows with the veneers: it
+        is left out."""
+        plan = fill([leaf("main", ROOM - 200), caller("big1", 10000, ["_big2"]),
+                     caller("big2", 10000, ["_big1"]), leaf("aux", 190)],
+                    {"main.rel": "resident"}, headroom=0)
+        end, filled = end_of(plan)
+        self.assertEqual(filled, [])
+        self.assertNotEqual(plan.zone[("big1.rel", "code")],
+                            plan.zone[("big2.rel", "code")])
+        self.assertLessEqual(end, exeplace.APERTURE)
+
+    def test_pins_that_overflow_are_an_error_naming_them(self):
+        a = leaf("a", ROOM // 2 + 50)
+        b = leaf("b", ROOM - ROOM // 2 + 50)
+        with self.assertRaises(exeplace.PlaceError) as caught:
+            fill([a, b, leaf("c", 100)],
+                 {"a.rel": "resident", "b.rel": "resident"})
+        message = str(caught.exception)
+        self.assertIn("100 bytes over", message)
+        self.assertIn("a.rel (%d)" % (ROOM // 2 + 50), message)
+        self.assertIn("b.rel (%d)" % (ROOM - ROOM // 2 + 50), message)
+        self.assertNotIn("c.rel (", message.split("\n")[1])
+
+    def test_the_veneers_of_the_resident_runtime_are_counted(self):
+        """crt0 fits the zone by 4 bytes; its veneer to main does not."""
+        crt0 = caller("crt0", ROOM - 4, ["_main"])
+        with self.assertRaises(exeplace.PlaceError) as caught:
+            fill([crt0, leaf("main", 100)], {"main.rel": "far1"})
+        self.assertIn("2 bytes over", str(caught.exception))
+        self.assertIn("veneers 1 (6)", str(caught.exception))
+
+    def test_pins_to_other_zones_stay_where_they_are(self):
+        plan = fill([leaf("main", 100), leaf("a", 100), leaf("b", 100)],
+                    {"main.rel": "resident", "a.rel": "far1",
+                     "b.rel": "home"})
+        self.assertEqual(plan.zone[("a.rel", "code")], "far1")
+        self.assertEqual(plan.zone[("b.rel", "code")], "home")
+
+
 KOS_MK = os.path.join(ROOT, "mk", "kos.mk")
 
 

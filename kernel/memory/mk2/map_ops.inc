@@ -101,10 +101,22 @@
 ;   KOS_DAT_SET_AT         A = page, C = system entry 0-7 (a register): write
 ;                          it, mirror first, OUT (C),A with B = A.  F, B,
 ;                          HL.  9 bytes, 52 T.
+;   KOS_DAT_SET_NEXT       (DE) = page, C = system entry 0-7 (a register),
+;                          HL = its mirror: write it, mirror first, OUT
+;                          (C),A with B = A, then step DE, HL and C to the
+;                          next entry (the mirrors share one high byte).
+;                          A, B.  8 bytes, 44 T.
 ;   KOS_DAT_LOAD_WORKING   HL = an 8-byte image: load it into the working
 ;                          bank, which must not be selected.  Interrupts
 ;                          masked.  A, F.  3 bytes, kos_dat_load_working
 ;                          371 T.
+;   KOS_DAT_SELECT_VIA     A = control byte, HL = two writable bytes in
+;                          the mapping in force: install A from there -
+;                          the mirror, then OUT (C),A written at HL and
+;                          jumped to with BC = the control port - so the
+;                          instruction after the select is the one at
+;                          HL + 2 in the mapping it selects.  Does not
+;                          return.  8 bytes.
 ; -----------------------------------------------------------------------------
 
 ; Defined by this board's operations: a source shared with the Mk1 board
@@ -192,6 +204,22 @@ KOS_MAP_DAT = 1
 	out	(c),a
 	.endm
 
+	.macro	KOS_DAT_SET_NEXT
+	.ifne	KOS_DAT_SYSTEM_PORT
+	.error	1	; C is the entry and its port
+	.endif
+	.ifgt	(KOS_DAT_SYSTEM & 0xFF) + 16 - 0x100
+	.error	1	; INC L steps the mirror
+	.endif
+	ld	a,(de)
+	ld	(hl),a
+	ld	b,a
+	out	(c),a
+	inc	de
+	inc	l
+	inc	c
+	.endm
+
 	.macro	KOS_DAT_REMAP n
 	.ifge	(n) - KOS_DAT_ENTRIES
 	ld	hl,#KOS_DAT_CACHED + 1
@@ -202,6 +230,16 @@ KOS_MAP_DAT = 1
 
 	.macro	KOS_DAT_LOAD_WORKING
 	call	kos_dat_load_working
+	.endm
+
+	.macro	KOS_DAT_SELECT_VIA
+	ld	(KOS_DAT_CONTROL),a
+	ld	(hl),#0xED		; OUT (C),A
+	inc	hl
+	ld	(hl),#0x79
+	dec	hl
+	ld	bc,#KOS_DAT_CONTROL_PORT
+	jp	(hl)
 	.endm
 
 	.macro	KOS_MAP_GATE_ENTER slot, fault, ?have
